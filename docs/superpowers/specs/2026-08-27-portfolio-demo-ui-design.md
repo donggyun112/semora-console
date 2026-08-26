@@ -5,7 +5,7 @@
 
 ## Context
 
-The control-plane behavior is already the strongest part of the project. The current UI exposes that behavior as a dense three-column operator console, but asks a first-time visitor to understand eight scenarios, seven policy units, lifecycle hooks, and a blank run stream before seeing the point.
+The control-plane behavior is already the strongest part of the project. The current UI exposes that behavior as a dense three-column operator console, but asks a first-time visitor to understand nine scenarios, seven policy units, lifecycle hooks, and a blank run stream before seeing the point.
 
 The redesign keeps the console and its behavior. It changes the first-use path so a technical reviewer can inspect one concrete scenario immediately, then move into the full composer when they want more control.
 
@@ -75,7 +75,7 @@ After completion, **정책 끄고 다시 실행** runs the same scenario with no
 
 This contains the full functionality of the current console.
 
-- All eight scenarios remain available.
+- All nine scenarios remain available.
 - Units remain grouped by lifecycle hook and composer.
 - The live ControlPlane(...) summary remains visible.
 - Abort, steer, approval, recovery, fired/dormant summaries, and execution counts remain available.
@@ -138,7 +138,7 @@ Changes:
 6. Suspended and recoverable frames reveal the existing action controls.
 7. Abort and steer continue to address the active run_id.
 8. Completed runs render the final outcome and fired/dormant policy summary.
-9. Compare-without-policy starts a new run using the same scenario and an empty unit list.
+9. Rerun-without-policy starts a new run using the same scenario and an empty unit list.
 
 Only one run can be active in the browser. Mode switching during an active run does not create a second run.
 
