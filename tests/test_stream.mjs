@@ -1,4 +1,5 @@
 import assert from "node:assert";
+import { readFileSync } from "node:fs";
 
 import { createNdjsonReader } from "../src/console/static/ndjson.mjs";
 import { reduceFrames } from "../src/console/static/reducer.mjs";
@@ -163,5 +164,22 @@ const plainView = rerunWithoutPolicies(composerView);
 assert.equal(plainView.scenarioId, "leak");
 assert.deepEqual(plainView.unitNames, []);
 assert.deepEqual(composerView.unitNames, ["approval", "dlp_block"]);
+
+// The browser integration consumes the immutable view state for one shared,
+// representative live run; this remains a static contract so the suite needs
+// no JS DOM implementation.
+const appSource = readFileSync(
+  new URL("../src/console/static/app.js", import.meta.url),
+  "utf8",
+);
+assert.match(appSource, /createViewState[\s\S]*rerunWithoutPolicies[\s\S]*switchMode as nextMode/);
+assert.match(appSource, /const initial = createViewState\(\);/);
+assert.match(appSource, /mode: initial\.mode,[\s\S]*scenario: initial\.scenarioId,[\s\S]*units: new Set\(initial\.unitNames\)/);
+assert.match(appSource, /function resetRunView\(\)[\s\S]*\$\("run-error"\)\.textContent = "";/);
+assert.match(appSource, /setMode\("demo"\);/);
+assert.match(appSource, /const usedPolicies = state\.units\.size > 0;[\s\S]*\$\("rerun-plain"\)\.classList\.toggle\("hidden", !usedPolicies\)/);
+assert.match(appSource, /if \(!res\.ok \|\| !res\.body\) \{[\s\S]*실행 요청 실패/);
+assert.match(appSource, /async function run\(\) \{\s*if \(state\.busy\) return;/);
+assert.match(appSource, /async function runWithoutPolicies\(\) \{\s*if \(state\.busy\) return;/);
 
 console.log("stream reducer ok");

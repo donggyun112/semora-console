@@ -1,29 +1,28 @@
 import { reduceFrames } from "./reducer.mjs?v=15";
 import { createNdjsonReader } from "./ndjson.mjs?v=15";
+import {
+  createViewState,
+  rerunWithoutPolicies,
+  switchMode as nextMode,
+} from "./view-state.mjs?v=17";
 
 const $ = (id) => document.getElementById(id);
-const state = { scenario: null, units: new Set(), frames: [], runId: null, busy: false, rowEls: [], abortCtl: null, steers: [] };
+const initial = createViewState();
+const state = {
+  mode: initial.mode,
+  scenario: initial.scenarioId,
+  units: new Set(initial.unitNames),
+  scenarios: [],
+  frames: [],
+  runId: null,
+  busy: false,
+  rowEls: [],
+  abortCtl: null,
+  steers: [],
+};
 const meta = {}; // name -> {point, composer, verdict}
 
 const POINT_ORDER = ["on_inputs", "before_model", "pre_tool_use", "after_tool_call", "before_finish", "on_suspend"];
-
-async function boot() {
-  const [scenarios, unitsBody] = await Promise.all([
-    fetch("/api/scenarios").then((r) => r.json()),
-    fetch("/api/units").then((r) => r.json()),
-  ]);
-  $("model").textContent = unitsBody.model;
-  unitsBody.units.forEach((u) => (meta[u.name] = u));
-  renderScenarios(scenarios);
-  renderUnits(unitsBody.units);
-  updateCompose();
-  $("run").addEventListener("click", run);
-  $("abort").addEventListener("click", abortRun);
-  $("steer-form").addEventListener("submit", enqueueSteer);
-  $("recover").addEventListener("click", recover);
-  $("approve").addEventListener("click", () => resume(true));
-  $("deny").addEventListener("click", () => resume(false));
-}
 
 function mk(tag, cls, text) {
   const el = document.createElement(tag);
@@ -32,19 +31,149 @@ function mk(tag, cls, text) {
   return el;
 }
 
+function currentViewState() {
+  return {
+    mode: state.mode,
+    scenarioId: state.scenario,
+    unitNames: [...state.units],
+  };
+}
+
+function setMode(mode) {
+  const next = nextMode(currentViewState(), mode);
+  state.mode = next.mode;
+  $("workspace").className = "workspace mode-" + mode;
+  $("demo-panel").classList.toggle("hidden", mode !== "demo");
+  $("composer-panel").classList.toggle("hidden", mode !== "composer");
+  document.querySelectorAll("[data-mode]").forEach((button) => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function syncSelectionUi() {
+  document.querySelectorAll("[data-scenario]").forEach((button) => {
+    const active = button.dataset.scenario === state.scenario;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  document.querySelectorAll("[data-unit]").forEach((button) => {
+    const active = state.units.has(button.dataset.unit);
+    button.classList.toggle("on", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  updateCompose();
+  renderDemo();
+  syncRun();
+}
+
+function renderDemo() {
+  const scenario = state.scenarios.find((item) => item.id === state.scenario);
+  if (!scenario) return;
+  const index = state.scenarios.indexOf(scenario) + 1;
+  $("demo-index").textContent =
+    "SCENARIO " + String(index).padStart(2, "0") +
+    " / " + String(state.scenarios.length).padStart(2, "0");
+  $("demo-title").textContent = scenario.title;
+  $("demo-does").textContent = scenario.does;
+  $("demo-risk").textContent = scenario.risk.includes("없음")
+    ? scenario.risk
+    : "위험 · " + scenario.risk;
+  $("demo-prompt").textContent = scenario.prompt;
+
+  const chips = [...state.units].map((name) => {
+    const unit = meta[name];
+    const chip = mk(
+      "span",
+      "demo-policy v-" + unit.verdict.toLowerCase(),
+      name,
+    );
+    chip.append(mk("small", "", unit.verdict.toUpperCase()));
+    return chip;
+  });
+  $("demo-policies").replaceChildren(...chips);
+}
+
+function showBootError(error) {
+  $("workspace").classList.add("hidden");
+  $("boot-error-message").textContent =
+    "화면을 불러오지 못했습니다. " + String(error);
+  $("boot-error").classList.remove("hidden");
+  $("boot-retry").onclick = () => window.location.reload();
+}
+
+function resetRunView() {
+  state.frames = [];
+  state.rowEls = [];
+  state.runId = null;
+  state.steers = [];
+  renderSteerQueue();
+  const empty = mk("div", "empty");
+  const mark = mk("div", "empty-mark", "⌁");
+  mark.setAttribute("aria-hidden", "true");
+  empty.append(mark, mk("p", "", "실행 로그가 여기에 표시됩니다."));
+  $("stream").replaceChildren(empty);
+  $("run-error").textContent = "";
+  $("policy-strip").classList.add("hidden");
+  $("approval").classList.add("hidden");
+  $("recovery").classList.add("hidden");
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("HTTP " + response.status);
+  return response.json();
+}
+
+async function boot() {
+  try {
+    const [scenarios, unitsBody] = await Promise.all([
+      fetchJson("/api/scenarios"),
+      fetchJson("/api/units"),
+    ]);
+    state.scenarios = scenarios;
+    $("model").textContent = unitsBody.model;
+    unitsBody.units.forEach((unit) => (meta[unit.name] = unit));
+
+    renderScenarios(scenarios);
+    renderUnits(unitsBody.units);
+    syncSelectionUi();
+    setMode("demo");
+
+    document.querySelectorAll("[data-run]").forEach((button) => {
+      button.addEventListener("click", run);
+    });
+    document.querySelectorAll("[data-mode]").forEach((button) => {
+      button.addEventListener("click", () => setMode(button.dataset.mode));
+    });
+    $("open-composer").addEventListener("click", () => setMode("composer"));
+    $("rerun-plain").addEventListener("click", runWithoutPolicies);
+    $("abort").addEventListener("click", abortRun);
+    $("steer-form").addEventListener("submit", enqueueSteer);
+    $("recover").addEventListener("click", recover);
+    $("approve").addEventListener("click", () => resume(true));
+    $("deny").addEventListener("click", () => resume(false));
+  } catch (error) {
+    showBootError(error);
+  }
+}
+
 function renderScenarios(scenarios) {
   const box = $("scenarios");
   box.replaceChildren();
   scenarios.forEach((s) => {
     const el = mk("button", "scenario" + (s.risk.includes("없음") ? " baseline" : ""));
+    el.dataset.scenario = s.id;
+    el.type = "button";
+    el.setAttribute("aria-pressed", "false");
     const prompt = mk("div", "s-prompt");
     prompt.append(mk("span", "s-lock", "고정된 지시"), document.createTextNode(s.prompt));
     const risk = s.risk.includes("없음") ? s.risk : "위험 · " + s.risk;
     el.append(mk("div", "s-title", s.title), mk("div", "s-does", s.does), mk("div", "s-risk", risk), prompt);
     el.addEventListener("click", () => {
       state.scenario = s.id;
-      [...box.children].forEach((c) => c.classList.toggle("active", c === el));
-      syncRun();
+      syncSelectionUi();
     });
     box.appendChild(el);
   });
@@ -67,6 +196,9 @@ function renderUnits(units) {
     group.appendChild(head);
     byPoint[point].forEach((u) => {
       const el = mk("button", "unit");
+      el.dataset.unit = u.name;
+      el.type = "button";
+      el.setAttribute("aria-pressed", "false");
       el.append(
         mk("span", "chk", "✓"),
         mk("span", "u-name", u.name),
@@ -74,10 +206,9 @@ function renderUnits(units) {
         mk("span", "u-desc", u.desc),
       );
       el.addEventListener("click", () => {
-        const on = el.classList.toggle("on");
-        if (on) state.units.add(u.name);
-        else state.units.delete(u.name);
-        updateCompose();
+        if (state.units.has(u.name)) state.units.delete(u.name);
+        else state.units.add(u.name);
+        syncSelectionUi();
       });
       group.appendChild(el);
     });
@@ -100,7 +231,9 @@ function updateCompose() {
 }
 
 function syncRun() {
-  $("run").disabled = !state.scenario || state.busy;
+  document.querySelectorAll("[data-run]").forEach((button) => {
+    button.disabled = !state.scenario || state.busy;
+  });
   $("abort").classList.toggle("hidden", !state.busy);
   $("steer-box").classList.toggle("hidden", !state.busy);
 }
@@ -191,6 +324,7 @@ function handleFrame(f) {
     $("approval").dataset.pending = f.pending_id;
     $("approval-meta").textContent = `${state.runId} · ${f.pending_id}`;
     $("approval").classList.remove("hidden");
+    $("approval").focus();
   } else if (f.kind === "outcome") {
     const reason = f.outcome && f.outcome.stop_reason;
     if (reason === "aborted") setStatus("aborted", "중단됨");
@@ -199,8 +333,12 @@ function handleFrame(f) {
     setStatus("error", "장애");
     $("recovery-meta").textContent = f.step ? `스텝 ${f.step}` : "";
     $("recovery").classList.remove("hidden");
-  } else if (f.kind === "error") setStatus("error", "오류");
-  else if (f.kind === "policy_summary") renderPolicyStrip(f.units);
+    $("recovery").focus();
+  } else if (f.kind === "error") {
+    setStatus("error", "오류");
+    $("run-error").textContent =
+      f.message || "실행 중 오류가 발생했습니다.";
+  } else if (f.kind === "policy_summary") renderPolicyStrip(f.units);
   renderRows();
 }
 
@@ -217,6 +355,9 @@ async function stream(url, body) {
       body: JSON.stringify(body),
       signal: state.abortCtl.signal,
     });
+    if (!res.ok || !res.body) {
+      throw new Error("실행 요청 실패 · HTTP " + res.status);
+    }
     const reader = res.body.getReader();
     const ndjson = createNdjsonReader(handleFrame);
     while (true) {
@@ -279,16 +420,22 @@ async function abortRun() {
 }
 
 async function run() {
-  state.frames = [];
-  state.rowEls = [];
-  state.runId = null;
-  state.steers = [];
-  renderSteerQueue();
-  $("stream").replaceChildren();
-  $("policy-strip").classList.add("hidden");
-  $("approval").classList.add("hidden");
-  $("recovery").classList.add("hidden");
-  await stream("/api/run", { scenario_id: state.scenario, units: [...state.units] });
+  if (state.busy) return;
+  resetRunView();
+  const usedPolicies = state.units.size > 0;
+  await stream("/api/run", {
+    scenario_id: state.scenario,
+    units: [...state.units],
+  });
+  $("rerun-plain").classList.toggle("hidden", !usedPolicies);
+}
+
+async function runWithoutPolicies() {
+  if (state.busy) return;
+  const next = rerunWithoutPolicies(currentViewState());
+  state.units = new Set(next.unitNames);
+  syncSelectionUi();
+  await run();
 }
 
 async function recover() {
