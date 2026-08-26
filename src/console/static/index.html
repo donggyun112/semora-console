@@ -8,87 +8,142 @@
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"
     />
-    <link rel="stylesheet" href="/styles.css?v=16" />
+    <link rel="stylesheet" href="/styles.css?v=17" />
   </head>
   <body>
-    <div class="grid-noise"></div>
+    <div class="grid-noise" aria-hidden="true"></div>
 
-    <header>
+    <header class="topbar">
       <div class="brand">
-        <span class="mark">N</span>
-        <b>NEXORA</b><span class="sep">/</span><span class="sub">CONTROL PLANE CONSOLE</span>
+        <span class="mark" aria-hidden="true">N</span>
+        <b>NEXORA</b><span class="sep">/</span><span class="sub">CONTROL PLANE</span>
       </div>
       <div class="model" id="model">—</div>
     </header>
 
-    <main>
-      <!-- ── 01 THE TASK ─────────────────────────────────────────── -->
-      <section class="col col-task">
-        <h2 class="label"><span class="idx">01</span> 작업</h2>
-        <div id="scenarios" class="scenarios"></div>
-      </section>
+    <main class="app-shell">
+      <nav class="mode-tabs" aria-label="화면 선택">
+        <button id="mode-demo" class="mode-tab" data-mode="demo" aria-pressed="false">
+          대표 데모
+        </button>
+        <button id="mode-composer" class="mode-tab active" data-mode="composer" aria-pressed="true">
+          정책 직접 선택
+        </button>
+      </nav>
 
-      <!-- ── 02 THE CONTROL PLANE ───────────────────────────────── -->
-      <section class="col col-policy">
-        <h2 class="label"><span class="idx">02</span> 정책</h2>
-        <div id="units" class="units"></div>
-        <div class="compose">
-          <div class="compose-label">조립</div>
-          <code id="compose-summary">ControlPlane()  ·  컨트롤 없음</code>
-        </div>
-        <button id="run" class="run" disabled>실행</button>
-      </section>
+      <div id="boot-error" class="boot-error hidden" role="alert">
+        <span id="boot-error-message">화면을 불러오지 못했습니다.</span>
+        <button id="boot-retry" type="button">다시 시도</button>
+      </div>
 
-      <!-- ── 03 THE RUN ─────────────────────────────────────────── -->
-      <section class="col col-run">
-        <div class="run-head">
-          <h2 class="label"><span class="idx">03</span> 실행</h2>
-          <div class="run-actions">
-            <button id="abort" class="abort hidden" type="button">중단</button>
-            <span id="status" class="status idle">대기</span>
+      <div id="workspace" class="workspace mode-composer">
+        <section id="demo-panel" class="demo-panel hidden" aria-labelledby="demo-title">
+          <div id="demo-index" class="scenario-index">SCENARIO 03 / 09</div>
+          <h1 id="demo-title">기밀 외부 유출</h1>
+          <p id="demo-does"></p>
+          <p id="demo-risk" class="demo-risk"></p>
+
+          <div class="field-label">PROMPT</div>
+          <div class="locked-prompt">
+            <span>고정된 지시</span>
+            <code id="demo-prompt"></code>
           </div>
-        </div>
-        <div id="policy-strip" class="policy-strip hidden"></div>
-        <div id="stream" class="stream">
-          <div class="empty">
-            <div class="empty-mark">⌁</div>
 
-          </div>
-        </div>
-        <div id="steer-box" class="steer-box hidden">
-          <div class="steer-label">지시 큐</div>
-          <div id="steer-queue" class="steer-queue"></div>
-          <form id="steer-form" class="steer-form">
-            <input id="steer-text" maxlength="200" placeholder="실행 중인 에이전트에 지시" autocomplete="off" />
-            <button type="submit">보내기</button>
-          </form>
-        </div>
-        <div id="recovery" class="recovery hidden">
-          <div class="recovery-body">
-            <span class="pulse crash"></span>
-            <div>
-              <strong>워커 장애</strong>
-              <small><span id="recovery-meta"></span></small>
+          <div class="field-label">POLICIES</div>
+          <div id="demo-policies" class="demo-policies"></div>
+
+          <button id="demo-run" class="run" data-run type="button">실행</button>
+          <button id="rerun-plain" class="secondary-action hidden" type="button">
+            정책 끄고 다시 실행
+          </button>
+          <button id="open-composer" class="text-action" type="button">
+            정책 직접 선택
+          </button>
+        </section>
+
+        <section id="composer-panel" class="composer-panel" aria-label="정책 직접 선택">
+          <section class="col col-task" aria-labelledby="task-label">
+            <h2 id="task-label" class="label"><span class="idx">01</span> 작업</h2>
+            <div id="scenarios" class="scenarios"></div>
+          </section>
+
+          <section class="col col-policy" aria-labelledby="policy-label">
+            <h2 id="policy-label" class="label"><span class="idx">02</span> 정책</h2>
+            <div id="units" class="units"></div>
+            <div class="compose">
+              <div class="compose-label">조립</div>
+              <code id="compose-summary">ControlPlane() · 컨트롤 없음</code>
+            </div>
+            <button id="run" class="run" data-run type="button" disabled>실행</button>
+          </section>
+        </section>
+
+        <section class="col col-run" aria-labelledby="run-label">
+          <div class="run-head">
+            <h2 id="run-label" class="label"><span class="idx">03</span> 실행 로그</h2>
+            <div class="run-actions">
+              <button id="abort" class="abort hidden" type="button">중단</button>
+              <span id="status" class="status idle" aria-live="polite">대기</span>
             </div>
           </div>
-          <button id="recover" class="btn crash" type="button">복원</button>
-        </div>
-        <div id="approval" class="approval hidden">
-          <div class="approval-body">
-            <span class="pulse"></span>
-            <div>
-              <strong>일시중지 — 승인 대기</strong>
-              <small><span id="approval-meta"></span></small>
+
+          <div id="policy-strip" class="policy-strip hidden"></div>
+          <div id="run-error" class="sr-only" aria-live="assertive"></div>
+          <div
+            id="stream"
+            class="stream"
+            role="log"
+            aria-live="polite"
+            aria-relevant="additions text"
+          >
+            <div class="empty">
+              <div class="empty-mark" aria-hidden="true">⌁</div>
+              <p>실행 로그가 여기에 표시됩니다.</p>
             </div>
           </div>
-          <div class="approval-actions">
-            <button id="deny" class="btn ghost">거부</button>
-            <button id="approve" class="btn primary">승인하고 재개</button>
+
+          <div id="steer-box" class="steer-box hidden">
+            <label class="steer-label" for="steer-text">지시 큐</label>
+            <div id="steer-queue" class="steer-queue"></div>
+            <form id="steer-form" class="steer-form">
+              <input
+                id="steer-text"
+                maxlength="200"
+                placeholder="실행 중인 에이전트에 지시"
+                autocomplete="off"
+              />
+              <button type="submit">보내기</button>
+            </form>
           </div>
-        </div>
-      </section>
+
+          <div id="recovery" class="recovery hidden" tabindex="-1">
+            <div class="recovery-body">
+              <span class="pulse crash" aria-hidden="true"></span>
+              <div>
+                <strong>워커 장애</strong>
+                <small><span id="recovery-meta"></span></small>
+              </div>
+            </div>
+            <button id="recover" class="btn crash" type="button">복원</button>
+          </div>
+
+          <div id="approval" class="approval hidden" tabindex="-1">
+            <div class="approval-body">
+              <span class="pulse" aria-hidden="true"></span>
+              <div>
+                <strong>일시중지 — 승인 대기</strong>
+                <small><span id="approval-meta"></span></small>
+              </div>
+            </div>
+            <div class="approval-actions">
+              <button id="deny" class="btn ghost" type="button">거부</button>
+              <button id="approve" class="btn primary" type="button">승인하고 재개</button>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
 
-    <script type="module" src="/app.js?v=16"></script>
+    <script type="module" src="/app.js?v=17"></script>
   </body>
 </html>

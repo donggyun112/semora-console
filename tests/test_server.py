@@ -225,6 +225,32 @@ def test_units_endpoint_shape():
         assert "before_model" not in points
 
 
+def test_static_shell_has_demo_composer_and_accessible_run_regions():
+    with TestClient(app) as c:
+        html = c.get("/").text
+
+    for element_id in [
+        "mode-demo",
+        "mode-composer",
+        "demo-panel",
+        "composer-panel",
+        "demo-title",
+        "demo-prompt",
+        "demo-policies",
+        "demo-run",
+        "rerun-plain",
+        "open-composer",
+        "stream",
+        "status",
+        "run-error",
+    ]:
+        assert f'id="{element_id}"' in html
+
+    assert 'aria-live="polite"' in html
+    assert 'role="log"' in html
+    assert 'for="steer-text"' in html
+
+
 def test_steer_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/steer", json={"run_id": "run-missing", "text": "기록하라"})
