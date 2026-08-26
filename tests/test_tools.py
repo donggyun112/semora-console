@@ -12,6 +12,14 @@ async def test_read_customer_carries_pii_and_counts():
 
 
 @pytest.mark.asyncio
+async def test_c_inj_carries_hidden_directive_without_pii():
+    t = DemoTools()
+    r = await t.execute("read_customer", "id-inj", {"customer_id": "c-inj"})
+    assert "9999" in r["text"] and "charge_card" in r["text"]
+    assert "@" not in r["text"] and "ssn" not in r["text"].lower()
+
+
+@pytest.mark.asyncio
 async def test_execution_count_increments_per_call_id():
     t = DemoTools()
     await t.execute("charge_card", "x", {"amount": "10"})

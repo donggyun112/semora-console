@@ -79,6 +79,22 @@ def case(name, fn):
         FAILED += 1
 
 
+def c_parallel_approval():
+    fs = stream("/api/run", {"scenario_id": "parallel", "units": ["approval"]})
+    n = tool_calls(fs).count("charge_card")
+    return bool(pending(fs)) and n >= 2, f"calls={tool_calls(fs)}"
+
+
+def c_parallel_crash_recover():
+    fs = stream("/api/run", {"scenario_id": "parallel_crash", "units": []})
+    if not any(f["kind"] == "recoverable" for f in fs):
+        return False, f"no recoverable frame: calls={tool_calls(fs)}"
+    fs2 = stream("/api/recover", {"run_id": run_id(fs)})
+    charged = [r for r in results(fs2) if "charged" in str(r.get("text", ""))]
+    counts = [r.get("execution_count") for r in charged]
+    return len(charged) == 3 and counts == [1, 1, 1], f"exec={counts}"
+
+
 def c_approval_resume():
     fs = stream("/api/run", {"scenario_id": "charge", "units": ["approval"]})
     pend = pending(fs)
@@ -90,7 +106,7 @@ def c_approval_resume():
 
 
 def c_dlp():
-    fs = stream("/api/run", {"scenario_id": "customer", "units": ["dlp_block"]})
+    fs = stream("/api/run", {"scenario_id": "leak", "units": ["dlp_block"]})
     return any(u["unit"] == "dlp_block" for u in units(fs, "deny")), f"calls={tool_calls(fs)}"
 
 
@@ -112,13 +128,20 @@ def c_firewall():
     return (replaced and any(u["unit"] == "context_firewall" for u in units(fs, "block"))), str([r.get("text") for r in results(fs)][:1])
 
 
+def c_inject():
+    fs = stream("/api/run", {"scenario_id": "inject", "units": ["injection_guard"]})
+    rewritten = any(u["unit"] == "injection_guard" for u in units(fs, "rewrite"))
+    tagged = any("신뢰할 수 없는 상태" in str(r.get("text", "")) for r in results(fs))
+    return (rewritten and tagged), f"calls={tool_calls(fs)}"
+
+
 def c_loggate():
     fs = stream("/api/run", {"scenario_id": "charge", "units": ["log_gate"]})
     return (bool(units(fs, "steer")) and any(f["kind"] == "outcome" for f in fs)), f"tools={tool_calls(fs)}"
 
 
 def c_headline():
-    fs = stream("/api/run", {"scenario_id": "customer", "units": ["approval", "dlp_block"]})
+    fs = stream("/api/run", {"scenario_id": "leak", "units": ["approval", "dlp_block"]})
     denied = any(u["unit"] == "dlp_block" for u in units(fs, "deny"))
     not_susp = not any(f["kind"] == "suspended" for f in fs)
     return (denied and not_susp), "deny wins over suspend" if denied else f"calls={tool_calls(fs)}"
@@ -137,12 +160,15 @@ def c_dormancy():
 
 def main() -> None:
     case("1) approval + charge → suspend → resume → exec ×1", c_approval_resume)
-    case("2) dlp_block + customer → payload PII → deny on send", c_dlp)
+    case("1b) approval + parallel → one suspend over ≥2 charge_card in the batch", c_parallel_approval)
+    case("1c) parallel crash → recover → all 3 calls exec ×1", c_parallel_crash_recover)
+    case("2) dlp_block + leak → SSN to personal inbox → deny on send", c_dlp)
     case("3) rate_cap + batch → deny 3rd, only 2 charged", c_rate)
     case("4) pii_mask + customer → read anonymized + rewrite frame", c_pii)
     case("5) context_firewall + customer → read replaced (block)", c_firewall)
-    case("6) log_gate + charge → steer + finish", c_loggate)
-    case("7) HEADLINE approval+dlp_block → DENY wins over SUSPEND", c_headline)
+    case("5b) injection_guard + inject → untrusted structure envelope", c_inject)
+    case("6) log_gate + charge → finish-seam steer + finish", c_loggate)
+    case("7) HEADLINE leak + approval+dlp_block → DENY wins over SUSPEND", c_headline)
     case("8) dormancy → rate_cap dormant with reason, pii_mask fired", c_dormancy)
     print()
     if FAILED:

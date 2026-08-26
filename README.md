@@ -15,6 +15,8 @@ before_model → Steering   before_finish → FinishPolicy   on_suspend → Susp
 nexora's control plane is seven hooks, and every one composes variadically. A **unit** here
 declares the hook it attaches to and one function with that hook's signature;
 `compose_controls` groups the selected units by hook and assembles a single `ControlPlane`.
+Each run stores one `Agent` definition that owns its model, tools, and system prompt;
+`AgentRuntime` owns attempt state, controls, durable suspension, and recovery.
 
 ## The units
 
@@ -22,10 +24,11 @@ declares the hook it attaches to and one function with that hook's signature;
 | --- | --- | --- | --- |
 | `approval` | `pre_tool_use` → Permissions | **Suspend** | Halts the whole loop for human sign-off on any effect (write/charge/send); a pure read passes. |
 | `dlp_block` | `pre_tool_use` → Permissions | **Deny** | Scans an outbound send's **payload**; denies it if the body carries confidential data (email/SSN). Real egress DLP — it inspects what is leaving, not merely that a read happened. |
-| `rate_cap` | `pre_tool_use` → Permissions | **Deny** | Denies effect calls past a per-run budget. |
+| `rate_cap` | `pre_tool_use` → Permissions | **Deny** | Denies irreversible effects (charge/send) past a per-run budget. Session logging is not counted, so `log_gate` can still record after the cap. |
 | `pii_mask` | `after_tool_call` → Journal | **Rewrite** | Anonymizes email/SSN in a tool result in place — the model keeps a usable, masked record; raw PII never crosses to the model provider. |
 | `context_firewall` | `after_tool_call` → Journal | **Block** | The strong form: replaces a confidential result **wholesale** with a policy notice, so the raw data never enters the model's context at all. |
-| `log_gate` | `before_finish` → FinishPolicy | **Steer** | Vetoes completion until the outcome is logged, then lets the run finish. |
+| `injection_guard` | `after_tool_call` → Journal | **Rewrite** | Decomposes any tool result and forwards `{신뢰할 수 없는 상태, source, structure}` — does not inspect or drop content. |
+| `log_gate` | `before_finish` → FinishPolicy | **Steer** | Vetoes completion until the outcome is logged. The `Proceed` is not a second channel — it enqueues on the run's one steer queue. |
 
 **The two ingest units are a matched pair** (`examples/04_control_plane.py`'s lesson —
 policy lands at a seam and reaches a destination): both run at `after_tool_call` and
@@ -42,11 +45,29 @@ protection is at ingest (`pii_mask` / `context_firewall`), which rewrites the re
 from leaving via an **outbound message channel** to another recipient — honest egress DLP,
 not data-hiding.
 
-**The headline beat** — customer scenario, `approval` + `dlp_block` on, no ingest unit:
-the agent reads raw PII and puts it in the email body; `send_email` is judged by both
-`approval` (Suspend) and `dlp_block` (Deny) — and **Deny wins** (Permissions precedence).
-Turn on `context_firewall` instead and the read is blanked, so nothing confidential is ever
-in the body to leak. One screen, the composer's live precedence rule.
+**Home scenarios.** `customer` is the PII ingest beat (`pii_mask` / `context_firewall`).
+`inject` is the untrusted-structure beat (`injection_guard`): whatever the tool returned
+is forwarded as structured untrusted data. `leak` is the egress beat (`dlp_block`).
+**One agent, one steering queue.** Operator `user_steer` and policy `Proceed` (e.g. `log_gate`)
+both land on `drain_inputs`. There is no per-scenario steer unit and no second channel.
+While a run is in flight the operator can enqueue a nudge (`POST /api/steer`); it admits
+on the next model call. Stop is a button. Steer is a queue.
+
+`charge` is a single irreversible effect (`approval`). `parallel` is the same gate on a
+**batch**: three `charge_card` calls in one model turn, one suspend for the bundle.
+`parallel_crash` kills the worker after the first committed call; recovery replays that
+result and executes the remaining calls so all three effects finish exactly once.
+`batch` is sequential so `rate_cap` can trip on the third.
+
+**Stop is a button, not a unit.** While a run is in flight the operator can hit **중단**;
+that trips Nexora's `aborted()` hook (`POST /api/abort`) and cancels the attempt, on any
+scenario and any assembled plane. There is no locked "stop" task.
+
+**The headline beat** — leak scenario, `approval` + `dlp_block` on, no ingest unit:
+the agent reads raw SSN and tries to send it to a personal inbox; `send_email` is judged
+by both `approval` (Suspend) and `dlp_block` (Deny) — and **Deny wins** (Permissions
+precedence). Turn on `context_firewall` instead and the read is blanked, so nothing
+confidential is ever in the body to leak. One screen, the composer's live precedence rule.
 
 ## Run locally
 
@@ -76,16 +97,18 @@ POST /api/run (approval + charge) → suspended
 POST /api/resume by run_id → the charge runs once (exec ×1), across the restart
 ```
 
-An in-UI "kill the server" button is deliberately omitted — a fake crash would undercut the
-coherence; the real durability proof is this deploy path (and `tests/`).
+**청구 중 장애** and **동시 청구 중 장애** arm a worker crash after the first tool
+`finish_effect`. In the parallel case the committed result is replayed and the absent
+siblings execute during **복원**: `POST /api/recover` → `AgentRuntime.recover`
+(`retry_running=False`). Process restart still needs `DATABASE_URL`.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
-| `units.py` | The substance — 5 units + `compose_controls()` + self-check. |
-| `scenarios.py` | 4 locked scenarios (no free-text → no LLM-proxy abuse). |
+| `units.py` | The substance — units + `compose_controls()` + self-check. |
+| `scenarios.py` | 9 locked scenarios (no free-text → no LLM-proxy abuse). |
 | `dormancy.py` | Why a toggled-on unit stayed dormant in a scenario. |
 | `tools.py` | Demo effects (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
 | `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set. |
-| `server.py` | FastAPI: `/api/run`, `/api/resume`, `/api/units`, static UI, policy summary. |
+| `server.py` | FastAPI: `/api/run`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |

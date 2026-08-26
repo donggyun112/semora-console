@@ -1,7 +1,8 @@
-import { reduceFrames } from "./reducer.mjs";
+import { reduceFrames } from "./reducer.mjs?v=15";
+import { createNdjsonReader } from "./ndjson.mjs?v=15";
 
 const $ = (id) => document.getElementById(id);
-const state = { scenario: null, units: new Set(), frames: [], runId: null, busy: false, rowEls: [] };
+const state = { scenario: null, units: new Set(), frames: [], runId: null, busy: false, rowEls: [], abortCtl: null, steers: [] };
 const meta = {}; // name -> {point, composer, verdict}
 
 const POINT_ORDER = ["on_inputs", "before_model", "pre_tool_use", "after_tool_call", "before_finish", "on_suspend"];
@@ -17,6 +18,9 @@ async function boot() {
   renderUnits(unitsBody.units);
   updateCompose();
   $("run").addEventListener("click", run);
+  $("abort").addEventListener("click", abortRun);
+  $("steer-form").addEventListener("submit", enqueueSteer);
+  $("recover").addEventListener("click", recover);
   $("approve").addEventListener("click", () => resume(true));
   $("deny").addEventListener("click", () => resume(false));
 }
@@ -34,8 +38,9 @@ function renderScenarios(scenarios) {
   scenarios.forEach((s) => {
     const el = mk("button", "scenario" + (s.risk.includes("없음") ? " baseline" : ""));
     const prompt = mk("div", "s-prompt");
-    prompt.append(mk("span", "s-lock", "LOCKED PROMPT"), document.createTextNode(s.prompt));
-    el.append(mk("div", "s-title", s.title), mk("div", "s-does", s.does), mk("div", "s-risk", "위험 · " + s.risk), prompt);
+    prompt.append(mk("span", "s-lock", "고정된 지시"), document.createTextNode(s.prompt));
+    const risk = s.risk.includes("없음") ? s.risk : "위험 · " + s.risk;
+    el.append(mk("div", "s-title", s.title), mk("div", "s-does", s.does), mk("div", "s-risk", risk), prompt);
     el.addEventListener("click", () => {
       state.scenario = s.id;
       [...box.children].forEach((c) => c.classList.toggle("active", c === el));
@@ -83,7 +88,7 @@ function renderUnits(units) {
 function updateCompose() {
   const selected = [...state.units];
   if (!selected.length) {
-    $("compose-summary").textContent = "ControlPlane()  ·  bare loop — no controls";
+    $("compose-summary").textContent = "ControlPlane()  ·  컨트롤 없음";
     return;
   }
   const slots = [];
@@ -96,6 +101,8 @@ function updateCompose() {
 
 function syncRun() {
   $("run").disabled = !state.scenario || state.busy;
+  $("abort").classList.toggle("hidden", !state.busy);
+  $("steer-box").classList.toggle("hidden", !state.busy);
 }
 
 function setStatus(kind, label) {
@@ -129,12 +136,30 @@ function renderRows() {
       state.rowEls[i] = el;
       stream.appendChild(el);
       el.scrollIntoView({ block: "nearest" });
-    } else if ((rows[i].cls === "text" || rows[i].cls === "thinking") && existing.textContent !== rows[i].text) {
-      // the only row that grows in place is the open text/thinking bubble
-      existing.textContent = rows[i].text;
-      existing.scrollIntoView({ block: "nearest" });
+    } else if (rows[i].cls === "text" || rows[i].cls === "thinking") {
+      if (existing.textContent !== rows[i].text) {
+        existing.textContent = rows[i].text;
+        existing.scrollIntoView({ block: "nearest" });
+      }
+    } else if (existing.className !== "row " + rows[i].cls) {
+      const el = rowNode(rows[i]);
+      existing.replaceWith(el);
+      state.rowEls[i] = el;
     }
   }
+  while (state.rowEls.length > rows.length) {
+    state.rowEls.pop().remove();
+  }
+}
+
+function renderSteerQueue() {
+  const box = $("steer-queue");
+  box.replaceChildren();
+  state.steers.forEach((s) => {
+    const el = mk("div", "steer-item " + (s.phase || ""));
+    el.append(mk("span", "src", s.source), mk("span", "phase", s.phase === "queued" ? "대기" : "반영"), mk("span", "body", s.text));
+    box.appendChild(el);
+  });
 }
 
 function renderPolicyStrip(units) {
@@ -151,15 +176,29 @@ function renderPolicyStrip(units) {
 }
 
 function handleFrame(f) {
+  if (f.kind === "steer") {
+    const src = f.source === "user_steer" ? "운영자" : f.source === "control" ? "정책" : f.source;
+    const i = state.steers.findIndex((s) => s.phase === "queued" && s.text === f.text);
+    if (i >= 0) state.steers[i] = { source: src, text: f.text, phase: f.phase || "admitted" };
+    else state.steers.push({ source: src, text: f.text, phase: f.phase || "admitted" });
+    renderSteerQueue();
+    if (f.phase === "queued") return;
+  }
   state.frames.push(f);
   if (f.kind === "meta") state.runId = f.run_id;
   else if (f.kind === "suspended") {
     setStatus("suspended", "일시중지");
     $("approval").dataset.pending = f.pending_id;
-    $("approval-meta").textContent = `run ${state.runId} · pending ${f.pending_id} — resumable by id`;
+    $("approval-meta").textContent = `${state.runId} · ${f.pending_id}`;
     $("approval").classList.remove("hidden");
   } else if (f.kind === "outcome") {
-    if ($("status").textContent === "실행 중") setStatus("done", "완료");
+    const reason = f.outcome && f.outcome.stop_reason;
+    if (reason === "aborted") setStatus("aborted", "중단됨");
+    else if ($("status").textContent === "실행 중") setStatus("done", "완료");
+  } else if (f.kind === "recoverable") {
+    setStatus("error", "장애");
+    $("recovery-meta").textContent = f.step ? `스텝 ${f.step}` : "";
+    $("recovery").classList.remove("hidden");
   } else if (f.kind === "error") setStatus("error", "오류");
   else if (f.kind === "policy_summary") renderPolicyStrip(f.units);
   renderRows();
@@ -167,46 +206,100 @@ function handleFrame(f) {
 
 async function stream(url, body) {
   state.busy = true;
+  $("abort").disabled = false;
   syncRun();
   setStatus("running", "실행 중");
-  let res;
+  state.abortCtl = new AbortController();
   try {
-    res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: state.abortCtl.signal,
+    });
+    const reader = res.body.getReader();
+    const ndjson = createNdjsonReader(handleFrame);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) ndjson.push(value);
+      if (done) break;
+    }
+    ndjson.end();
   } catch (err) {
-    handleFrame({ kind: "error", message: String(err) });
-    state.busy = false; syncRun(); return;
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (line) { try { handleFrame(JSON.parse(line)); } catch (_) {} }
+    if (err && err.name === "AbortError") {
+      if ($("status").textContent === "실행 중") {
+        handleFrame({ kind: "outcome", outcome: { stop_reason: "aborted" } });
+        setStatus("aborted", "중단됨");
+      }
+    } else {
+      handleFrame({ kind: "error", message: String(err) });
     }
   }
+  state.abortCtl = null;
   state.busy = false;
+  $("abort").disabled = false;
   if ($("status").textContent === "실행 중") setStatus("done", "완료");
   syncRun();
+}
+
+async function enqueueSteer(ev) {
+  ev.preventDefault();
+  const text = $("steer-text").value.trim();
+  if (!text || !state.busy || !state.runId) return;
+  $("steer-text").value = "";
+  handleFrame({ kind: "steer", source: "user_steer", text, phase: "queued" });
+  try {
+    const res = await fetch("/api/steer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ run_id: state.runId, text }),
+    });
+    if (!res.ok) handleFrame({ kind: "error", message: "지시를 넣지 못했습니다 · " + res.status });
+  } catch (err) {
+    handleFrame({ kind: "error", message: String(err) });
+  }
+}
+
+async function abortRun() {
+  if (!state.busy) return;
+  $("abort").disabled = true;
+  if (state.runId) {
+    try {
+      await fetch("/api/abort", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ run_id: state.runId }),
+      });
+    } catch (_) {
+      state.abortCtl?.abort();
+    }
+  } else {
+    state.abortCtl?.abort();
+  }
 }
 
 async function run() {
   state.frames = [];
   state.rowEls = [];
+  state.runId = null;
+  state.steers = [];
+  renderSteerQueue();
   $("stream").replaceChildren();
   $("policy-strip").classList.add("hidden");
   $("approval").classList.add("hidden");
+  $("recovery").classList.add("hidden");
   await stream("/api/run", { scenario_id: state.scenario, units: [...state.units] });
+}
+
+async function recover() {
+  $("recovery").classList.add("hidden");
+  handleFrame({ kind: "unit", unit: "recover", verdict: "steer", message: "복원" });
+  await stream("/api/recover", { run_id: state.runId });
 }
 
 async function resume(approved) {
   $("approval").classList.add("hidden");
-  handleFrame({ kind: "unit", unit: "operator", verdict: approved ? "allow" : "deny", message: approved ? "사람이 승인함 — 재개" : "사람이 거부함" });
+  handleFrame({ kind: "unit", unit: "operator", verdict: approved ? "allow" : "deny", message: approved ? "승인" : "거부" });
   await stream("/api/resume", { run_id: state.runId, pending_id: $("approval").dataset.pending, approved });
 }
 

@@ -9,24 +9,28 @@ from __future__ import annotations
 # (unit, scenario_id) -> reason. A per-unit default covers the rest.
 _REASONS: dict[str, dict[str, str]] = {
     "dlp_block": {
-        "customer": "외부 발송 본문에 기밀이 없음 (앞선 유닛이 가렸거나 모델이 안 담음)",
-        "_": "이 시나리오엔 외부 발송 호출이 없음",
+        "customer": "메일 본문에 기밀이 없습니다 (앞에서 가렸거나 모델이 안 담음)",
+        "leak": "메일 본문에 기밀이 없습니다 (앞에서 가렸거나 모델이 안 담음)",
+        "_": "이 작업에는 외부 메일이 없습니다",
     },
     "rate_cap": {
-        "_": "부작용이 예산(2) 이내",
+        "_": "청구·발송이 2회를 넘지 않음",
     },
     "pii_mask": {
-        "_": "툴 결과에 PII가 없음",
+        "_": "도구 결과에 개인정보가 없음",
     },
     "context_firewall": {
-        "_": "툴 결과에 기밀이 없음",
+        "_": "도구 결과에 기밀이 없음",
+    },
+    "injection_guard": {
+        "_": "구조화할 도구 결과가 없음",
     },
     "log_gate": {
-        "note": "에이전트가 이미 remember_note로 기록함 — veto 불필요",
-        "_": "이미 기록됨 — veto 불필요",
+        "note": "이미 remember_note",
+        "_": "이미 기록됨",
     },
     "approval": {
-        "_": "이 시나리오엔 부작용 호출이 없음",
+        "_": "이 작업에는 기록·청구·발송이 없습니다",
     },
 }
 
@@ -34,4 +38,4 @@ _REASONS: dict[str, dict[str, str]] = {
 def dormant_reason(unit: str, scenario_id: str) -> str:
     """Return the reason a unit stayed dormant, specific-first then per-unit default."""
     table = _REASONS.get(unit, {})
-    return table.get(scenario_id) or table.get("_") or "이 시나리오에서 트리거 없음"
+    return table.get(scenario_id) or table.get("_") or "이 작업에서는 동작하지 않음"
