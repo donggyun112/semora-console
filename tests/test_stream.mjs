@@ -209,4 +209,185 @@ releaseContinuation();
 assert.equal(await firstContinuation, true);
 assert.equal(starts, 1);
 
+function classList() {
+  const values = new Set();
+  const adds = new Map();
+  return {
+    add(name) {
+      values.add(name);
+      adds.set(name, (adds.get(name) || 0) + 1);
+    },
+    remove(name) {
+      values.delete(name);
+    },
+    toggle(name, enabled) {
+      if (enabled) values.add(name);
+      else values.delete(name);
+    },
+    countAdds(name) {
+      return adds.get(name) || 0;
+    },
+  };
+}
+
+function fakeElement() {
+  const listeners = new Map();
+  return {
+    attributes: {},
+    classList: classList(),
+    className: "",
+    dataset: {},
+    disabled: false,
+    listeners,
+    textContent: "",
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    append() {},
+    appendChild(child) {
+      return child;
+    },
+    focus() {},
+    querySelector() {
+      return null;
+    },
+    replaceChildren() {},
+    scrollIntoView() {},
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+  };
+}
+
+function fakeStreamResponse(runId) {
+  let sendMeta = Boolean(runId);
+  let finish;
+  const done = new Promise((resolve) => {
+    finish = resolve;
+  });
+  return {
+    finish,
+    response: {
+      ok: true,
+      body: {
+        getReader() {
+          return {
+            async read() {
+              if (sendMeta) {
+                sendMeta = false;
+                return {
+                  value: new TextEncoder().encode(
+                    JSON.stringify({ kind: "meta", run_id: runId }) + "\n",
+                  ),
+                  done: false,
+                };
+              }
+              await done;
+              return { done: true };
+            },
+          };
+        },
+      },
+    },
+  };
+}
+
+async function tick() {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+// Exercise the app module's actual recovery and approval entry points. The
+// fake DOM is deliberately minimal: it supplies only the browser operations
+// used while booting and continuing a run.
+const elements = Object.fromEntries(
+  [
+    "model", "scenarios", "units", "compose-summary", "demo-index",
+    "demo-title", "demo-does", "demo-risk", "demo-prompt", "demo-policies",
+    "workspace", "demo-panel", "composer-panel", "open-composer",
+    "rerun-plain", "abort", "steer-form", "recover", "approve", "deny",
+    "steer-box", "status", "stream", "steer-queue", "policy-strip",
+    "approval", "recovery", "run-error", "boot-error-message", "boot-error",
+    "boot-retry", "mode-demo", "mode-composer", "demo-run", "run",
+  ].map((id) => [id, fakeElement()]),
+);
+globalThis.document = {
+  createElement: fakeElement,
+  createTextNode(text) {
+    return { textContent: text };
+  },
+  getElementById(id) {
+    return elements[id];
+  },
+  querySelectorAll(selector) {
+    if (selector === "[data-run]") return [elements["demo-run"], elements.run];
+    if (selector === "[data-mode]") return [elements["mode-demo"], elements["mode-composer"]];
+    return [];
+  },
+};
+
+const requests = [];
+const continuations = [];
+globalThis.fetch = async (url, init) => {
+  if (url === "/api/scenarios") {
+    return {
+      ok: true,
+      json: async () => [{
+        id: "leak",
+        title: "Leak",
+        does: "Tests controls",
+        risk: "위험",
+        prompt: "send it",
+      }],
+    };
+  }
+  if (url === "/api/units") {
+    return {
+      ok: true,
+      json: async () => ({
+        model: "test-model",
+        units: [
+          { name: "approval", point: "pre_tool_use", composer: "gate", verdict: "SUSPEND", desc: "" },
+          { name: "dlp_block", point: "pre_tool_use", composer: "gate", verdict: "DENY", desc: "" },
+        ],
+      }),
+    };
+  }
+  const continuation = fakeStreamResponse(url === "/api/recover" ? "run-live" : null);
+  requests.push({ url, body: JSON.parse(init.body) });
+  continuations.push(continuation);
+  return continuation.response;
+};
+
+await import(new URL(`../src/console/static/app.js?integration=${Date.now()}`, import.meta.url));
+for (let i = 0; i < 4; i++) await tick();
+assert.equal(requests.length, 0, "boot does not auto-run");
+
+const recoveryRun = elements.recover.listeners.get("click")();
+for (let i = 0; i < 3; i++) await tick();
+assert.equal(requests.filter((request) => request.url === "/api/recover").length, 1);
+assert.equal(elements.recovery.classList.countAdds("hidden"), 1);
+elements.recover.listeners.get("click")();
+await tick();
+assert.equal(requests.filter((request) => request.url === "/api/recover").length, 1);
+assert.equal(elements.recovery.classList.countAdds("hidden"), 1);
+continuations[0].finish();
+await recoveryRun;
+
+elements.approval.dataset.pending = "pending-9";
+const resumeRun = elements.approve.listeners.get("click")();
+for (let i = 0; i < 3; i++) await tick();
+assert.equal(requests.filter((request) => request.url === "/api/resume").length, 1);
+assert.deepEqual(requests[1].body, {
+  run_id: "run-live",
+  pending_id: "pending-9",
+  approved: true,
+});
+assert.equal(elements.approval.classList.countAdds("hidden"), 1);
+elements.approve.listeners.get("click")();
+await tick();
+assert.equal(requests.filter((request) => request.url === "/api/resume").length, 1);
+assert.equal(elements.approval.classList.countAdds("hidden"), 1);
+continuations[1].finish();
+await resumeRun;
+
 console.log("stream reducer ok");
