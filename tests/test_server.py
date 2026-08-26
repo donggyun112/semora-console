@@ -275,6 +275,17 @@ def test_static_shell_has_demo_composer_and_accessible_run_regions():
     assert 'for="steer-text"' in html
 
 
+def test_stylesheet_has_responsive_focus_and_reduced_motion_contracts():
+    with TestClient(app) as c:
+        css = c.get("/styles.css").text
+
+    assert ".workspace.mode-demo" in css
+    assert ".composer-panel" in css
+    assert ":focus-visible" in css
+    assert "@media (max-width: 820px)" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+
+
 def test_steer_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/steer", json={"run_id": "run-missing", "text": "기록하라"})
