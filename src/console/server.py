@@ -58,6 +58,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Nexora Control Plane Console", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_store(request, call_next):
+    """Never cache the console — this port is reused across demos, and a stale cached
+    index.html/app.js from a different app would render a broken page."""
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 class RunRequest(BaseModel):
     """A scenario id plus the control-plane units to compose."""
 
