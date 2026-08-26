@@ -1,0 +1,33 @@
+[project]
+name = "nexora-console"
+version = "0.1.0"
+description = "Operator console showcasing nexora's composable control plane — compose policy units across lifecycle hooks and watch the same task transform."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "nexora[openrouter]",
+  "nexora-store-pg",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "python-dotenv>=1",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/console"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+# nexora and siblings live in the neighbouring workspace, resolved by path.
+[tool.uv.sources]
+nexora = { path = "../nexora-python/packages/nexora", editable = true }
+nexora-llm = { path = "../nexora-python/packages/nexora-llm", editable = true }
+nexora-store = { path = "../nexora-python/packages/nexora-store", editable = true }
+nexora-store-pg = { path = "../nexora-python/packages/nexora-store-pg", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8"]
