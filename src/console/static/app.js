@@ -5,6 +5,7 @@ import {
   rerunWithoutPolicies,
   switchMode as nextMode,
 } from "./view-state.mjs?v=17";
+import { startWhenIdle } from "./run-guard.mjs?v=17";
 
 const $ = (id) => document.getElementById(id);
 const initial = createViewState();
@@ -439,15 +440,19 @@ async function runWithoutPolicies() {
 }
 
 async function recover() {
-  $("recovery").classList.add("hidden");
-  handleFrame({ kind: "unit", unit: "recover", verdict: "steer", message: "복원" });
-  await stream("/api/recover", { run_id: state.runId });
+  await startWhenIdle(state, async () => {
+    $("recovery").classList.add("hidden");
+    handleFrame({ kind: "unit", unit: "recover", verdict: "steer", message: "복원" });
+    await stream("/api/recover", { run_id: state.runId });
+  });
 }
 
 async function resume(approved) {
-  $("approval").classList.add("hidden");
-  handleFrame({ kind: "unit", unit: "operator", verdict: approved ? "allow" : "deny", message: approved ? "승인" : "거부" });
-  await stream("/api/resume", { run_id: state.runId, pending_id: $("approval").dataset.pending, approved });
+  await startWhenIdle(state, async () => {
+    $("approval").classList.add("hidden");
+    handleFrame({ kind: "unit", unit: "operator", verdict: approved ? "allow" : "deny", message: approved ? "승인" : "거부" });
+    await stream("/api/resume", { run_id: state.runId, pending_id: $("approval").dataset.pending, approved });
+  });
 }
 
 boot();

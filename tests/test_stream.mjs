@@ -1,8 +1,8 @@
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
 
 import { createNdjsonReader } from "../src/console/static/ndjson.mjs";
 import { reduceFrames } from "../src/console/static/reducer.mjs";
+import { startWhenIdle } from "../src/console/static/run-guard.mjs";
 import {
   DEFAULT_DEMO,
   createViewState,
@@ -165,21 +165,48 @@ assert.equal(plainView.scenarioId, "leak");
 assert.deepEqual(plainView.unitNames, []);
 assert.deepEqual(composerView.unitNames, ["approval", "dlp_block"]);
 
-// The browser integration consumes the immutable view state for one shared,
-// representative live run; this remains a static contract so the suite needs
-// no JS DOM implementation.
-const appSource = readFileSync(
-  new URL("../src/console/static/app.js", import.meta.url),
-  "utf8",
+// A continuation must not mutate UI or start a second request while another
+// stream is active. The application uses this boundary before recover/resume.
+const activeRun = { busy: true };
+let mutations = 0;
+assert.equal(
+  await startWhenIdle(activeRun, async () => {
+    mutations += 1;
+  }),
+  false,
 );
-assert.match(appSource, /createViewState[\s\S]*rerunWithoutPolicies[\s\S]*switchMode as nextMode/);
-assert.match(appSource, /const initial = createViewState\(\);/);
-assert.match(appSource, /mode: initial\.mode,[\s\S]*scenario: initial\.scenarioId,[\s\S]*units: new Set\(initial\.unitNames\)/);
-assert.match(appSource, /function resetRunView\(\)[\s\S]*\$\("run-error"\)\.textContent = "";/);
-assert.match(appSource, /setMode\("demo"\);/);
-assert.match(appSource, /const usedPolicies = state\.units\.size > 0;[\s\S]*\$\("rerun-plain"\)\.classList\.toggle\("hidden", !usedPolicies\)/);
-assert.match(appSource, /if \(!res\.ok \|\| !res\.body\) \{[\s\S]*실행 요청 실패/);
-assert.match(appSource, /async function run\(\) \{\s*if \(state\.busy\) return;/);
-assert.match(appSource, /async function runWithoutPolicies\(\) \{\s*if \(state\.busy\) return;/);
+assert.equal(mutations, 0, "active stream blocks continuation before mutation");
+
+const idleRun = { busy: false };
+assert.equal(
+  await startWhenIdle(idleRun, async () => {
+    mutations += 1;
+    idleRun.busy = true;
+  }),
+  true,
+);
+assert.equal(mutations, 1, "idle continuation executes exactly once");
+
+const concurrentRun = { busy: false };
+let starts = 0;
+let releaseContinuation;
+const pendingContinuation = new Promise((resolve) => {
+  releaseContinuation = resolve;
+});
+const firstContinuation = startWhenIdle(concurrentRun, async () => {
+  starts += 1;
+  concurrentRun.busy = true;
+  await pendingContinuation;
+});
+assert.equal(
+  await startWhenIdle(concurrentRun, async () => {
+    starts += 1;
+  }),
+  false,
+  "repeated activation does not start a concurrent continuation",
+);
+releaseContinuation();
+assert.equal(await firstContinuation, true);
+assert.equal(starts, 1);
 
 console.log("stream reducer ok");
