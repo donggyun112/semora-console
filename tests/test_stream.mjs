@@ -2,6 +2,12 @@ import assert from "node:assert";
 
 import { createNdjsonReader } from "../src/console/static/ndjson.mjs";
 import { reduceFrames } from "../src/console/static/reducer.mjs";
+import {
+  DEFAULT_DEMO,
+  createViewState,
+  rerunWithoutPolicies,
+  switchMode,
+} from "../src/console/static/view-state.mjs";
 
 // Contiguous text deltas collapse into one bubble; structural frames close it.
 const rows = reduceFrames([
@@ -131,5 +137,31 @@ const crashed = reduceFrames([
 ]);
 assert.equal(crashed[0].cls, "unit v-halt");
 assert.equal(crashed[0].tag, "crash");
+
+const initialView = createViewState();
+assert.deepEqual(initialView, {
+  mode: "demo",
+  scenarioId: "leak",
+  unitNames: ["approval", "dlp_block"],
+});
+assert.notStrictEqual(
+  createViewState().unitNames,
+  createViewState().unitNames,
+  "each UI state owns its unit array",
+);
+assert.deepEqual(DEFAULT_DEMO, {
+  scenarioId: "leak",
+  unitNames: ["approval", "dlp_block"],
+});
+
+const composerView = switchMode(initialView, "composer");
+assert.equal(composerView.mode, "composer");
+assert.equal(initialView.mode, "demo", "mode transition does not mutate the input");
+assert.throws(() => switchMode(initialView, "unknown"), /unknown mode/);
+
+const plainView = rerunWithoutPolicies(composerView);
+assert.equal(plainView.scenarioId, "leak");
+assert.deepEqual(plainView.unitNames, []);
+assert.deepEqual(composerView.unitNames, ["approval", "dlp_block"]);
 
 console.log("stream reducer ok");
