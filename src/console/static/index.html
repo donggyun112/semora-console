@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nexora · Control Plane Console</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css"
+    />
+    <link rel="stylesheet" href="/styles.css?v=1" />
+  </head>
+  <body>
+    <div class="grid-noise"></div>
+
+    <header>
+      <div class="brand">
+        <span class="mark">N</span>
+        <b>NEXORA</b><span class="sep">/</span><span class="sub">CONTROL PLANE CONSOLE</span>
+      </div>
+      <div class="tagline">Seven hooks. Every hook composes the same way.</div>
+      <div class="model" id="model">—</div>
+    </header>
+
+    <main>
+      <!-- ── 01 THE TASK ─────────────────────────────────────────── -->
+      <section class="col col-task">
+        <h2 class="label"><span class="idx">01</span> 작업 <small>THE TASK</small></h2>
+        <p class="hint">같은 작업. 정책만 바꾼다.</p>
+        <div id="scenarios" class="scenarios"></div>
+      </section>
+
+      <!-- ── 02 THE CONTROL PLANE ───────────────────────────────── -->
+      <section class="col col-policy">
+        <h2 class="label"><span class="idx">02</span> 컨트롤 플레인 <small>THE POLICY</small></h2>
+        <p class="hint">유닛을 훅에 조립한다. 켜고 끄고 섞어라.</p>
+        <div id="units" class="units"></div>
+        <div class="compose">
+          <div class="compose-label">assembled</div>
+          <code id="compose-summary">ControlPlane()  ·  bare loop — no controls</code>
+        </div>
+        <button id="run" class="run" disabled>실행 <span>↗</span></button>
+      </section>
+
+      <!-- ── 03 THE RUN ─────────────────────────────────────────── -->
+      <section class="col col-run">
+        <div class="run-head">
+          <h2 class="label"><span class="idx">03</span> 실행 <small>THE RUN</small></h2>
+          <span id="status" class="status idle">대기</span>
+        </div>
+        <div id="policy-strip" class="policy-strip hidden"></div>
+        <div id="stream" class="stream">
+          <div class="empty">
+            <div class="empty-mark">⌁</div>
+            <p>작업을 고르고, 정책을 조립하고, 실행하라.<br />같은 작업이 정책 따라 다르게 흘러가는 걸 보라.</p>
+          </div>
+        </div>
+        <div id="approval" class="approval hidden">
+          <div class="approval-body">
+            <span class="pulse"></span>
+            <div>
+              <strong>실행 일시중지 — 승인 대기</strong>
+              <small><code>approval</code> 유닛이 <code>pre_tool_use</code>에서 루프째 정지 · <span id="approval-meta">continuation persisted — resumable by id</span></small>
+            </div>
+          </div>
+          <div class="approval-actions">
+            <button id="deny" class="btn ghost">거부</button>
+            <button id="approve" class="btn primary">승인하고 재개</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js?v=1"></script>
+  </body>
+</html>
