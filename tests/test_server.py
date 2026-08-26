@@ -1,5 +1,6 @@
 import asyncio
 import json
+from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
@@ -229,6 +230,21 @@ def test_static_shell_has_demo_composer_and_accessible_run_regions():
     with TestClient(app) as c:
         html = c.get("/").text
 
+    class ShellParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.ids: list[str] = []
+            self.elements: dict[str, dict[str, str | None]] = {}
+
+        def handle_starttag(self, _tag, attrs):
+            attributes = dict(attrs)
+            if element_id := attributes.get("id"):
+                self.ids.append(element_id)
+                self.elements[element_id] = attributes
+
+    shell = ShellParser()
+    shell.feed(html)
+
     for element_id in [
         "mode-demo",
         "mode-composer",
@@ -244,10 +260,18 @@ def test_static_shell_has_demo_composer_and_accessible_run_regions():
         "status",
         "run-error",
     ]:
-        assert f'id="{element_id}"' in html
+        assert element_id in shell.elements
 
-    assert 'aria-live="polite"' in html
-    assert 'role="log"' in html
+    assert len(shell.ids) == len(set(shell.ids))
+    assert "hidden" in shell.elements["demo-panel"]["class"].split()
+    assert "hidden" not in shell.elements["composer-panel"].get("class", "").split()
+    assert "mode-composer" in shell.elements["workspace"]["class"].split()
+    assert shell.elements["mode-demo"]["aria-pressed"] == "false"
+    assert shell.elements["mode-composer"]["aria-pressed"] == "true"
+    assert shell.elements["status"]["aria-live"] == "polite"
+    assert shell.elements["stream"]["role"] == "log"
+    assert shell.elements["stream"]["aria-live"] == "polite"
+    assert shell.elements["steer-text"]
     assert 'for="steer-text"' in html
 
 
