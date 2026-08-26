@@ -91,19 +91,23 @@ async def approval(ctx: Ctx, call: ToolCall) -> ToolDecision:
 
 
 async def dlp_block(ctx: Ctx, call: ToolCall) -> ToolDecision:
-    """pre_tool_use — deny an outbound send once customer data was read this run.
+    """pre_tool_use — deny an outbound send whose PAYLOAD carries confidential data.
 
-    The OUTBOUND boundary (data leaving the org), honestly a block — not masking. What the
-    model already saw is a separate concern owned by pii_mask (the ingest boundary).
+    Real egress DLP: it scans what is actually leaving (the message body/subject), not
+    merely whether a read happened. A clean summary passes; a body carrying an email or
+    SSN is refused. The recipient address is not scanned.
     """
-    if call["name"] in OUTBOUND and _requested(ctx, "read_customer"):
-        return Deny(
-            {
-                "type": "error",
-                "message": "dlp_block: blocked — customer data was read; outbound send refused",
-                "unit": "dlp_block",
-            }
-        )
+    if call["name"] in OUTBOUND:
+        args = call.get("args") or {}
+        payload = " ".join(str(args.get(k, "")) for k in ("body", "subject"))
+        if _SSN.search(payload) or _EMAIL.search(payload):
+            return Deny(
+                {
+                    "type": "error",
+                    "message": "dlp_block: blocked — outbound message carries confidential data (email/SSN)",
+                    "unit": "dlp_block",
+                }
+            )
     return Continue()
 
 
@@ -140,6 +144,25 @@ async def pii_mask(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
         if masked != result["text"]:
             result["text"] = masked
             result["redacted_by"] = "pii_mask"
+            result["control_note"] = "결과의 이메일·SSN을 익명화 (모델·제공자엔 원본 미유입)"
+
+
+POLICY_NOTICE = "[context_firewall: 기밀 데이터 차단 — 모델 컨텍스트 진입 거부]"
+
+
+async def context_firewall(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
+    """after_tool_call — replace a confidential result WHOLESALE before the model sees it.
+
+    The strong form of the ingest boundary: if a tool result carries confidential data,
+    swap the entire text for a policy notice, so the raw data never enters the model's
+    context and therefore never crosses the network to the model provider. (pii_mask is the
+    milder form — anonymize and let the model keep working.)
+    """
+    if isinstance(result, dict) and isinstance(result.get("text"), str):
+        if _SSN.search(result["text"]) or _EMAIL.search(result["text"]):
+            result["text"] = POLICY_NOTICE
+            result["redacted_by"] = "context_firewall"
+            result["control_note"] = "툴 결과에 기밀 발견 → 전체를 정책문구로 교체 (모델·제공자 미도달)"
 
 
 async def log_gate(ctx: Ctx, reason: Any) -> Any:
@@ -172,11 +195,13 @@ UNITS: list[Unit] = [
     Unit("approval", "pre_tool_use", "Permissions", "Suspend", "승인 게이트",
          "부작용 호출(기록·청구·발송)을 사람 승인까지 루프째 정지 — 조회는 통과", approval),
     Unit("dlp_block", "pre_tool_use", "Permissions", "Deny", "유출 차단(DLP)",
-         "고객 데이터를 읽은 뒤 외부 발송을 거부 — 유출 경계의 차단(마스킹 아님)", dlp_block),
+         "외부 발송 payload(본문)에 기밀(이메일·SSN)이 있으면 거부 — 나가는 내용을 스캔하는 egress DLP", dlp_block),
     Unit("rate_cap", "pre_tool_use", "Permissions", "Deny", "부작용 예산",
          f"런당 부작용 {BUDGET}회 초과 시 거부", rate_cap),
-    Unit("pii_mask", "after_tool_call", "Journal", "Rewrite", "PII 마스킹",
-         "툴 결과의 이메일·SSN을 제자리 마스킹 — 모델·UI엔 원본 미유입(원장 사본은 별개 seam)", pii_mask),
+    Unit("pii_mask", "after_tool_call", "Journal", "Rewrite", "PII 익명화",
+         "툴 결과의 이메일·SSN을 제자리 익명화 — 모델·제공자엔 원본 미유입, 모델은 익명 데이터로 작동", pii_mask),
+    Unit("context_firewall", "after_tool_call", "Journal", "Block", "컨텍스트 방화벽",
+         "기밀이 담긴 툴 결과를 통째로 정책문구로 교체 — 모델(제공자 네트워크)에 아예 안 닿게(강한 형태)", context_firewall),
     Unit("log_gate", "before_finish", "FinishPolicy", "Steer", "기록 강제",
          "remember_note로 결과를 남기기 전엔 종료를 거부하고 한 라운드 더", log_gate),
 ]
@@ -219,9 +244,11 @@ if __name__ == "__main__":
         return Ctx(turn=0, calls_made=[{"name": n, "input": {}} for n in names])
 
     async def _demo() -> None:
-        # Permissions precedence: approval + dlp_block on an outbound send after a read → Deny wins.
+        # dlp_block scans the outbound payload: a body carrying confidential data → Deny;
+        # a clean summary → Continue. With approval also on, Deny wins over Suspend.
         plane = compose_controls(["approval", "dlp_block"])
-        assert isinstance(await plane.pre_tool_use(_ctx("read_customer", "send_email"), _call("send_email")), Deny)
+        assert isinstance(await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="ssn 123-45-6789")), Deny)
+        assert isinstance(await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="all good")), Suspend)
         # a bare effect (no read) → Suspend
         assert isinstance(await plane.pre_tool_use(_ctx("charge_card"), _call("charge_card")), Suspend)
         # a pure read → Continue
@@ -229,12 +256,22 @@ if __name__ == "__main__":
         # approval holds a note write too (every effect)
         assert isinstance(await compose_controls(["approval"]).pre_tool_use(_ctx("remember_note"), _call("remember_note")), Suspend)
 
-        # Journal: pii_mask rewrites a result in place
+        # Journal: pii_mask anonymizes a result in place (email/ssn masked, text kept)
         plane = compose_controls(["pii_mask"])
-        res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789"}
+        res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
         await plane.after_tool_call(_ctx(), _call("read_customer"), res)
         assert "jane@doe.io" not in res["text"] and "123-45-6789" not in res["text"], res
-        assert res["redacted_by"] == "pii_mask"
+        assert "plan=pro" in res["text"] and res["redacted_by"] == "pii_mask"
+
+        # Journal: context_firewall replaces a confidential result wholesale with the notice
+        plane = compose_controls(["context_firewall"])
+        res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
+        await plane.after_tool_call(_ctx(), _call("read_customer"), res)
+        assert res["text"] == POLICY_NOTICE and res["redacted_by"] == "context_firewall"
+        # ...but leaves a non-confidential result untouched
+        clean = {"type": "text", "text": "remembered deploy"}
+        await plane.after_tool_call(_ctx(), _call("remember_note"), clean)
+        assert clean["text"] == "remembered deploy"
 
         # FinishPolicy: log_gate vetoes until the record exists, then allows
         plane = compose_controls(["log_gate"])

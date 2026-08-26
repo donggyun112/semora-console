@@ -14,10 +14,28 @@ def _ctx(*names):
 
 
 @pytest.mark.asyncio
+async def test_dlp_block_scans_outbound_payload():
+    plane = compose_controls(["dlp_block"])
+    dirty = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="ssn 123-45-6789"))
+    clean = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="all good"))
+    assert isinstance(dirty, Deny) and isinstance(clean, Continue)
+
+
+@pytest.mark.asyncio
 async def test_permissions_deny_wins_over_suspend():
+    # a confidential outbound send: approval says Suspend, dlp_block says Deny → Deny wins
     plane = compose_controls(["approval", "dlp_block"])
-    d = await plane.pre_tool_use(_ctx("read_customer", "send_email"), _call("send_email"))
+    d = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="email jane@doe.io"))
     assert isinstance(d, Deny)
+
+
+@pytest.mark.asyncio
+async def test_context_firewall_replaces_confidential_result():
+    plane = compose_controls(["context_firewall"])
+    res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789"}
+    await plane.after_tool_call(_ctx(), _call("read_customer"), res)
+    assert res["redacted_by"] == "context_firewall"
+    assert "jane@doe.io" not in res["text"] and "123-45-6789" not in res["text"]
 
 
 @pytest.mark.asyncio

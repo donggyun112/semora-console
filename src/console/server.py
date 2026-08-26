@@ -116,17 +116,18 @@ async def _stream(run_id: str, attempt: Any, *, selected: list[str], scenario_id
                 }
             )
             return
-        # An executed result a unit rewrote in place: announce the masking.
+        # An executed result an after_tool_call unit rewrote in place: announce it.
         if event.get("type") == "tool_result":
             res = event.get("result") or {}
             if isinstance(res, dict) and res.get("redacted_by"):
-                mark(res["redacted_by"])
+                unit = res["redacted_by"]
+                mark(unit)
                 await queue.put(
                     {
                         "kind": "unit",
-                        "unit": res["redacted_by"],
-                        "verdict": "rewrite",
-                        "message": "결과의 PII를 마스킹함 (모델·UI엔 원본 미유입)",
+                        "unit": unit,
+                        "verdict": "block" if unit == "context_firewall" else "rewrite",
+                        "message": res.get("control_note") or "툴 결과를 재작성함",
                     }
                 )
         if event.get("type") in {"text", "thinking", "tool_call", "tool_result"}:

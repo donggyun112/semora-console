@@ -129,6 +129,7 @@ main {
 .v-rewrite { color: var(--rewrite); }
 .v-steer { color: var(--steer); }
 .v-allow { color: var(--allow); }
+.v-block { color: var(--deny); }
 
 .compose { margin: 16px 0 14px; }
 .compose-label { font-family: var(--mono); font-size: 9px; color: var(--dim); letter-spacing: 0.16em; text-transform: uppercase; margin-bottom: 5px; }
@@ -198,6 +199,8 @@ main {
 .row.unit.v-rewrite .tag { background: var(--rewrite); color: #04140f; }
 .row.unit.v-steer { background: #160f22; border-color: #372350; color: #decdff; }
 .row.unit.v-steer .tag { background: var(--steer); color: #0f0617; }
+.row.unit.v-block { background: #1e1013; border-color: #4a2127; color: #ffb3b8; }
+.row.unit.v-block .tag { background: var(--deny); color: #190709; }
 
 /* ── suspend card ───────────────────────────────────────────────────── */
 .approval {

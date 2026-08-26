@@ -21,21 +21,32 @@ declares the hook it attaches to and one function with that hook's signature;
 | Unit | Hook → Composer | Verdict | What it does |
 | --- | --- | --- | --- |
 | `approval` | `pre_tool_use` → Permissions | **Suspend** | Halts the whole loop for human sign-off on any effect (write/charge/send); a pure read passes. |
-| `dlp_block` | `pre_tool_use` → Permissions | **Deny** | Refuses an outbound send once customer data was read — the **outbound** boundary (a block). |
+| `dlp_block` | `pre_tool_use` → Permissions | **Deny** | Scans an outbound send's **payload**; denies it if the body carries confidential data (email/SSN). Real egress DLP — it inspects what is leaving, not merely that a read happened. |
 | `rate_cap` | `pre_tool_use` → Permissions | **Deny** | Denies effect calls past a per-run budget. |
-| `pii_mask` | `after_tool_call` → Journal | **Rewrite** | Masks email/SSN in a tool result in place — the **ingest** boundary; raw PII never reaches the model or the UI. |
+| `pii_mask` | `after_tool_call` → Journal | **Rewrite** | Anonymizes email/SSN in a tool result in place — the model keeps a usable, masked record; raw PII never crosses to the model provider. |
+| `context_firewall` | `after_tool_call` → Journal | **Block** | The strong form: replaces a confidential result **wholesale** with a policy notice, so the raw data never enters the model's context at all. |
 | `log_gate` | `before_finish` → FinishPolicy | **Steer** | Vetoes completion until the outcome is logged, then lets the run finish. |
 
-**Two boundaries, never conflated** (the lesson of `examples/04_control_plane.py`):
-`pii_mask` guards **ingest** (what enters the model); `dlp_block` guards **egress** (what
-leaves the org). `pii_mask` runs at `after_tool_call`, so it reaches the model's view and
-the UI stream but **not** the durable ledger copy — masking that is a different seam (a
-Tools wrapper), out of this unit's scope by design. We don't claim otherwise.
+**The two ingest units are a matched pair** (`examples/04_control_plane.py`'s lesson —
+policy lands at a seam and reaches a destination): both run at `after_tool_call` and
+guard **ingest** — what enters the model. `pii_mask` anonymizes and lets the model keep
+working; `context_firewall` blanks the result entirely. Both reach the model's view and
+the UI stream but **not** the durable ledger copy (recorded inside the durable step, before
+any hook) — masking that is a Tools-wrapper seam, out of scope by design.
 
-**The headline beat** — customer scenario with `approval` + `dlp_block` + `pii_mask` on:
-`read_customer` is masked by `pii_mask`; then `send_email` is judged by both `approval`
-(Suspend) and `dlp_block` (Deny) — and **Deny wins** (Permissions precedence). One screen,
-the composer's live precedence rule.
+**Why ingest is the real data boundary.** With a third-party model, a tool result egresses
+to the provider's network the moment it enters the *next* model request. So blocking a
+later `send_email` does **not** protect that data — it already left. The only real
+protection is at ingest (`pii_mask` / `context_firewall`), which rewrites the result
+*before* the model sees it. `dlp_block` is a distinct control: it stops confidential data
+from leaving via an **outbound message channel** to another recipient — honest egress DLP,
+not data-hiding.
+
+**The headline beat** — customer scenario, `approval` + `dlp_block` on, no ingest unit:
+the agent reads raw PII and puts it in the email body; `send_email` is judged by both
+`approval` (Suspend) and `dlp_block` (Deny) — and **Deny wins** (Permissions precedence).
+Turn on `context_firewall` instead and the read is blanked, so nothing confidential is ever
+in the body to leak. One screen, the composer's live precedence rule.
 
 ## Run locally
 

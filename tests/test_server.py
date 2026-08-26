@@ -17,6 +17,6 @@ def test_units_endpoint_shape():
         body = r.json()
         assert body["model"].startswith("deepseek/")
         names = {u["name"] for u in body["units"]}
-        assert names == {"approval", "dlp_block", "rate_cap", "pii_mask", "log_gate"}
+        assert names == {"approval", "dlp_block", "rate_cap", "pii_mask", "context_firewall", "log_gate"}
         points = {u["point"] for u in body["units"]}
         assert {"pre_tool_use", "after_tool_call", "before_finish"} <= points
