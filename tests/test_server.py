@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 import pytest
 from fastapi.testclient import TestClient
 from nexora import Agent
+from nexora.contracts.events import EventType
 
 from console import server
 from console.server import _crash_point, _is_aborted, _project_event, _stream, app
@@ -403,3 +404,55 @@ async def test_new_run_opens_and_closes_a_session():
         assert any(t == "session_end" and p.get("reason") == "completed" for t, p in life)
     finally:
         server._sessions.pop(run_id, None)
+
+
+@pytest.mark.asyncio
+async def test_denial_projects_policy_before_permission_lifecycle_once():
+    """The deciding policy precedes its permission consequence and is not duplicated."""
+    run_id = "run-denial-order"
+    server._sessions[run_id] = {"units": ["dlp_block"], "aborted": False, "scenario_id": "leak"}
+
+    async def attempt(runtime, on_event):
+        call = {
+            "type": "tool_call",
+            "id": "call-send",
+            "name": "send_email",
+            "input": {"body": "ssn"},
+        }
+        await on_event(call)
+        await runtime.events.publish(
+            EventType.PRE_TOOL_USE,
+            turn=1,
+            call_id="call-send",
+            name="send_email",
+        )
+        denied = {
+            "type": "error",
+            "unit": "dlp_block",
+            "message": "거부",
+        }
+        await runtime.events.publish(
+            EventType.PERMISSION_DENIED,
+            turn=1,
+            call_id="call-send",
+            name="send_email",
+            reason=denied,
+            source="pre_tool_use",
+        )
+        await on_event({**call, "type": "tool_result", "executed": False, "result": denied})
+        return {"stop_reason": "completed"}
+
+    frames: list[dict] = []
+    try:
+        async for chunk in _stream(run_id, attempt, selected=["dlp_block"], scenario_id="leak"):
+            frames.append(json.loads(chunk))
+    finally:
+        server._sessions.pop(run_id, None)
+
+    visible = [
+        (frame["kind"], frame.get("unit") or frame.get("type"))
+        for frame in frames
+        if frame["kind"] in {"unit", "lifecycle"}
+        and (frame.get("unit") == "dlp_block" or frame.get("type") == "permission_denied")
+    ]
+    assert visible == [("unit", "dlp_block"), ("lifecycle", "permission_denied")]

@@ -163,7 +163,11 @@ def _frame(kind: str, **payload: Any) -> str:
     return json.dumps({"kind": kind, **payload}, ensure_ascii=False, default=str) + "\n"
 
 
-def _project_event(event: dict[str, Any], pending: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _project_event(
+    event: dict[str, Any],
+    pending: dict[str, dict[str, Any]],
+    projected_denials: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Pass tool requests through immediately. A later deny upgrades the same call to blocked.
 
     Holding the request until the result made the UI look frozen after ``inject user_prompt``:
@@ -177,7 +181,8 @@ def _project_event(event: dict[str, Any], pending: dict[str, dict[str, Any]]) ->
         shown["pending"] = True
         return [{"kind": "agent", "event": shown}]
     if kind == "tool_result":
-        call = pending.pop(str(event.get("id") or ""), None)
+        call_id = str(event.get("id") or "")
+        call = pending.pop(call_id, None)
         res = event.get("result") or {}
         if event.get("executed") is False:
             unit = res.get("unit", "control") if isinstance(res, dict) else "control"
@@ -193,6 +198,9 @@ def _project_event(event: dict[str, Any], pending: dict[str, dict[str, Any]]) ->
             blocked = dict(call or {"name": event.get("name"), "input": {}})
             blocked["type"] = "tool_call"
             blocked["blocked"] = True
+            if projected_denials is not None and call_id in projected_denials:
+                projected_denials.discard(call_id)
+                return [{"kind": "agent", "event": blocked}]
             return [unit_frame, {"kind": "agent", "event": blocked}]
         frames: list[dict[str, Any]] = []
         if isinstance(res, dict) and res.get("redacted_by"):
@@ -219,12 +227,13 @@ async def _stream(
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
     fired: dict[str, int] = {}
     pending_calls: dict[str, dict[str, Any]] = {}
+    projected_denials: set[str] = set()
 
     def mark(unit: str) -> None:
         fired[unit] = fired.get(unit, 0) + 1
 
     async def on_event(event: dict[str, Any]) -> None:
-        for frame in _project_event(event, pending_calls):
+        for frame in _project_event(event, pending_calls, projected_denials):
             if frame.get("kind") == "unit":
                 mark(str(frame.get("unit") or "control"))
             await queue.put(frame)
@@ -243,6 +252,21 @@ async def _stream(
                     )
                 await queue.put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
+                )
+        if str(event_type).endswith("permission_denied"):
+            reason = payload.get("reason") or {}
+            call_id = str(payload.get("call_id") or "")
+            if call_id and call_id not in projected_denials:
+                unit = reason.get("unit", "control") if isinstance(reason, dict) else "control"
+                message = (
+                    reason.get("message") or reason.get("reason") or "denied"
+                    if isinstance(reason, dict)
+                    else "denied"
+                )
+                projected_denials.add(call_id)
+                mark(str(unit))
+                await queue.put(
+                    {"kind": "unit", "unit": unit, "verdict": "deny", "message": message}
                 )
         await queue.put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
 
