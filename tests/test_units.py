@@ -1,7 +1,8 @@
 import json
 
 import pytest
-from nexora import Continue, Deny, Halt, Proceed, Suspend
+from langchain_core.messages import HumanMessage
+from nexora import Continue, Deny, Halt, PendingInput, Proceed, Suspend
 from nexora.controls import Ctx
 
 from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval
@@ -14,6 +15,18 @@ def _call(name, **args):
 
 def _ctx(*names):
     return Ctx(turn=0, calls_made=[{"name": n, "input": {}} for n in names])
+
+
+@pytest.mark.asyncio
+async def test_input_mask_rewrites_content_but_preserves_origin():
+    plane = compose_controls(["input_mask"])
+    incoming = [PendingInput("user_prompt", HumanMessage("ssn is 123-45"), "p2")]
+
+    screened = await plane.on_inputs(Ctx(turn=0), incoming)
+
+    assert screened[0].message.content == "ssn is ***"
+    assert screened[0].origin_id == "p2"
+    assert screened[0].kind == "user_prompt"
 
 
 @pytest.mark.asyncio

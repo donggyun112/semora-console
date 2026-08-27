@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage
-from nexora import Continue, ControlPlane, Deny, Halt, Proceed, Suspend
+from nexora import Continue, ControlPlane, Deny, Halt, PendingInput, Proceed, Suspend
 from nexora.contracts import ToolCall
 from nexora.controls import (
     Ctx,
@@ -48,6 +48,7 @@ BUDGET = 2
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_INPUT_SSN = re.compile(r"\b\d{3}-\d{2}(?:-\d{4})?\b")
 
 
 def _requested(ctx: Ctx, name: str) -> bool:
@@ -79,6 +80,17 @@ def _irreversible_rank(ctx: Ctx, call: ToolCall) -> int:
 
 
 # ── unit implementations, one per control point ────────────────────────────────
+
+async def input_mask(_ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput]:
+    """on_inputs — mask SSN-shaped text while preserving the ledger origin identity."""
+    return [
+        PendingInput(
+            item.kind,
+            HumanMessage(_INPUT_SSN.sub("***", str(item.message.content))),
+            item.origin_id,
+        )
+        for item in inputs
+    ]
 
 async def approval(ctx: Ctx, call: ToolCall) -> ToolDecision:
     """pre_tool_use — suspend any effect-producing call for human sign-off; a read passes.
@@ -248,6 +260,8 @@ class Unit:
 
 
 UNITS: list[Unit] = [
+    Unit("input_mask", "on_inputs", "Ingress", "Rewrite", "입력 개인정보 가리기",
+         "모델에 넣기 전 주민번호를 가림.", input_mask),
     Unit("approval", "pre_tool_use", "Permissions", "Suspend", "승인 게이트",
          "기록·청구·발송은 승인 대기. 조회는 통과.", approval),
     Unit("dlp_block", "pre_tool_use", "Permissions", "Deny", "유출 차단",

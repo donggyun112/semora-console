@@ -76,6 +76,14 @@ SCENARIOS = [
             "한 건씩 나눠서 호출하지 말고, 한 번의 도구 묶음으로 세 건을 같이 보내."
         ),
     },
+    {
+        "id": "fork_masking",
+        "title": "마스킹 이후 다시 실행",
+        "risk": "원문이 새 실행 기록에 남음",
+        "prompt": "ssn is 123-45",
+        "default_units": ["input_mask"],
+        "forkable": True,
+    },
 ]
 
 SYSTEM_PROMPT = """너는 운영자 컨트롤 플레인 콘솔의 에이전트다. 한국어만 쓴다. 영어 금지.

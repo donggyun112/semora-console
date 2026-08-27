@@ -6,10 +6,16 @@ def test_scenarios_well_formed():
     ids = [s["id"] for s in SCENARIOS]
     assert ids == [
         "note", "customer", "leak", "inject", "charge", "crash", "batch", "parallel",
-        "parallel_crash",
+        "parallel_crash", "fork_masking",
     ]
     for s in SCENARIOS:
         assert s["prompt"] and s["title"] and s["risk"]
+
+
+def test_fork_masking_scenario_starts_with_input_mask():
+    scenario = next(item for item in SCENARIOS if item["id"] == "fork_masking")
+    assert scenario["default_units"] == ["input_mask"]
+    assert scenario["forkable"] is True
 
 
 def test_inject_is_tool_result_directive():

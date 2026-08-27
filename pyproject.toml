@@ -5,7 +5,7 @@ description = "Operator console showcasing nexora's composable control plane —
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "nexora[openrouter]",
+  "nexora[fork,openrouter]",
   "nexora-store-pg",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
@@ -27,6 +27,7 @@ asyncio_mode = "auto"
 [tool.uv.sources]
 nexora = { path = "../nexora-python/packages/nexora", editable = true }
 nexora-llm = { path = "../nexora-python/packages/nexora-llm", editable = true }
+nexora-fork = { path = "../nexora-python/packages/nexora-fork", editable = true }
 nexora-store = { path = "../nexora-python/packages/nexora-store", editable = true }
 nexora-store-pg = { path = "../nexora-python/packages/nexora-store-pg", editable = true }
 
