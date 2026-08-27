@@ -79,8 +79,8 @@ export function reduceFrames(frames) {
       if (priorIndex !== undefined) {
         const prior = rows[priorIndex];
         prior.label = event.name ?? prior.label;
-        prior.summary = event.blocked ? "실행 전 거부" : prior.summary;
-        prior.verdict = event.blocked ? "DENY" : prior.verdict;
+        prior.summary = event.blocked ? "실행 안 됨" : prior.summary;
+        prior.verdict = event.blocked ? null : prior.verdict;
         prior.tone = event.blocked ? "deny" : prior.tone;
         prior.details = {
           ...prior.details,
@@ -88,9 +88,9 @@ export function reduceFrames(frames) {
           raw: [...(prior.details.raw ?? []), frame],
         };
       } else {
-        const row = append("tool", event.name ?? "tool", event.blocked ? "실행 전 거부" : "도구 호출 요청", {
+        const row = append("tool", event.name ?? "tool", event.blocked ? "실행 안 됨" : "도구 호출 요청", {
           id: stableId,
-          verdict: event.blocked ? "DENY" : null,
+          verdict: null,
           tone: event.blocked ? "deny" : "neutral",
           details: { input: event.input ?? null, raw: [frame] },
         });

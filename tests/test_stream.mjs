@@ -287,8 +287,8 @@ assert.deepEqual(
     {
       kind: "tool",
       label: "send_email",
-      summary: "실행 전 거부",
-      verdict: "DENY",
+      summary: "실행 안 됨",
+      verdict: null,
     },
     {
       kind: "policy",
@@ -299,6 +299,11 @@ assert.deepEqual(
   ],
 );
 assert.deepEqual(trace[1].details.input, blockedInput);
+assert.equal(
+  trace.filter((row) => row.verdict === "DENY").length,
+  1,
+  "one policy denial produces one DENY badge",
+);
 assert.ok(
   trace.every((row) => !row.summary.includes("leaker@personal-mail.com")),
   "raw tool arguments stay out of trace summaries",
