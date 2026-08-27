@@ -99,14 +99,15 @@ export function beginFork(state) {
   ) {
     throw new Error("no forkable source run");
   }
+  const unitNames = state.active.scenarioId === "fork_masking"
+    ? state.draft.unitNames.filter((name) => name !== "input_mask")
+    : [...state.draft.unitNames];
   return {
     ...state,
     phase: "streaming",
     active: {
       ...state.active,
-      unitNames: state.active.scenarioId === "fork_masking"
-        ? state.active.unitNames.filter((name) => name !== "input_mask")
-        : [...state.active.unitNames],
+      unitNames,
     },
     runId: null,
     stopReason: null,

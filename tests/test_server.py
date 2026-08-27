@@ -114,7 +114,15 @@ def test_run_uses_agent_definition(monkeypatch):
         assert captured["kwargs"]["conversation_id"] == server._sessions[run_id][
             "conversation_id"
         ]
+        assert server._sessions[run_id]["default_fork_origin"] == command.prompt_id
+        assert server._sessions[run_id]["origin_runs"] == {command.prompt_id: run_id}
         assert all("event_id" in frame for frame in frames)
+        assert all(frame["run_id"] == run_id for frame in frames)
+        assert any(
+            frame.get("type") == "branch_snapshot"
+            and frame.get("payload", {}).get("branch") == "source"
+            for frame in frames
+        )
     finally:
         server._sessions.pop(run_id, None)
 
@@ -261,7 +269,7 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
         "launch-policies", "run", "policy-open", "launch-policy-open",
         "run-shell", "run-title", "run-status", "run-policies", "abort",
-        "chat-panel", "chat-thread",
+        "chat-panel", "chat-thread", "version-switcher",
         "event-panel", "event-count",
         "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
@@ -295,6 +303,9 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
         ".chat-message",
         ".branch-group",
         ".trace-fork",
+        ".version-switcher",
+        ".version-option",
+        ".trace-fork-origin",
         ".event-panel",
         ".trace-row",
         ".details-drawer",
@@ -347,12 +358,13 @@ def test_recover_unknown_run_is_404():
 def test_fork_rejects_unknown_source():
     with TestClient(app) as client:
         response = client.post(
-            "/api/fork", json={"run_id": "missing", "event_id": "event-missing"}
+            "/api/fork",
+            json={"run_id": "missing", "event_id": "event-missing", "units": []},
         )
     assert response.status_code == 404
 
 
-def test_fork_rejects_inflight_and_repeated_source():
+def test_fork_rejects_inflight_source():
     agent = object()
     cases = {
         "run-not-terminal": {
@@ -361,13 +373,6 @@ def test_fork_rejects_inflight_and_repeated_source():
             "scenario_id": "fork_masking",
             "terminal": False,
         },
-        "run-already-forked": {
-            "units": ["input_mask"],
-            "agent": agent,
-            "scenario_id": "fork_masking",
-            "terminal": True,
-            "forked_to": "run-existing-fork",
-        },
     }
     server._sessions.update(cases)
     try:
@@ -375,7 +380,8 @@ def test_fork_rejects_inflight_and_repeated_source():
             for run_id in cases:
                 before = set(server._sessions)
                 response = client.post(
-                    "/api/fork", json={"run_id": run_id, "event_id": "event-selected"}
+                    "/api/fork",
+                    json={"run_id": run_id, "event_id": "event-selected", "units": []},
                 )
                 assert response.status_code == 409
                 assert set(server._sessions) == before
@@ -397,6 +403,7 @@ def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
         "source_run_id": source_id,
         "origin_runs": {"p2": source_id},
         "default_fork_origin": "p2",
+        "event_ids": {"event-selected"},
     }
 
     async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
@@ -413,17 +420,27 @@ def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
         with TestClient(app) as client:
             response = client.post(
                 "/api/fork",
-                json={"run_id": source_id, "event_id": "event-selected", "edge": "before"},
+                json={
+                    "run_id": source_id,
+                    "event_id": "event-selected",
+                    "edge": "before",
+                    "units": ["log_gate"],
+                },
             )
         assert response.status_code == 200
         frames = [json.loads(line) for line in response.text.splitlines()]
-        fork_id = next(frame["run_id"] for frame in frames if frame["kind"] == "meta")
+        meta = next(frame for frame in frames if frame["kind"] == "meta")
+        fork_id = meta["run_id"]
+        assert meta["fork_parent"] == source_id
+        assert meta["fork_event_id"] == "event-selected"
+        assert meta["fork_edge"] == "before"
         assert captured["event_id"] == "event-selected"
         assert captured["edge"] == "before"
         assert captured["run_id"] == fork_id
         assert captured["conversation_id"] == "conv-fork"
         assert server._sessions[source_id]["forked_to"] == fork_id
         assert server._sessions[fork_id]["units"] == ["log_gate"]
+        assert server._sessions[fork_id]["origin_runs"]["p2"] == fork_id
         assert server._sessions[fork_id]["terminal"] is True
     finally:
         fork_id = server._sessions.get(source_id, {}).get("forked_to")
@@ -432,9 +449,10 @@ def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
             server._sessions.pop(fork_id, None)
 
 
-def test_fork_preserves_controls_for_other_scenarios(monkeypatch):
-    """Only the masking incident drops input_mask; ordinary runs keep their controls."""
+def test_fork_uses_modified_controls_for_other_scenarios(monkeypatch):
+    """The fork executes the controls selected after the source run completed."""
     source_id = "run-generic-source"
+    composed: list[list[str]] = []
     server._sessions[source_id] = {
         "units": ["approval", "dlp_block"],
         "agent": object(),
@@ -445,6 +463,58 @@ def test_fork_preserves_controls_for_other_scenarios(monkeypatch):
         "source_run_id": source_id,
         "origin_runs": {"p1": source_id},
         "default_fork_origin": "p1",
+        "event_ids": {"event-selected"},
+    }
+
+    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
+        return {"stop_reason": "completed"}
+
+    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
+        coordinate = ForkCoordinate(source_id, "p1", None)
+        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
+
+    def fake_compose_controls(names):
+        composed.append(list(names))
+        return object()
+
+    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
+    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
+    monkeypatch.setattr(server, "compose_controls", fake_compose_controls)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={
+                    "run_id": source_id,
+                    "event_id": "event-selected",
+                    "units": ["rate_cap"],
+                },
+            )
+        assert response.status_code == 200
+        fork_id = server._sessions[source_id]["forked_to"]
+        assert server._sessions[fork_id]["units"] == ["rate_cap"]
+        assert composed == [["rate_cap"]]
+    finally:
+        fork_id = server._sessions.get(source_id, {}).get("forked_to")
+        server._sessions.pop(source_id, None)
+        if fork_id:
+            server._sessions.pop(fork_id, None)
+
+
+def test_completed_version_can_create_another_fork(monkeypatch):
+    """A prior child version must not lock a completed version against later forks."""
+    source_id = "run-version-source"
+    server._sessions[source_id] = {
+        "units": [],
+        "agent": object(),
+        "scenario_id": "note",
+        "terminal": True,
+        "conversation_id": "conv-version",
+        "origin_id": "p1",
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "forked_to": "run-older-child",
+        "event_ids": {"event-next"},
     }
 
     async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
@@ -460,16 +530,40 @@ def test_fork_preserves_controls_for_other_scenarios(monkeypatch):
         with TestClient(app) as client:
             response = client.post(
                 "/api/fork",
-                json={"run_id": source_id, "event_id": "event-selected"},
+                json={"run_id": source_id, "event_id": "event-next", "units": []},
             )
         assert response.status_code == 200
-        fork_id = server._sessions[source_id]["forked_to"]
-        assert server._sessions[fork_id]["units"] == ["approval", "dlp_block"]
+        assert len(server._sessions[source_id]["fork_children"]) == 1
     finally:
-        fork_id = server._sessions.get(source_id, {}).get("forked_to")
+        child_ids = server._sessions.get(source_id, {}).get("fork_children", [])
         server._sessions.pop(source_id, None)
-        if fork_id:
-            server._sessions.pop(fork_id, None)
+        for child_id in child_ids:
+            server._sessions.pop(child_id, None)
+
+
+def test_fork_rejects_an_event_owned_by_another_version():
+    source_id = "run-owner-source"
+    server._sessions[source_id] = {
+        "units": [],
+        "agent": object(),
+        "scenario_id": "note",
+        "terminal": True,
+        "conversation_id": "conv-owner",
+        "origin_id": "p1",
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "event_ids": {"event-owned"},
+    }
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={"run_id": source_id, "event_id": "event-sibling", "units": []},
+            )
+        assert response.status_code == 404
+        assert "does not belong" in response.json()["detail"]
+    finally:
+        server._sessions.pop(source_id, None)
 
 
 def test_abort_unknown_run_is_404():

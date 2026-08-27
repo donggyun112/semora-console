@@ -8,6 +8,7 @@ Endpoints:
   POST /api/abort       operator stop: trip aborted() and cancel the in-flight attempt
   POST /api/steer       enqueue one user_steer on the run's single input queue
   POST /api/recover     continue after a simulated worker crash (commit or pre-park)
+  POST /api/fork        create a new execution version from one event checkpoint
 
 Scenario prompts are locked. Mid-run steer is the operator's one queue (capped), not a new agent.
 """
@@ -28,14 +29,19 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
 from nexora import Agent, AgentRuntime
-from nexora.dispatch import Answer, Prompt, Recover
 from nexora.contracts.types import PendingInput
+from nexora.dispatch import Answer, Prompt, Recover
 from nexora.orchestrator import AgentSuspended
 from nexora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
 from .dormancy import dormant_reason
-from .fork_demo import EventCheckpointProjector, run_from_event, run_masked_source
+from .fork_demo import (
+    EventCheckpointProjector,
+    branch_snapshot,
+    run_from_event,
+    run_masked_source,
+)
 from .provider import DEFAULT_MODEL, openrouter_model
 from .scenarios import SCENARIOS, SYSTEM_PROMPT
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
@@ -121,11 +127,12 @@ class RecoverRequest(BaseModel):
 
 
 class ForkRequest(BaseModel):
-    """Re-run one completed masking incident from a selected observation edge."""
+    """Create one execution version from a completed run's observation edge."""
 
     run_id: str
     event_id: str
     edge: Literal["before", "after"] = "before"
+    units: list[str]
 
 
 def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
@@ -168,6 +175,19 @@ async def _capped(turn: int, _text: str, _calls: list[dict[str, Any]]) -> bool:
 def _frame(kind: str, **payload: Any) -> str:
     """Encode one newline-delimited stream frame."""
     return json.dumps({"kind": kind, **payload}, ensure_ascii=False, default=str) + "\n"
+
+
+async def _publish_source_branch(
+    runtime: AgentRuntime,
+    *,
+    run_id: str,
+    conversation_id: str,
+    origin_id: str,
+) -> None:
+    """Expose the completed source lineage so the UI can compare it with a fork."""
+    history = await runtime.committed_history(run_id, conversation_id)
+    snapshot = branch_snapshot("source", run_id, conversation_id, origin_id, history)
+    await runtime.events.publish("branch_snapshot", **snapshot)
 
 
 def _project_event(
@@ -248,8 +268,12 @@ async def _stream(
         )
 
     async def put(frame: dict[str, Any]) -> None:
+        frame = {**frame, "run_id": run_id}
         if projector is not None:
             frame = await projector.stamp(frame)
+        event_id = frame.get("event_id")
+        if session is not None and event_id:
+            session.setdefault("event_ids", set()).add(str(event_id))
         await queue.put(frame)
 
     def mark(unit: str) -> None:
@@ -304,7 +328,16 @@ async def _stream(
 
     async def run_attempt() -> None:
         runtime = AgentRuntime(store=_store, transcript=_transcript, emit=publish)
-        await put({"kind": "meta", "run_id": run_id})
+        meta = {"kind": "meta", "run_id": run_id, "units": selected}
+        if session is not None and session.get("fork_parent"):
+            meta.update(
+                {
+                    "fork_parent": session["fork_parent"],
+                    "fork_event_id": session["fork_event_id"],
+                    "fork_edge": session["fork_edge"],
+                }
+            )
+        await put(meta)
         if open_session:
             await runtime.events.session_start("console")
         try:
@@ -385,13 +418,19 @@ async def run(request: RunRequest) -> StreamingResponse:
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     prefix_run_id = f"run-{uuid.uuid4().hex[:12]}"
     prefix_origin_id = f"{prefix_run_id}:prompt:{uuid.uuid4().hex[:8]}"
+    origin_runs = {prompt_id: run_id}
+    default_fork_origin = prompt_id
+    if request.scenario_id == "fork_masking":
+        origin_runs[prefix_origin_id] = prefix_run_id
+        default_fork_origin = prefix_origin_id
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_run_id": run_id, "prefix_run_id": prefix_run_id,
-        "origin_runs": {prefix_origin_id: prefix_run_id, prompt_id: run_id},
-        "default_fork_origin": prefix_origin_id,
+        "origin_runs": origin_runs,
+        "default_fork_origin": default_fork_origin,
+        "event_ids": set(),
         "terminal": False,
     }
     if crash_at is not None:
@@ -413,7 +452,7 @@ async def run(request: RunRequest) -> StreamingResponse:
                 should_stop_after_turn=_capped,
                 aborted=lambda: _is_aborted(run_id),
             )
-        return await runtime.dispatch(
+        outcome = await runtime.dispatch(
             run_id,
             agent,
             Prompt(scenario["prompt"], prompt_id=prompt_id),
@@ -423,6 +462,13 @@ async def run(request: RunRequest) -> StreamingResponse:
             should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(run_id),
         )
+        await _publish_source_branch(
+            runtime,
+            run_id=run_id,
+            conversation_id=conversation_id,
+            origin_id=prompt_id,
+        )
+        return outcome
 
     return StreamingResponse(
         _stream(run_id, attempt, selected=selected, scenario_id=request.scenario_id, open_session=True),
@@ -438,8 +484,8 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="unknown run_id")
     if not source.get("terminal"):
         raise HTTPException(status_code=409, detail="run is not forkable")
-    if source.get("forked_to"):
-        raise HTTPException(status_code=409, detail="run already forked")
+    if request.event_id not in source.get("event_ids", set()):
+        raise HTTPException(status_code=404, detail="event does not belong to run version")
     try:
         checkpoint = await read_event_checkpoint(
             _transcript, source["conversation_id"], request.event_id
@@ -449,10 +495,12 @@ async def fork(request: ForkRequest) -> StreamingResponse:
     coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
     fork_run_id = f"run-{uuid.uuid4().hex[:12]}"
-    fork_units = list(source["units"])
-    if source["scenario_id"] == "fork_masking":
-        fork_units = [name for name in fork_units if name != "input_mask"]
+    fork_units = [name for name in request.units if name in UNITS_BY_NAME]
+    child_origin_runs = dict(source["origin_runs"])
+    if coordinate.origin_id is not None:
+        child_origin_runs[coordinate.origin_id] = fork_run_id
     source["forked_to"] = fork_run_id
+    source.setdefault("fork_children", []).append(fork_run_id)
     _sessions[fork_run_id] = {
         "units": fork_units,
         "agent": source["agent"],
@@ -463,9 +511,12 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "conversation_id": source["conversation_id"],
         "origin_id": coordinate.origin_id,
         "source_run_id": request.run_id,
-        "origin_runs": source["origin_runs"],
+        "origin_runs": child_origin_runs,
         "default_fork_origin": coordinate.origin_id or source["default_fork_origin"],
         "fork_parent": request.run_id,
+        "fork_event_id": request.event_id,
+        "fork_edge": request.edge,
+        "event_ids": set(),
         "terminal": False,
     }
 

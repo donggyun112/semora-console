@@ -174,19 +174,94 @@ export function deriveBranchView(frames) {
   }));
 }
 
-export function getEventForkRequest(runState, row, hasFork = false) {
+export function deriveRunVersions(frames) {
+  const seen = new Set();
+  const runIds = [];
+  for (const frame of frames) {
+    if (frame?.kind !== "meta" || !frame.run_id || seen.has(frame.run_id)) continue;
+    seen.add(frame.run_id);
+    runIds.push(frame.run_id);
+  }
+  return runIds.map((runId, index) => ({
+    runId,
+    number: index + 1,
+    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}`,
+  }));
+}
+
+export function selectRunFrames(frames, runId) {
+  if (!runId) return frames;
+  return frames.filter((frame) => frame?.run_id === runId);
+}
+
+function rowFingerprint(row) {
+  return [row.kind, row.label, row.summary].join("\u0000");
+}
+
+export function deriveVersionRows(frames, runId, ancestors = new Set()) {
+  const directFrames = selectRunFrames(frames, runId);
+  const directRows = reduceFrames(directFrames).map((row) => ({
+    ...row,
+    id: `${runId ?? "run"}:${row.id}`,
+    versionOrigin: "current",
+    forkStart: false,
+  }));
+  const meta = directFrames.find((frame) => frame?.kind === "meta");
+  const parentRunId = meta?.fork_parent;
+  if (!runId || !parentRunId || ancestors.has(runId)) return directRows;
+
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(runId);
+  const parentRows = deriveVersionRows(frames, parentRunId, nextAncestors);
+  const forkIndex = parentRows.findIndex((row) => row.eventId === meta.fork_event_id);
+  if (forkIndex < 0) return directRows;
+
+  const after = meta.fork_edge === "after";
+  const prefixEnd = forkIndex + (after ? 1 : 0);
+  const selectedFingerprint = rowFingerprint(parentRows[forkIndex]);
+  let childStart = directRows.findIndex(
+    (row) => rowFingerprint(row) === selectedFingerprint,
+  );
+  if (childStart < 0) childStart = Math.min(prefixEnd, directRows.length);
+  else if (after) childStart += 1;
+
+  const inherited = parentRows.slice(0, prefixEnd).map((row) => ({
+    ...row,
+    versionOrigin: "inherited",
+    forkStart: false,
+  }));
+  const current = directRows.slice(childStart);
+  if (current.length) current[0] = { ...current[0], forkStart: true };
+  return [...inherited, ...current];
+}
+
+export function deriveVersionPhase(frames, fallback = "idle") {
+  for (const frame of [...frames].reverse()) {
+    if (frame?.kind === "outcome") return "terminal";
+    if (frame?.kind === "error") return "error";
+    if (frame?.kind === "suspended") return "suspended";
+    if (frame?.kind === "recoverable") return "recoverable";
+    if (frame?.kind === "meta") return "streaming";
+  }
+  return fallback;
+}
+
+export function getEventForkRequest(runState, row) {
   if (
     runState?.phase !== "terminal" ||
     !runState?.runId ||
-    !row?.eventId ||
-    hasFork
+    !row?.eventId
   ) {
     return null;
   }
+  const units = runState.active.scenarioId === "fork_masking"
+    ? runState.draft.unitNames.filter((name) => name !== "input_mask")
+    : [...runState.draft.unitNames];
   return {
-    run_id: runState.runId,
+    run_id: row.runId ?? runState.runId,
     event_id: row.eventId,
     edge: "before",
+    units,
   };
 }
 
@@ -199,6 +274,7 @@ export function createConsole({
     "launch", "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
     "launch-policies", "run", "policy-open", "launch-policy-open", "run-shell",
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
+    "version-switcher",
     "event-count", "outcome-strip",
     "rerun-plain", "rerun-same", "retry-run", "return-draft", "trace",
     "details-drawer", "details-close", "details-copy", "details-title",
@@ -223,6 +299,8 @@ export function createConsole({
     policyActivity: new Map(),
     booted: false,
     policyOpener: null,
+    forkEventIds: new Set(),
+    selectedVersionRunId: null,
   };
 
   const scenarioById = (id) => state.scenarios.find((item) => item.id === id);
@@ -331,6 +409,12 @@ export function createConsole({
       verdict.textContent = row.verdict;
       button.append(verdict);
     }
+    if (state.forkEventIds.has(row.eventId)) {
+      const marker = documentRef.createElement("span");
+      marker.className = "trace-fork-origin";
+      marker.textContent = "분기 기준";
+      button.append(marker);
+    }
     button.addEventListener("click", () => selectRow(row.id));
     return button;
   }
@@ -341,25 +425,32 @@ export function createConsole({
     (host ?? dom.trace).append(section);
   }
 
-  function renderRows() {
-    state.rows = reduceFrames(state.frames);
+  function renderRows(selectedPhase, selectedIsCurrent) {
+    state.rows = deriveVersionRows(state.frames, state.selectedVersionRunId);
     setText(dom["event-count"], `${state.rows.length} EVENTS`);
     dom.trace.replaceChildren();
-    const branches = deriveBranchView(state.frames);
-    const hasFork = branches.some((branch) => branch.branch === "fork");
     state.rows.forEach((row, index) => {
+      if (row.forkStart) {
+        const cut = documentRef.createElement("div");
+        cut.className = "trace-version-cut";
+        cut.textContent = "분기 시작";
+        dom.trace.append(cut);
+      }
       const entry = documentRef.createElement("article");
-      entry.className = "trace-entry";
+      entry.className = `trace-entry version-${row.versionOrigin ?? "current"}`;
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
-      const request = getEventForkRequest(state.run, row, hasFork);
+      const request = getEventForkRequest(state.run, row);
       if (request) {
         const action = documentRef.createElement("div");
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = "이 지점에서 실행";
-        button.title = "원문이 새 원장과 대화 기록에 저장됩니다.";
+        button.textContent = `이 지점에서 분기 · 정책 ${request.units.length}개`;
+        button.title = [
+          `적용 정책: ${request.units.join(", ") || "없음"}`,
+          "원문이 새 원장과 대화 기록에 저장됩니다.",
+        ].join(" · ");
         button.setAttribute(
           "aria-label",
           `${index + 1}번 이벤트에서 다시 실행. 원문이 새 원장과 대화 기록에 저장됩니다.`,
@@ -371,10 +462,12 @@ export function createConsole({
       dom.trace.append(entry);
     });
 
-    setHidden(dom.approval, state.run.phase !== "suspended");
-    if (state.run.phase === "suspended") attachInlineAction(dom.approval, "tool");
-    setHidden(dom.recovery, state.run.phase !== "recoverable");
-    if (state.run.phase === "recoverable") attachInlineAction(dom.recovery, "recovery");
+    const canApprove = selectedIsCurrent && selectedPhase === "suspended";
+    setHidden(dom.approval, !canApprove);
+    if (canApprove) attachInlineAction(dom.approval, "tool");
+    const canRecover = selectedIsCurrent && selectedPhase === "recoverable";
+    setHidden(dom.recovery, !canRecover);
+    if (canRecover) attachInlineAction(dom.recovery, "recovery");
     renderDetails();
   }
 
@@ -390,9 +483,9 @@ export function createConsole({
     return { message, content };
   }
 
-  function renderChat(scenario) {
+  function renderChat(scenario, frames) {
     dom["chat-thread"].replaceChildren();
-    const projectedBranches = deriveBranchView(state.frames);
+    const projectedBranches = deriveBranchView(frames);
     const branches = (
       scenario?.id === "fork_masking" ||
       projectedBranches.some((branch) => branch.branch === "fork")
@@ -404,9 +497,11 @@ export function createConsole({
         group.className = `branch-group${branch.active ? " active" : ""}`;
         const heading = documentRef.createElement("header");
         const title = documentRef.createElement("strong");
-        title.textContent = branch.branch === "source"
-          ? "마스킹된 실행"
-          : "원문으로 다시 실행";
+        if (branch.branch === "source") {
+          title.textContent = scenario?.id === "fork_masking" ? "마스킹된 실행" : "원본 실행";
+        } else {
+          title.textContent = scenario?.id === "fork_masking" ? "원문으로 다시 실행" : "분기 실행";
+        }
         const status = documentRef.createElement("span");
         status.textContent = branch.active ? "현재 대화" : "이전 대화";
         heading.append(title, status);
@@ -424,7 +519,7 @@ export function createConsole({
       return;
     }
 
-    const view = deriveChatView(scenario?.prompt ?? "", state.frames);
+    const view = deriveChatView(scenario?.prompt ?? "", frames);
 
     const user = makeChatMessage("user", "YOU");
     const userText = documentRef.createElement("p");
@@ -466,12 +561,12 @@ export function createConsole({
     dom["chat-thread"].append(user.message, assistant.message);
   }
 
-  function renderOutcome() {
-    const terminal = state.run.phase === "terminal";
+  function renderOutcome(frames, selectedPhase, selectedIsCurrent) {
+    const terminal = selectedPhase === "terminal";
     setHidden(dom["outcome-strip"], !terminal);
-    setHidden(dom.terminalActions, !terminal);
+    setHidden(dom.terminalActions, !(terminal && selectedIsCurrent));
     if (terminal) {
-      const outcome = summarizeOutcome(state.frames);
+      const outcome = summarizeOutcome(frames);
       setText(
         dom["outcome-strip"],
         [outcome.verdict, outcome.tool, outcome.result].filter(Boolean).join(" · "),
@@ -484,16 +579,46 @@ export function createConsole({
     if (!config) return;
     const scenario = scenarioById(config.scenarioId);
     setText(dom["run-title"], scenario?.title ?? config.scenarioId);
-    setText(dom["run-status"], PHASE_LABELS[state.run.phase]);
-    renderChips(dom["run-policies"], config.unitNames);
-    setHidden(dom.abort, !ACTIVE_PHASES.has(state.run.phase));
-    setHidden(dom["steer-form"], !canSteer(state.run));
-    setHidden(dom["run-error"], state.run.phase !== "error");
-    setText(dom["run-error"], state.run.error);
-    setHidden(dom.errorActions, state.run.phase !== "error");
-    renderChat(scenario);
-    renderOutcome();
-    renderRows();
+    const frames = selectRunFrames(state.frames, state.selectedVersionRunId);
+    const selectedPhase = deriveVersionPhase(frames, state.run.phase);
+    const selectedIsCurrent = (
+      !state.selectedVersionRunId || state.selectedVersionRunId === state.run.runId
+    );
+    setText(dom["run-status"], PHASE_LABELS[selectedPhase]);
+    const versionMeta = frames.find((frame) => frame.kind === "meta");
+    renderChips(dom["run-policies"], versionMeta?.units ?? config.unitNames);
+    setHidden(dom.abort, !(selectedIsCurrent && ACTIVE_PHASES.has(state.run.phase)));
+    setHidden(dom["steer-form"], !(selectedIsCurrent && canSteer(state.run)));
+    setHidden(dom["run-error"], selectedPhase !== "error");
+    const versionError = [...frames].reverse().find((frame) => frame.kind === "error");
+    setText(dom["run-error"], versionError?.message ?? (selectedIsCurrent ? state.run.error : null));
+    setHidden(dom.errorActions, !(selectedIsCurrent && selectedPhase === "error"));
+    renderVersions();
+    renderChat(scenario, frames);
+    renderOutcome(frames, selectedPhase, selectedIsCurrent);
+    renderRows(selectedPhase, selectedIsCurrent);
+  }
+
+  function renderVersions() {
+    const versions = deriveRunVersions(state.frames);
+    dom["version-switcher"].replaceChildren();
+    setHidden(dom["version-switcher"], versions.length < 2);
+    for (const version of versions) {
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.className = "version-option";
+      button.textContent = version.label;
+      button.setAttribute(
+        "aria-pressed",
+        String(version.runId === state.selectedVersionRunId),
+      );
+      button.addEventListener("click", () => {
+        state.selectedVersionRunId = version.runId;
+        state.selectedRowId = null;
+        render();
+      });
+      dom["version-switcher"].append(button);
+    }
   }
 
   function renderPolicyComposer() {
@@ -578,6 +703,7 @@ export function createConsole({
     state.frames.push(frame);
     if (frame.kind === "meta") {
       state.run = attachRunId(state.run, frame.run_id);
+      state.selectedVersionRunId = frame.run_id;
     } else if (frame.kind === "suspended") {
       state.run = suspendRun(state.run, frame.pending_id);
     } else if (frame.kind === "recoverable") {
@@ -647,6 +773,8 @@ export function createConsole({
     state.frames = [];
     state.rows = [];
     state.selectedRowId = null;
+    state.forkEventIds.clear();
+    state.selectedVersionRunId = null;
     state.policyActivity.clear();
     render();
     await stream("/api/run", {
@@ -681,10 +809,9 @@ export function createConsole({
   }
 
   async function forkSource(row) {
-    const branches = deriveBranchView(state.frames);
-    const hasFork = branches.some((branch) => branch.branch === "fork");
-    const request = getEventForkRequest(state.run, row, hasFork);
+    const request = getEventForkRequest(state.run, row);
     if (!request) return;
+    state.forkEventIds.add(row.eventId);
     try {
       state.run = beginFork(state.run);
     } catch {
@@ -699,7 +826,11 @@ export function createConsole({
     try {
       await post("/api/abort", { run_id: state.run.runId });
       if (state.run.phase !== "terminal") {
-        state.frames.push({ kind: "outcome", outcome: { stop_reason: "aborted" } });
+        state.frames.push({
+          kind: "outcome",
+          run_id: state.run.runId,
+          outcome: { stop_reason: "aborted" },
+        });
         state.run = finishRun(state.run, "aborted");
         render();
       }
@@ -713,7 +844,13 @@ export function createConsole({
     const text = dom["steer-text"].value.trim();
     if (!text || !canSteer(state.run)) return;
     dom["steer-text"].value = "";
-    state.frames.push({ kind: "steer", status: "queued", source: "operator", text });
+    state.frames.push({
+      kind: "steer",
+      run_id: state.run.runId,
+      status: "queued",
+      source: "operator",
+      text,
+    });
     render();
     try {
       await post("/api/steer", { run_id: state.run.runId, text });
@@ -733,6 +870,8 @@ export function createConsole({
     state.run = returnToDraft(state.run, { source: "active" });
     state.frames = [];
     state.selectedRowId = null;
+    state.forkEventIds.clear();
+    state.selectedVersionRunId = null;
     render();
   }
 

@@ -11,6 +11,7 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     details: options.details ?? {},
     eventId: options.eventId ?? coordinateFrame?.event_id ?? null,
     forkOriginId: options.forkOriginId ?? coordinateFrame?.fork_origin_id ?? null,
+    runId: options.runId ?? null,
   };
 }
 
@@ -50,9 +51,13 @@ export function reduceFrames(frames) {
   const toolIndexes = new Map();
   let sequence = 0;
   let openText = null;
+  let currentRunId = null;
 
   const append = (kind, label, summary, options = {}) => {
-    const row = makeRow(sequence, kind, label, summary, options);
+    const row = makeRow(sequence, kind, label, summary, {
+      runId: currentRunId,
+      ...options,
+    });
     sequence += 1;
     rows.push(row);
     return row;
@@ -60,6 +65,12 @@ export function reduceFrames(frames) {
 
   for (const frame of frames) {
     if (!frame || typeof frame !== "object") continue;
+
+    if (frame.kind === "meta") {
+      currentRunId = frame.run_id ?? currentRunId;
+      openText = null;
+      continue;
+    }
 
     if (frame.kind === "agent" && frame.event?.type === "text") {
       const text = frame.event.text ?? "";
@@ -100,7 +111,12 @@ export function reduceFrames(frames) {
           input: event.input ?? prior.details.input,
           raw: [...(prior.details.raw ?? []), frame],
         };
-        updateCoordinate(prior, frame);
+        if (!prior.eventId || !prior.forkOriginId) {
+          updateCoordinate(prior, {
+            event_id: prior.eventId ?? frame.event_id,
+            fork_origin_id: prior.forkOriginId ?? frame.fork_origin_id,
+          });
+        }
       } else {
         const row = append("tool", event.name ?? "tool", event.blocked ? "실행 안 됨" : "도구 호출 요청", {
           id: stableId,

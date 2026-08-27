@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import {
   deriveBranchView,
   deriveChatView,
+  deriveRunVersions,
+  deriveVersionPhase,
+  deriveVersionRows,
   getEventForkRequest,
   getLaunchCopy,
+  selectRunFrames,
 } from "../src/console/static/app.js";
 import {
   NdjsonParseError,
@@ -194,9 +198,23 @@ assert.equal(forking.runId, null);
 const genericForking = beginFork(terminal);
 assert.deepEqual(genericForking.active.unitNames, ["approval", "dlp_block"]);
 assert.equal(genericForking.phase, "streaming");
+const editedGenericTerminal = updateDraft(terminal, { unitNames: ["rate_cap"] });
+assert.deepEqual(beginFork(editedGenericTerminal).active.unitNames, ["rate_cap"]);
+const editedMaskingTerminal = updateDraft(forkSourceTerminal, {
+  unitNames: ["input_mask", "dlp_block", "approval"],
+});
+assert.deepEqual(beginFork(editedMaskingTerminal).active.unitNames, [
+  "dlp_block",
+  "approval",
+]);
 assert.deepEqual(
-  getEventForkRequest(forkSourceTerminal, { eventId: "event-09" }),
-  { run_id: "run-b", event_id: "event-09", edge: "before" },
+  getEventForkRequest(editedMaskingTerminal, { eventId: "event-09" }),
+  {
+    run_id: "run-b",
+    event_id: "event-09",
+    edge: "before",
+    units: ["dlp_block", "approval"],
+  },
   "an event-row fork preserves the selected durable event coordinate",
 );
 assert.equal(
@@ -205,9 +223,31 @@ assert.equal(
   "an in-flight run cannot start an event fork",
 );
 assert.deepEqual(
-  getEventForkRequest(terminal, { eventId: "event-generic" }),
-  { run_id: "run-1", event_id: "event-generic", edge: "before" },
+  getEventForkRequest(editedGenericTerminal, { eventId: "event-generic" }),
+  {
+    run_id: "run-1",
+    event_id: "event-generic",
+    edge: "before",
+    units: ["rate_cap"],
+  },
   "completed runs expose event forks for every scenario",
+);
+const secondVersion = finishRun(
+  attachRunId(beginFork(editedGenericTerminal), "run-2"),
+  "completed",
+);
+assert.deepEqual(
+  getEventForkRequest(secondVersion, {
+    eventId: "event-from-v1",
+    runId: "run-1",
+  }, true),
+  {
+    run_id: "run-1",
+    event_id: "event-from-v1",
+    edge: "before",
+    units: ["rate_cap"],
+  },
+  "an older selected version remains forkable after newer versions exist",
 );
 
 assert.deepEqual(
@@ -306,6 +346,8 @@ const traceFrames = [
   },
   {
     kind: "agent",
+    event_id: "event-tool-request",
+    fork_origin_id: "prompt-2",
     event: {
       type: "tool_call",
       id: "call-1",
@@ -321,6 +363,8 @@ const traceFrames = [
   },
   {
     kind: "agent",
+    event_id: "event-tool-blocked",
+    fork_origin_id: "prompt-2",
     event: {
       type: "tool_call",
       id: "call-1",
@@ -362,6 +406,11 @@ assert.deepEqual(
   ],
 );
 assert.deepEqual(trace[1].details.input, blockedInput);
+assert.equal(
+  trace[1].eventId,
+  "event-tool-request",
+  "a consolidated blocked tool keeps the coordinate where its visible row began",
+);
 assert.equal(
   trace.filter((row) => row.verdict === "DENY").length,
   1,
@@ -452,6 +501,114 @@ assert.deepEqual(
 assert.deepEqual(
   operationalRows.slice(0, 2).map(({ label }) => label),
   ["운영자", "정책"],
+);
+
+const branchedRows = reduceFrames([
+  { kind: "meta", run_id: "run-source" },
+  { kind: "lifecycle", type: "session_start", event_id: "source-event", payload: {} },
+  { kind: "meta", run_id: "run-fork" },
+  { kind: "lifecycle", type: "session_start", event_id: "fork-event", payload: {} },
+]);
+assert.deepEqual(
+  branchedRows.map(({ eventId, runId }) => ({ eventId, runId })),
+  [
+    { eventId: "source-event", runId: "run-source" },
+    { eventId: "fork-event", runId: "run-fork" },
+  ],
+  "trace rows retain the run boundary needed to separate source and fork branches",
+);
+
+const versionFrames = [
+  { kind: "meta", run_id: "run-source" },
+  { kind: "lifecycle", type: "session_start", run_id: "run-source" },
+  { kind: "meta", run_id: "run-fork" },
+  { kind: "lifecycle", type: "session_start", run_id: "run-fork" },
+];
+assert.deepEqual(deriveRunVersions(versionFrames), [
+  { runId: "run-source", number: 1, label: "v1 · 원본" },
+  { runId: "run-fork", number: 2, label: "v2 · 분기" },
+]);
+assert.deepEqual(
+  selectRunFrames(versionFrames, "run-source"),
+  versionFrames.slice(0, 2),
+  "selecting a version projects only that run's chat and trace frames",
+);
+assert.equal(
+  deriveVersionPhase([
+    ...versionFrames.slice(0, 2),
+    {
+      kind: "outcome",
+      run_id: "run-source",
+      outcome: { stop_reason: "completed" },
+    },
+  ], "streaming"),
+  "terminal",
+  "a selected completed version keeps its own status while another version streams",
+);
+
+const versionedTraceFrames = [
+  { kind: "meta", run_id: "run-v1", units: ["dlp_block"] },
+  {
+    kind: "lifecycle", run_id: "run-v1", event_id: "v1-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "lifecycle", run_id: "run-v1", event_id: "v1-submit",
+    type: "user_prompt_submit", payload: { kind: "user_prompt" },
+  },
+  {
+    kind: "lifecycle", run_id: "run-v1", event_id: "v1-context",
+    type: "context_injected", payload: { kind: "user_prompt" },
+  },
+  {
+    kind: "agent", run_id: "run-v1", event_id: "v1-send",
+    event: { type: "tool_call", id: "send-v1", name: "send_email", input: {} },
+  },
+  {
+    kind: "unit", run_id: "run-v1", event_id: "v1-deny",
+    unit: "dlp_block", verdict: "deny", message: "거부",
+  },
+  {
+    kind: "meta", run_id: "run-v2", units: [],
+    fork_parent: "run-v1", fork_event_id: "v1-send", fork_edge: "before",
+  },
+  {
+    kind: "lifecycle", run_id: "run-v2", event_id: "v2-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "lifecycle", run_id: "run-v2", event_id: "v2-submit",
+    type: "user_prompt_submit", payload: { kind: "user_prompt" },
+  },
+  {
+    kind: "lifecycle", run_id: "run-v2", event_id: "v2-context",
+    type: "context_injected", payload: { kind: "user_prompt" },
+  },
+  {
+    kind: "agent", run_id: "run-v2", event_id: "v2-send",
+    event: { type: "tool_call", id: "send-v2", name: "send_email", input: {} },
+  },
+  {
+    kind: "agent", run_id: "run-v2", event_id: "v2-result",
+    event: { type: "tool_result", id: "send-v2", name: "send_email", executed: true },
+  },
+];
+const versionedRows = deriveVersionRows(versionedTraceFrames, "run-v2");
+assert.deepEqual(
+  versionedRows.map(({ eventId }) => eventId),
+  ["v1-session", "v1-submit", "v1-context", "v2-send", "v2-result"],
+  "a child version keeps the parent prefix and replaces the replayed prefix at the fork",
+);
+assert.deepEqual(
+  versionedRows.map(({ versionOrigin, forkStart }) => ({ versionOrigin, forkStart })),
+  [
+    { versionOrigin: "inherited", forkStart: false },
+    { versionOrigin: "inherited", forkStart: false },
+    { versionOrigin: "inherited", forkStart: false },
+    { versionOrigin: "current", forkStart: true },
+    { versionOrigin: "current", forkStart: false },
+  ],
+  "the trace exposes one readable version boundary",
 );
 
 console.log("run inspector state ok");

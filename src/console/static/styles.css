@@ -312,6 +312,34 @@ button.primary:hover:not(:disabled) {
   color: #ff9da4;
 }
 
+.version-switcher {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  margin: -12px 0 24px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(17, 21, 26, 0.72);
+  overflow-x: auto;
+}
+
+.version-option {
+  min-height: 32px;
+  padding: 0 12px;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.version-option[aria-pressed="true"] {
+  border-color: rgba(111, 156, 255, 0.4);
+  color: #dce7ff;
+  background: rgba(111, 156, 255, 0.12);
+}
+
 .chat-panel {
   min-width: 0;
   margin-bottom: 54px;
@@ -601,6 +629,25 @@ button.primary:hover:not(:disabled) {
   border-bottom: 1px solid var(--line);
 }
 
+.trace-entry.version-inherited {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.trace-entry.version-inherited .trace-row {
+  opacity: 0.68;
+}
+
+.trace-version-cut {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(111, 156, 255, 0.22);
+  color: #9eb6e2;
+  background: rgba(111, 156, 255, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .trace-fork {
   display: flex;
   align-items: center;
@@ -624,7 +671,7 @@ button.primary:hover:not(:disabled) {
 
 .trace-row {
   display: grid;
-  grid-template-columns: 28px minmax(120px, 180px) minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(120px, 180px) minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -677,6 +724,16 @@ button.primary:hover:not(:disabled) {
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.06em;
+}
+
+.trace-fork-origin {
+  padding: 4px 7px;
+  border: 1px solid rgba(111, 156, 255, 0.4);
+  border-radius: 999px;
+  color: #b8c9eb;
+  background: rgba(111, 156, 255, 0.1);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .tone-deny .trace-verdict {

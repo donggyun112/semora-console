@@ -28,7 +28,7 @@
 1. Add failing stream tests asserting every visible lifecycle/agent/policy row has an `event_id` and a durable checkpoint.
 2. Give the prefix prompt an explicit origin and keep an origin→source-run route in the source session.
 3. While projecting frames, track the most recent input route and transcript leaf; record before/after coordinates with `record_event_checkpoint`.
-4. Change `ForkRequest` to `{run_id, event_id, edge}` and execute `fork_event` from the selected checkpoint.
+4. Change `ForkRequest` to `{run_id, event_id, edge, units}` and execute `fork_event` from the selected checkpoint under the newly selected controls.
 5. Preserve the existing source branch and emit the fork branch snapshot after completion.
 
 ## Task 3: Put the action on every event row
@@ -44,8 +44,9 @@
 
 1. Add failing pure tests proving reduced rows retain `eventId` and the clicked event is sent to `/api/fork`.
 2. Remove the global `#fork-run` terminal action.
-3. Render `이 지점에서 다시 실행` beside every trace row for every completed scenario run.
-4. Keep the durable-original warning on the inline action and disable all fork actions while the fork stream is active or after the source was forked. Preserve the selected controls for ordinary scenarios; only the masking incident removes `input_mask`.
+3. Render an event-level fork action beside every trace row for every completed scenario run.
+4. Treat each source/fork run as `v1`, `v2`, and later versions. Show one version's chat, event trace, outcome, and policy chips at a time, while keeping earlier versions selectable.
+5. Keep the durable-original warning on the inline action. Use the post-run policy selection for the new version; the masking incident omits `input_mask` from that selection.
 5. Run Node and static-shell tests.
 
 ## Task 4: Verify both repositories
