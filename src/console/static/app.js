@@ -55,6 +55,13 @@ function checkedNames(container) {
   );
 }
 
+export function getLaunchCopy(scenario) {
+  return {
+    title: scenario.title,
+    prompt: scenario.prompt,
+  };
+}
+
 export function createConsole({
   document: documentRef,
   fetch: fetchRef,
@@ -137,9 +144,10 @@ export function createConsole({
   function renderLaunch() {
     const scenario = scenarioById(state.run.draft.scenarioId);
     if (!scenario) return;
+    const copy = getLaunchCopy(scenario);
     setText(dom["scenario-trigger"], scenario.title);
-    setText(dom["launch-title"], scenario.does);
-    setText(dom["launch-prompt"], scenario.prompt);
+    setText(dom["launch-title"], copy.title);
+    setText(dom["launch-prompt"], copy.prompt);
     renderChips(dom["launch-policies"], state.run.draft.unitNames);
     dom.run.disabled = !canStartRun(state.run);
     renderScenarioMenu();

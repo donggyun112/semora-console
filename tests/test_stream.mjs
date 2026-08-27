@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 
+import { getLaunchCopy } from "../src/console/static/app.js";
 import {
   NdjsonParseError,
   createNdjsonReader,
@@ -25,6 +26,19 @@ import {
   reduceFrames,
   summarizeOutcome,
 } from "../src/console/static/reducer.mjs";
+
+assert.deepEqual(
+  getLaunchCopy({
+    title: "고객 데이터 처리",
+    does: "고객을 조회해 청구팀에 요약한다",
+    prompt: "read_customer로 고객을 조회해줘.",
+  }),
+  {
+    title: "고객 데이터 처리",
+    prompt: "read_customer로 고객을 조회해줘.",
+  },
+  "launch copy uses the scenario name and request without a narrator sentence",
+);
 
 const idle = createRunState();
 assert.deepEqual(idle, {
