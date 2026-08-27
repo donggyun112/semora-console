@@ -250,6 +250,7 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
         "launch-policies", "run", "policy-open", "launch-policy-open",
         "run-shell", "run-title", "run-status", "run-policies", "abort",
+        "chat-panel", "chat-thread", "event-panel", "event-count",
         "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
         "details-copy", "details-title", "details-body", "steer-form",
@@ -265,6 +266,7 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
     assert "hidden" in shell.elements["details-drawer"]["class"].split()
     assert "hidden" in shell.elements["policy-drawer"]["class"].split()
     assert shell.elements["trace"]["role"] == "log"
+    assert shell.ids.index("chat-panel") < shell.ids.index("trace")
     assert shell.elements["run-error"]["aria-live"] == "assertive"
 
 
@@ -275,6 +277,9 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
     for selector in [
         ".launch",
         ".run-shell",
+        ".chat-panel",
+        ".chat-message",
+        ".event-panel",
         ".trace-row",
         ".details-drawer",
         ".policy-drawer",

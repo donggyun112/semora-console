@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 
-import { getLaunchCopy } from "../src/console/static/app.js";
+import {
+  deriveChatView,
+  getLaunchCopy,
+} from "../src/console/static/app.js";
 import {
   NdjsonParseError,
   createNdjsonReader,
@@ -38,6 +41,80 @@ assert.deepEqual(
     prompt: "read_customer로 고객을 조회해줘.",
   },
   "launch copy uses the scenario name and request without a narrator sentence",
+);
+
+assert.deepEqual(
+  deriveChatView("고객을 조회하고 메일로 보내줘.", [
+    {
+      kind: "agent",
+      event: {
+        type: "tool_call",
+        id: "call-read",
+        name: "read_customer",
+        input: { customer_id: "c-001" },
+      },
+    },
+    {
+      kind: "agent",
+      event: {
+        type: "tool_result",
+        id: "call-read",
+        name: "read_customer",
+        executed: true,
+        result: { type: "text", text: "customer found" },
+      },
+    },
+    {
+      kind: "agent",
+      event: {
+        type: "tool_call",
+        id: "call-send",
+        name: "send_email",
+        input: { to: "outside@example.com" },
+      },
+    },
+    {
+      kind: "unit",
+      unit: "dlp_block",
+      verdict: "deny",
+      message: "메일 본문에 개인정보가 있습니다",
+    },
+    {
+      kind: "agent",
+      event: {
+        type: "tool_call",
+        id: "call-send",
+        name: "send_email",
+        blocked: true,
+      },
+    },
+    { kind: "agent", event: { type: "text", text: "메일 전송이 " } },
+    { kind: "agent", event: { type: "text", text: "차단됐습니다." } },
+  ]),
+  {
+    user: { role: "user", text: "고객을 조회하고 메일로 보내줘." },
+    assistant: {
+      role: "assistant",
+      text: "메일 전송이 차단됐습니다.",
+      tools: [
+        {
+          id: "call-read",
+          name: "read_customer",
+          status: "completed",
+          summary: "실행 완료",
+          reason: null,
+        },
+        {
+          id: "call-send",
+          name: "send_email",
+          status: "blocked",
+          summary: "정책으로 차단",
+          reason: "메일 본문에 개인정보가 있습니다",
+        },
+      ],
+    },
+  },
+  "chat view turns protocol frames into one user turn and one assistant turn",
 );
 
 const idle = createRunState();

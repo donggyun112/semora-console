@@ -62,6 +62,96 @@ export function getLaunchCopy(scenario) {
   };
 }
 
+function lastPendingTool(tools) {
+  return [...tools].reverse().find((tool) => tool.status === "running");
+}
+
+export function deriveChatView(prompt, frames) {
+  const tools = [];
+  const toolById = new Map();
+  let assistantText = "";
+  let lastDenial = null;
+
+  for (const frame of frames) {
+    const event = frame?.kind === "agent" ? frame.event : null;
+    if (event?.type === "tool_call") {
+      const id = event.id ?? `tool-${tools.length}`;
+      let tool = toolById.get(id);
+      if (!tool) {
+        tool = {
+          id,
+          name: event.name ?? "tool",
+          status: "running",
+          summary: "실행 중",
+          reason: null,
+        };
+        tools.push(tool);
+        toolById.set(id, tool);
+      }
+      if (event.blocked) {
+        tool.status = "blocked";
+        tool.summary = "정책으로 차단";
+        tool.reason = lastDenial?.message ?? null;
+      }
+      continue;
+    }
+
+    if (event?.type === "tool_result") {
+      const id = event.id ?? `tool-${tools.length}`;
+      let tool = toolById.get(id);
+      if (!tool) {
+        tool = {
+          id,
+          name: event.name ?? "tool",
+          status: "running",
+          summary: "실행 중",
+          reason: null,
+        };
+        tools.push(tool);
+        toolById.set(id, tool);
+      }
+      tool.status = event.executed === false ? "blocked" : "completed";
+      tool.summary = event.executed === false ? "실행 안 됨" : "실행 완료";
+      tool.reason = event.executed === false
+        ? (event.result?.message ?? lastDenial?.message ?? null)
+        : null;
+      continue;
+    }
+
+    if (event?.type === "text") {
+      assistantText += event.text ?? "";
+      continue;
+    }
+
+    if (frame?.kind === "unit" && String(frame.verdict).toLowerCase() === "deny") {
+      lastDenial = frame;
+      continue;
+    }
+
+    if (frame?.kind === "suspended") {
+      const tool = lastPendingTool(tools);
+      if (tool) {
+        tool.status = "approval";
+        tool.summary = "승인 대기";
+      }
+      continue;
+    }
+
+    if (frame?.kind === "recoverable") {
+      const tool = lastPendingTool(tools);
+      if (tool) {
+        tool.status = "recoverable";
+        tool.summary = "복구 대기";
+      }
+    }
+  }
+
+  return {
+    user: { role: "user", text: prompt },
+    assistant: { role: "assistant", text: assistantText, tools },
+  };
+}
+
 export function createConsole({
   document: documentRef,
   fetch: fetchRef,
@@ -70,7 +160,8 @@ export function createConsole({
   const ids = [
     "launch", "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
     "launch-policies", "run", "policy-open", "launch-policy-open", "run-shell",
-    "run-title", "run-status", "run-policies", "abort", "outcome-strip",
+    "run-title", "run-status", "run-policies", "abort", "chat-thread",
+    "event-count", "outcome-strip",
     "rerun-plain", "rerun-same", "retry-run", "return-draft", "trace",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
@@ -210,6 +301,7 @@ export function createConsole({
 
   function renderRows() {
     state.rows = reduceFrames(state.frames);
+    setText(dom["event-count"], `${state.rows.length} EVENTS`);
     dom.trace.replaceChildren();
     state.rows.forEach((row, index) => {
       const entry = documentRef.createElement("article");
@@ -224,6 +316,62 @@ export function createConsole({
     setHidden(dom.recovery, state.run.phase !== "recoverable");
     if (state.run.phase === "recoverable") attachInlineAction(dom.recovery, "recovery");
     renderDetails();
+  }
+
+  function makeChatMessage(role, label) {
+    const message = documentRef.createElement("article");
+    message.className = `chat-message ${role}`;
+    const avatar = documentRef.createElement("span");
+    avatar.className = "chat-avatar";
+    avatar.textContent = label;
+    const content = documentRef.createElement("div");
+    content.className = "chat-content";
+    message.append(avatar, content);
+    return { message, content };
+  }
+
+  function renderChat(scenario) {
+    const view = deriveChatView(scenario?.prompt ?? "", state.frames);
+    dom["chat-thread"].replaceChildren();
+
+    const user = makeChatMessage("user", "YOU");
+    const userText = documentRef.createElement("p");
+    userText.textContent = view.user.text;
+    user.content.append(userText);
+
+    const assistant = makeChatMessage("assistant", "NX");
+    if (view.assistant.tools.length) {
+      const toolList = documentRef.createElement("div");
+      toolList.className = "chat-tools";
+      for (const tool of view.assistant.tools) {
+        const item = documentRef.createElement("div");
+        item.className = `chat-tool status-${tool.status}`;
+        const mark = documentRef.createElement("span");
+        mark.className = "chat-tool-mark";
+        mark.textContent = tool.status === "completed"
+          ? "✓"
+          : tool.status === "blocked"
+            ? "×"
+            : "·";
+        const copy = documentRef.createElement("span");
+        const name = documentRef.createElement("strong");
+        name.textContent = tool.name;
+        const status = documentRef.createElement("small");
+        status.textContent = tool.reason
+          ? `${tool.summary} · ${tool.reason}`
+          : tool.summary;
+        copy.append(name, status);
+        item.append(mark, copy);
+        toolList.append(item);
+      }
+      assistant.content.append(toolList);
+    }
+    const assistantText = documentRef.createElement("p");
+    assistantText.className = view.assistant.text ? "" : "chat-pending";
+    assistantText.textContent = view.assistant.text || "응답을 기다리는 중";
+    assistant.content.append(assistantText);
+
+    dom["chat-thread"].append(user.message, assistant.message);
   }
 
   function renderOutcome() {
@@ -251,6 +399,7 @@ export function createConsole({
     setHidden(dom["run-error"], state.run.phase !== "error");
     setText(dom["run-error"], state.run.error);
     setHidden(dom.errorActions, state.run.phase !== "error");
+    renderChat(scenario);
     renderOutcome();
     renderRows();
   }

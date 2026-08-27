@@ -47,7 +47,24 @@
           </div>
         </header>
 
-        <div id="outcome-strip" class="outcome-strip hidden"></div>
+        <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title">
+          <header class="surface-heading">
+            <p class="eyebrow">CHAT</p>
+            <h2 id="chat-title">대화</h2>
+          </header>
+          <div id="chat-thread" class="chat-thread" role="log" aria-live="polite"></div>
+        </section>
+
+        <section id="event-panel" class="event-panel" aria-labelledby="event-title">
+          <header class="event-heading">
+            <div>
+              <p class="eyebrow">EVENT TRACE</p>
+              <h2 id="event-title">이벤트 기록</h2>
+            </div>
+            <span id="event-count">0 EVENTS</span>
+          </header>
+
+          <div id="outcome-strip" class="outcome-strip hidden"></div>
         <div class="terminal-actions hidden">
           <button id="rerun-plain" type="button">정책 없이 다시 실행</button>
           <button id="rerun-same" type="button">같은 설정으로 다시 실행</button>
@@ -95,6 +112,7 @@
             <h2 id="recovery-title">중단된 실행을 이어갈 수 있습니다.</h2>
           </div>
           <button id="recover" class="primary" type="button">복구</button>
+        </section>
         </section>
       </section>
 
