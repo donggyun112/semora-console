@@ -281,13 +281,16 @@ async def _stream(
     if session is not None and {
         "conversation_id", "origin_runs", "default_fork_origin"
     } <= session.keys():
-        projector = EventCheckpointProjector(
-            _transcript,
-            run_id=run_id,
-            conversation_id=session["conversation_id"],
-            origin_runs=session["origin_runs"],
-            default_origin_id=session["default_fork_origin"],
-        )
+        projector = session.get("event_projector")
+        if projector is None:
+            projector = EventCheckpointProjector(
+                _transcript,
+                run_id=run_id,
+                conversation_id=session["conversation_id"],
+                origin_runs=session["origin_runs"],
+                default_origin_id=session["default_fork_origin"],
+            )
+            session["event_projector"] = projector
 
     async def put(frame: dict[str, Any]) -> None:
         frame = {**frame, "run_id": run_id}

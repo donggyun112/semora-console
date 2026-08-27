@@ -519,6 +519,44 @@ assert.deepEqual(
   ["운영자", "정책"],
 );
 
+const resumedApprovalRows = reduceFrames([
+  {
+    kind: "lifecycle", type: "pre_tool_use",
+    payload: { call_id: "charge-1", name: "charge_card", source: "pre_tool_use" },
+  },
+  {
+    kind: "lifecycle", type: "pre_tool_use",
+    payload: { call_id: "charge-1", name: "charge_card", source: "on_resume" },
+  },
+]);
+assert.deepEqual(
+  resumedApprovalRows.map(({ summary }) => summary),
+  ["charge_card", "승인 후 재검증 · charge_card"],
+  "the resumed permission check is distinguishable from the original gate",
+);
+
+const sequentialChargeRows = reduceFrames([
+  {
+    kind: "agent",
+    event: {
+      type: "tool_call", id: "charge-1", name: "charge_card",
+      input: { customer_id: "c-001", amount: 10 },
+    },
+  },
+  {
+    kind: "agent",
+    event: {
+      type: "tool_call", id: "charge-2", name: "charge_card",
+      input: { customer_id: "c-002", amount: 10 },
+    },
+  },
+]);
+assert.deepEqual(
+  sequentialChargeRows.map(({ summary }) => summary),
+  ["c-001 · $10", "c-002 · $10"],
+  "sequential charge requests expose the customer and amount in the trace",
+);
+
 const branchedRows = reduceFrames([
   { kind: "meta", run_id: "run-source" },
   { kind: "lifecycle", type: "session_start", event_id: "source-event", payload: {} },

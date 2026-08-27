@@ -4,10 +4,12 @@ from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
 from nexora import Agent
 from nexora.contracts.events import EventType
 from nexora.dispatch import Answer, Prompt, Recover
-from nexora_fork import EventCheckpoint, ForkCoordinate
+from nexora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 
 from console import server
 from console.server import (
@@ -18,6 +20,129 @@ from console.server import (
     _stream,
     app,
 )
+
+
+class BoundFakeMessagesListChatModel(FakeMessagesListChatModel):
+    def bind_tools(self, _tools, **_kwargs):
+        return self
+
+
+def _approved_charge_frames(monkeypatch):
+    model = BoundFakeMessagesListChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "charge-approval-1",
+                        "name": "charge_card",
+                        "args": {"customer_id": "c-001", "amount": 49},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="청구가 완료됐습니다."),
+        ]
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/run",
+            json={"scenario_id": "charge", "units": ["approval"]},
+        )
+        initial = [json.loads(line) for line in first.text.splitlines()]
+        run_id = next(frame["run_id"] for frame in initial if frame["kind"] == "meta")
+        suspended = next(frame for frame in initial if frame["kind"] == "suspended")
+        resumed_response = client.post(
+            "/api/resume",
+            json={
+                "run_id": run_id,
+                "pending_id": suspended["pending_id"],
+                "approved": True,
+            },
+        )
+        resumed = [json.loads(line) for line in resumed_response.text.splitlines()]
+    return run_id, initial, resumed
+
+
+def test_resume_stabilizes_the_original_tool_request_and_gate(monkeypatch):
+    run_id, initial, resumed = _approved_charge_frames(monkeypatch)
+    try:
+        request = next(
+            frame
+            for frame in initial
+            if frame.get("kind") == "agent"
+            and frame.get("event", {}).get("type") == "tool_call"
+        )
+        original_pre = next(
+            frame
+            for frame in initial
+            if frame.get("type") == "pre_tool_use"
+        )
+        restored = {
+            update["event_id"]: update["restore_edge"]
+            for frame in resumed
+            for update in frame.get("restore_updates", [])
+        }
+
+        assert restored[request["event_id"]] == "after"
+        assert restored[original_pre["event_id"]] == "before"
+    finally:
+        server._sessions.pop(run_id, None)
+
+
+def test_resume_result_stabilizes_the_completed_tool_boundary(monkeypatch):
+    run_id, _initial, resumed = _approved_charge_frames(monkeypatch)
+    try:
+        post = next(frame for frame in resumed if frame.get("type") == "post_tool_use")
+        result = next(
+            frame
+            for frame in resumed
+            if frame.get("kind") == "agent"
+            and frame.get("event", {}).get("type") == "tool_result"
+        )
+        injected = next(
+            frame
+            for frame in resumed
+            if frame.get("type") == "context_injected"
+            and frame.get("payload", {}).get("kind") == "resume_result"
+        )
+        restored = {
+            update["event_id"]: update["restore_edge"]
+            for frame in resumed
+            for update in frame.get("restore_updates", [])
+        }
+
+        assert restored[post["event_id"]] == "after"
+        assert restored[result["event_id"]] == "after"
+        assert injected["forkable"] is True
+        assert injected["restore_edge"] == "after"
+    finally:
+        server._sessions.pop(run_id, None)
+
+
+def test_resume_result_itself_restores_from_the_tool_message_leaf(monkeypatch):
+    run_id, _initial, resumed = _approved_charge_frames(monkeypatch)
+    try:
+        injected = next(
+            frame
+            for frame in resumed
+            if frame.get("type") == "context_injected"
+            and frame.get("payload", {}).get("kind") == "resume_result"
+        )
+        conversation_id = server._sessions[run_id]["conversation_id"]
+        checkpoint = asyncio.run(
+            read_event_checkpoint(
+                server._transcript,
+                conversation_id,
+                injected["event_id"],
+            )
+        )
+
+        assert checkpoint.after.origin_id is None
+        assert checkpoint.after.leaf_uuid is not None
+    finally:
+        server._sessions.pop(run_id, None)
 
 
 def test_suspend_does_not_mark_the_call_blocked():

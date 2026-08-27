@@ -27,6 +27,9 @@ function lifecycleSummary(frame) {
   if (frame.type === "branch_snapshot") {
     return `${payload.branch ?? "unknown"} branch`;
   }
+  if (frame.type === "pre_tool_use" && payload.source === "on_resume") {
+    return `승인 후 재검증 · ${payload.name ?? "tool"}`;
+  }
   return (
     payload.name ??
     payload.source ??
@@ -46,6 +49,18 @@ function steerLabel(source) {
 
 function toolResultOutput(event) {
   return event.output ?? event.result ?? event.content ?? null;
+}
+
+function toolCallSummary(event) {
+  const input = event.input ?? {};
+  if (
+    event.name === "charge_card"
+    && input.customer_id != null
+    && input.amount != null
+  ) {
+    return `${input.customer_id} · $${input.amount}`;
+  }
+  return "도구 호출 요청";
 }
 
 export function reduceFrames(frames) {
@@ -124,12 +139,17 @@ export function reduceFrames(frames) {
           });
         }
       } else {
-        const row = append("tool", event.name ?? "tool", event.blocked ? "실행 안 됨" : "도구 호출 요청", {
-          id: stableId,
-          verdict: null,
-          tone: event.blocked ? "deny" : "neutral",
-          details: { input: event.input ?? null, raw: [frame] },
-        });
+        const row = append(
+          "tool",
+          event.name ?? "tool",
+          event.blocked ? "실행 안 됨" : toolCallSummary(event),
+          {
+            id: stableId,
+            verdict: null,
+            tone: event.blocked ? "deny" : "neutral",
+            details: { input: event.input ?? null, raw: [frame] },
+          },
+        );
         toolIndexes.set(stableId, rows.indexOf(row));
       }
       continue;

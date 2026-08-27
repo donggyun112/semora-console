@@ -93,6 +93,28 @@ class EventCheckpointProjector:
             return str(value) if value else None
         return None
 
+    @staticmethod
+    def _tool_result_call_id(
+        frame_kind: str,
+        frame_type: str,
+        payload: dict[str, Any],
+    ) -> str | None:
+        if (
+            frame_kind != "lifecycle"
+            or not frame_type.endswith("context_injected")
+            or payload.get("kind") not in {"tool_result", "resume_result"}
+        ):
+            return None
+        if payload.get("kind") == "tool_result":
+            value = payload.get("origin_id")
+            return str(value) if value else None
+        message = payload.get("message") or {}
+        data = message.get("data") if isinstance(message, dict) else {}
+        if not isinstance(data, dict):
+            data = message if isinstance(message, dict) else {}
+        value = data.get("tool_call_id")
+        return str(value) if value else None
+
     async def stamp(self, frame: dict[str, Any]) -> dict[str, Any]:
         """Persist and return one uniquely identified visible frame."""
         entries = await self._transcript.read(self._conversation_id)
@@ -152,18 +174,21 @@ class EventCheckpointProjector:
             self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
 
         payload_kind = payload.get("kind") if isinstance(payload, dict) else None
-        tool_result_origin = (
-            str(payload.get("origin_id"))
-            if frame_kind == "lifecycle"
-            and frame_type.endswith("context_injected")
-            and payload_kind == "tool_result"
-            and payload.get("origin_id")
-            else None
+        tool_result_origin = self._tool_result_call_id(
+            frame_kind,
+            frame_type,
+            payload if isinstance(payload, dict) else {},
         )
         if tool_result_origin:
             restore_updates.extend(
                 await self._stabilize(
                     self._after_tool_events.pop(tool_result_origin, []),
+                    leaf_uuid=current_leaf,
+                )
+            )
+            restore_updates.extend(
+                await self._stabilize(
+                    [(event_id, "after")],
                     leaf_uuid=current_leaf,
                 )
             )
