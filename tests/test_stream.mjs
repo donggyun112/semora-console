@@ -21,6 +21,10 @@ import {
   suspendRun,
   updateDraft,
 } from "../src/console/static/run-state.mjs";
+import {
+  reduceFrames,
+  summarizeOutcome,
+} from "../src/console/static/reducer.mjs";
 
 const idle = createRunState();
 assert.deepEqual(idle, {
@@ -135,6 +139,156 @@ assert.throws(
   (error) =>
     error instanceof NdjsonParseError &&
     error.message.includes("trailing"),
+);
+
+const blockedInput = {
+  to: "leaker@personal-mail.com",
+  body: "secret",
+};
+const traceFrames = [
+  { kind: "meta", run_id: "run-1" },
+  {
+    kind: "lifecycle",
+    type: "pre_tool_use",
+    payload: { name: "send_email" },
+  },
+  {
+    kind: "agent",
+    event: {
+      type: "tool_call",
+      id: "call-1",
+      name: "send_email",
+      input: blockedInput,
+    },
+  },
+  {
+    kind: "unit",
+    unit: "dlp_block",
+    verdict: "deny",
+    message: "주민번호가 외부 주소로 나가는 요청",
+  },
+  {
+    kind: "agent",
+    event: {
+      type: "tool_call",
+      id: "call-1",
+      name: "send_email",
+      input: blockedInput,
+      blocked: true,
+    },
+  },
+];
+const trace = reduceFrames(traceFrames);
+assert.deepEqual(
+  trace.map(({ kind, label, summary, verdict }) => ({
+    kind,
+    label,
+    summary,
+    verdict,
+  })),
+  [
+    {
+      kind: "lifecycle",
+      label: "pre_tool_use",
+      summary: "send_email",
+      verdict: null,
+    },
+    {
+      kind: "tool",
+      label: "send_email",
+      summary: "실행 전 거부",
+      verdict: "DENY",
+    },
+    {
+      kind: "policy",
+      label: "dlp_block",
+      summary: "주민번호가 외부 주소로 나가는 요청",
+      verdict: "DENY",
+    },
+  ],
+);
+assert.deepEqual(trace[1].details.input, blockedInput);
+assert.ok(
+  trace.every((row) => !row.summary.includes("leaker@personal-mail.com")),
+  "raw tool arguments stay out of trace summaries",
+);
+assert.deepEqual(
+  summarizeOutcome([
+    ...traceFrames,
+    { kind: "outcome", outcome: { stop_reason: "completed" } },
+  ]),
+  { verdict: "DENY", tool: "send_email", result: "실행 안 됨" },
+);
+
+const aggregated = reduceFrames([
+  { kind: "agent", event: { type: "text", text: "A" } },
+  { kind: "agent", event: { type: "text", text: "B" } },
+]);
+assert.equal(aggregated.length, 1);
+assert.deepEqual(
+  {
+    kind: aggregated[0].kind,
+    label: aggregated[0].label,
+    summary: aggregated[0].summary,
+    output: aggregated[0].details.output,
+  },
+  { kind: "agent", label: "agent", summary: "응답 생성", output: "AB" },
+);
+
+const ordered = reduceFrames([
+  { kind: "agent", event: { type: "text", text: "A" } },
+  { kind: "lifecycle", type: "pre_tool_use", payload: { name: "lookup" } },
+  {
+    kind: "agent",
+    event: { type: "tool_call", id: "lookup-1", name: "lookup", input: {} },
+  },
+]);
+assert.deepEqual(
+  ordered.map(({ kind }) => kind),
+  ["agent", "lifecycle", "tool"],
+  "lifecycle hooks emitted during text generation remain ahead of their tool",
+);
+
+const resultRows = reduceFrames([
+  {
+    kind: "agent",
+    event: {
+      type: "tool_result",
+      name: "lookup",
+      output: { found: true },
+      execution_count: 2,
+    },
+  },
+]);
+assert.deepEqual(
+  {
+    kind: resultRows[0].kind,
+    summary: resultRows[0].summary,
+    output: resultRows[0].details.output,
+    executionCount: resultRows[0].details.executionCount,
+  },
+  {
+    kind: "result",
+    summary: "실행 완료",
+    output: { found: true },
+    executionCount: 2,
+  },
+);
+
+const operationalRows = reduceFrames([
+  { kind: "steer", status: "queued", source: "operator", text: "중단" },
+  { kind: "steer", status: "admitted", source: "policy", text: "계속" },
+  { kind: "recoverable", message: "worker lost" },
+  { kind: "outcome", outcome: { stop_reason: "completed" } },
+]);
+assert.deepEqual(
+  operationalRows.map(({ kind, summary }) => ({ kind, summary })),
+  [
+    { kind: "steer", summary: "지시 대기" },
+    { kind: "steer", summary: "지시 반영" },
+    { kind: "recovery", summary: "worker lost" },
+    { kind: "outcome", summary: "completed" },
+  ],
 );
 
 console.log("run inspector state ok");
