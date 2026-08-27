@@ -92,6 +92,27 @@ export function beginContinuation(state) {
   return { ...state, phase: "streaming", continuationBusy: true };
 }
 
+export function beginFork(state) {
+  if (
+    state.phase !== "terminal" ||
+    state.active?.scenarioId !== "fork_masking" ||
+    !state.runId
+  ) {
+    throw new Error("no forkable source run");
+  }
+  return {
+    ...state,
+    phase: "streaming",
+    active: {
+      ...state.active,
+      unitNames: state.active.unitNames.filter((name) => name !== "input_mask"),
+    },
+    runId: null,
+    stopReason: null,
+    error: null,
+  };
+}
+
 export function finishRun(state, stopReason) {
   if (!state.active) throw new Error("no active run");
   return {

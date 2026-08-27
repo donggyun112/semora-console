@@ -26,14 +26,15 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from nexora import Agent, AgentRuntime
-from nexora.contracts import ToolCall
+from nexora.dispatch import Answer, Prompt, Recover
 from nexora.contracts.types import PendingInput
 from nexora.orchestrator import AgentSuspended
 from pydantic import BaseModel, Field
 
 from .dormancy import dormant_reason
+from .fork_demo import run_from_original, run_masked_source
 from .provider import DEFAULT_MODEL, openrouter_model
 from .scenarios import SCENARIOS, SYSTEM_PROMPT
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
@@ -47,14 +48,15 @@ _SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
 
 _sessions: dict[str, dict[str, Any]] = {}
 _store: Any = None
+_transcript: Any = None
 _closer: Any = None
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Open the step ledger on startup and close it on shutdown."""
-    global _store, _closer
-    _store, _closer = await make_store()
+    """Open the runtime stores on startup and close them on shutdown."""
+    global _store, _transcript, _closer
+    _store, _transcript, _closer = await make_store()
     yield
     if _closer is not None:
         await _closer()
@@ -113,6 +115,12 @@ class SteerRequest(BaseModel):
 
 class RecoverRequest(BaseModel):
     """Continue a run after the worker died mid-round."""
+
+    run_id: str
+
+
+class ForkRequest(BaseModel):
+    """Re-run one completed masking incident from its ledger original."""
 
     run_id: str
 
@@ -281,7 +289,7 @@ async def _stream(
         return {"kind": "policy_summary", "units": rows}
 
     async def run_attempt() -> None:
-        runtime = AgentRuntime(store=_store, emit=publish)
+        runtime = AgentRuntime(store=_store, transcript=_transcript, emit=publish)
         await queue.put({"kind": "meta", "run_id": run_id})
         if open_session:
             await runtime.events.session_start("console")
@@ -289,6 +297,9 @@ async def _stream(
             outcome = await attempt(runtime, on_event)
             reason = outcome.get("stop_reason") if isinstance(outcome, dict) else "completed"
             await runtime.events.session_end(str(reason or "completed"))
+            completed = _sessions.get(run_id)
+            if completed is not None:
+                completed["terminal"] = True
             await queue.put({"kind": "outcome", "outcome": outcome})
             if selected:
                 await queue.put(summary_frame())
@@ -358,46 +369,100 @@ async def run(request: RunRequest) -> StreamingResponse:
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
     agent = _new_agent()
+    conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
+    prefix_run_id = f"run-{uuid.uuid4().hex[:12]}"
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
-        "aborted": False, "history": None, "crash": crash_at is not None, "crash_at": crash_at,
+        "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
+        "conversation_id": conversation_id, "origin_id": prompt_id,
+        "source_run_id": run_id, "prefix_run_id": prefix_run_id,
+        "terminal": False,
     }
     if crash_at is not None:
         _store.arm(run_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        text: list[str] = []
-        calls: list[ToolCall] = []
-
-        async def capture(event: dict[str, Any]) -> None:
-            await on_event(event)
-            if crash_at is None:
-                return
-            if event.get("type") == "text":
-                text.append(str(event.get("text") or ""))
-            if event.get("type") == "tool_call":
-                calls.append(
-                    {
-                        "id": str(event.get("id") or ""),
-                        "name": str(event.get("name") or ""),
-                        "args": event.get("input") or {},
-                        "type": "tool_call",
-                    }
-                )
-                _sessions[run_id]["history"] = [
-                    HumanMessage(scenario["prompt"], id=prompt_id),
-                    AIMessage(content="".join(text), tool_calls=list(calls)),
-                ]
-
-        return await runtime.run(
-            run_id, agent, scenario["prompt"],
-            controls=_controls(selected, run_id, crash_at), on_event=capture,
-            should_stop_after_turn=_capped, aborted=lambda: _is_aborted(run_id),
-            prompt_id=prompt_id,
+        if request.scenario_id == "fork_masking":
+            return await run_masked_source(
+                runtime,
+                run_id=run_id,
+                prefix_run_id=prefix_run_id,
+                conversation_id=conversation_id,
+                origin_id=prompt_id,
+                prompt=scenario["prompt"],
+                agent=agent,
+                controls=_controls(selected, run_id, crash_at),
+                on_event=on_event,
+                should_stop_after_turn=_capped,
+                aborted=lambda: _is_aborted(run_id),
+            )
+        return await runtime.dispatch(
+            run_id,
+            agent,
+            Prompt(scenario["prompt"], prompt_id=prompt_id),
+            controls=_controls(selected, run_id, crash_at),
+            on_event=on_event,
+            should_stop_after_turn=_capped,
+            aborted=lambda: _is_aborted(run_id),
         )
 
     return StreamingResponse(
         _stream(run_id, attempt, selected=selected, scenario_id=request.scenario_id, open_session=True),
+        media_type="application/x-ndjson",
+    )
+
+
+@app.post("/api/fork")
+async def fork(request: ForkRequest) -> StreamingResponse:
+    """Move the masking conversation head by re-running its original ledger input."""
+    source = _sessions.get(request.run_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="unknown run_id")
+    if source.get("scenario_id") != "fork_masking" or not source.get("terminal"):
+        raise HTTPException(status_code=409, detail="run is not forkable")
+    if source.get("forked_to"):
+        raise HTTPException(status_code=409, detail="run already forked")
+
+    fork_run_id = f"run-{uuid.uuid4().hex[:12]}"
+    fork_units = [name for name in source["units"] if name != "input_mask"]
+    source["forked_to"] = fork_run_id
+    _sessions[fork_run_id] = {
+        "units": fork_units,
+        "agent": source["agent"],
+        "scenario_id": "fork_masking",
+        "aborted": False,
+        "crash": False,
+        "crash_at": None,
+        "conversation_id": source["conversation_id"],
+        "origin_id": source["origin_id"],
+        "source_run_id": request.run_id,
+        "fork_parent": request.run_id,
+        "terminal": False,
+    }
+
+    async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
+        return await run_from_original(
+            runtime,
+            _store,
+            from_run_id=request.run_id,
+            run_id=fork_run_id,
+            conversation_id=source["conversation_id"],
+            origin_id=source["origin_id"],
+            agent=source["agent"],
+            controls=compose_controls(fork_units),
+            on_event=on_event,
+            should_stop_after_turn=_capped,
+            aborted=lambda: _is_aborted(fork_run_id),
+        )
+
+    return StreamingResponse(
+        _stream(
+            fork_run_id,
+            attempt,
+            selected=fork_units,
+            scenario_id="fork_masking",
+            open_session=True,
+        ),
         media_type="application/x-ndjson",
     )
 
@@ -419,11 +484,13 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
         _store.arm(request.run_id, at="commit")
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        agent = session["agent"]
-        return await runtime.resume(
-            request.run_id, request.pending_id, answer, agent.model, agent.tools,
-            controls=compose_controls(session["units"]), on_event=on_event,
-            system_prompt=agent.system_prompt, should_stop_after_turn=_capped,
+        return await runtime.dispatch(
+            request.run_id,
+            session["agent"],
+            Answer(request.pending_id, answer),
+            controls=compose_controls(session["units"]),
+            on_event=on_event,
+            should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(request.run_id),
         )
 
@@ -439,20 +506,18 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
     session = _sessions.get(request.run_id)
     if session is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
-    history = session.get("history")
-    if not history:
-        raise HTTPException(status_code=409, detail="복원할 장애가 없습니다")
+    session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        agent = session["agent"]
-        outcome = await runtime.recover(
-            request.run_id, history, agent.model, agent.tools,
-            controls=compose_controls(session["units"]), on_event=on_event,
-            retry_running=False, system_prompt=agent.system_prompt,
-            should_stop_after_turn=_capped, aborted=lambda: _is_aborted(request.run_id),
+        return await runtime.dispatch(
+            request.run_id,
+            session["agent"],
+            Recover(),
+            controls=compose_controls(session["units"]),
+            on_event=on_event,
+            should_stop_after_turn=_capped,
+            aborted=lambda: _is_aborted(request.run_id),
         )
-        session["history"] = None
-        return outcome
 
     return StreamingResponse(
         _stream(request.run_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),

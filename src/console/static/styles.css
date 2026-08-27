@@ -354,6 +354,50 @@ button.primary:hover:not(:disabled) {
   padding: 38px 24px 44px;
 }
 
+.fork-warning {
+  width: min(900px, calc(100% - 48px));
+  margin: 22px auto 0;
+  padding: 11px 13px;
+  border: 1px solid rgba(244, 185, 66, 0.28);
+  border-radius: 8px;
+  color: #d7b86d;
+  background: rgba(244, 185, 66, 0.06);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.branch-group {
+  display: grid;
+  gap: 22px;
+  padding: 22px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(11, 13, 16, 0.42);
+}
+
+.branch-group.active {
+  border-color: rgba(111, 156, 255, 0.34);
+}
+
+.branch-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.branch-group > header strong,
+.branch-group > header span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.branch-group > header span {
+  color: var(--muted);
+}
+
 .chat-message {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -931,6 +975,16 @@ button.primary:hover:not(:disabled) {
   .chat-thread {
     gap: 24px;
     padding: 28px 14px 32px;
+  }
+
+  .fork-warning {
+    width: calc(100% - 28px);
+    margin-top: 16px;
+  }
+
+  .branch-group {
+    gap: 18px;
+    padding: 16px 12px;
   }
 
   .chat-message,

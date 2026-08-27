@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from nexora import Agent
 from nexora.contracts.events import EventType
+from nexora.dispatch import Answer, Prompt, Recover
 
 from console import server
 from console.server import _crash_point, _is_aborted, _project_event, _stream, app
@@ -71,22 +72,21 @@ def test_scenarios_endpoint():
         assert r.status_code == 200
         assert [s["id"] for s in r.json()] == [
             "note", "customer", "leak", "inject", "charge", "crash", "batch", "parallel",
-            "parallel_crash",
+            "parallel_crash", "fork_masking",
         ]
 
-
 def test_run_uses_agent_definition(monkeypatch):
-    """The server binds model, tools, and system prompt in one Agent definition."""
+    """The server dispatches a Prompt with one bound Agent definition."""
     model = object()
     captured: dict = {}
 
     monkeypatch.setattr(server, "openrouter_model", lambda: model)
 
-    async def fake_run(self, run_id, agent, prompt, **kwargs):
-        captured.update(run_id=run_id, agent=agent, prompt=prompt, kwargs=kwargs)
+    async def fake_dispatch(self, run_id, agent, command, **kwargs):
+        captured.update(run_id=run_id, agent=agent, command=command, kwargs=kwargs)
         return {"stop_reason": "completed"}
 
-    monkeypatch.setattr(server.AgentRuntime, "run", fake_run)
+    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
 
     with TestClient(app) as c:
         response = c.post("/api/run", json={"scenario_id": "note", "units": []})
@@ -102,9 +102,12 @@ def test_run_uses_agent_definition(monkeypatch):
         assert agent.model is model
         assert isinstance(agent.tools, server.DemoTools)
         assert agent.system_prompt == server.SYSTEM_PROMPT
-        assert captured["prompt"] == next(
+        command = captured["command"]
+        assert isinstance(command, Prompt)
+        assert command.text == next(
             scenario["prompt"] for scenario in server.SCENARIOS if scenario["id"] == "note"
         )
+        assert command.prompt_id
         assert "system_prompt" not in captured["kwargs"]
         assert server._sessions[run_id]["agent"] is agent
     finally:
@@ -112,7 +115,7 @@ def test_run_uses_agent_definition(monkeypatch):
 
 
 def test_resume_reuses_session_agent(monkeypatch):
-    """Continuation uses the original Agent definition instead of rebuilding its model."""
+    """Continuation dispatches an Answer with the original Agent definition."""
     model = object()
     agent = Agent(
         "control-plane-console",
@@ -126,19 +129,17 @@ def test_resume_reuses_session_agent(monkeypatch):
     def unexpected_model():
         raise AssertionError("resume must not create a new model")
 
-    async def fake_resume(self, run_id, pending_id, answer, resumed_model, tools, **kwargs):
+    async def fake_dispatch(self, run_id, resumed_agent, command, **kwargs):
         captured.update(
             run_id=run_id,
-            pending_id=pending_id,
-            answer=answer,
-            model=resumed_model,
-            tools=tools,
+            agent=resumed_agent,
+            command=command,
             kwargs=kwargs,
         )
         return {"stop_reason": "completed"}
 
     monkeypatch.setattr(server, "openrouter_model", unexpected_model)
-    monkeypatch.setattr(server.AgentRuntime, "resume", fake_resume)
+    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
     server._sessions["run-agent-resume"] = {
         "units": [],
         "agent": agent,
@@ -154,15 +155,18 @@ def test_resume_reuses_session_agent(monkeypatch):
             )
         frames = [json.loads(line) for line in response.text.splitlines()]
         assert [frame for frame in frames if frame["kind"] == "error"] == []
-        assert captured["model"] is agent.model
-        assert captured["tools"] is agent.tools
-        assert captured["kwargs"]["system_prompt"] == agent.system_prompt
+        assert captured["agent"] is agent
+        command = captured["command"]
+        assert isinstance(command, Answer)
+        assert command.pending_id == "pending-1"
+        assert command.payload == {"type": "text", "text": "approved by the human"}
+        assert "system_prompt" not in captured["kwargs"]
     finally:
         server._sessions.pop("run-agent-resume", None)
 
 
 def test_recover_reuses_session_agent(monkeypatch):
-    """Crash recovery keeps the original Agent definition and tool state."""
+    """Crash recovery dispatches Recover with the original Agent definition."""
     model = object()
     agent = Agent(
         "control-plane-console",
@@ -171,41 +175,38 @@ def test_recover_reuses_session_agent(monkeypatch):
         server.DemoTools(),
         server.SYSTEM_PROMPT,
     )
-    history = [object()]
     captured: dict = {}
 
     def unexpected_model():
         raise AssertionError("recover must not create a new model")
 
-    async def fake_recover(self, run_id, recovered_history, recovered_model, tools, **kwargs):
+    async def fake_dispatch(self, run_id, recovered_agent, command, **kwargs):
         captured.update(
             run_id=run_id,
-            history=recovered_history,
-            model=recovered_model,
-            tools=tools,
+            agent=recovered_agent,
+            command=command,
             kwargs=kwargs,
         )
         return {"stop_reason": "completed"}
 
     monkeypatch.setattr(server, "openrouter_model", unexpected_model)
-    monkeypatch.setattr(server.AgentRuntime, "recover", fake_recover)
+    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
     server._sessions["run-agent-recover"] = {
         "units": [],
         "agent": agent,
         "scenario_id": "crash",
         "aborted": False,
-        "history": history,
     }
     try:
         with TestClient(app) as c:
             response = c.post("/api/recover", json={"run_id": "run-agent-recover"})
         frames = [json.loads(line) for line in response.text.splitlines()]
+        assert response.status_code == 200
         assert [frame for frame in frames if frame["kind"] == "error"] == []
-        assert captured["history"] is history
-        assert captured["model"] is agent.model
-        assert captured["tools"] is agent.tools
-        assert captured["kwargs"]["system_prompt"] == agent.system_prompt
-        assert captured["kwargs"]["retry_running"] is False
+        assert captured["agent"] is agent
+        assert isinstance(captured["command"], Recover)
+        assert "system_prompt" not in captured["kwargs"]
+        assert "retry_running" not in captured["kwargs"]
     finally:
         server._sessions.pop("run-agent-recover", None)
 
@@ -218,12 +219,12 @@ def test_units_endpoint_shape():
         assert body["model"].startswith("deepseek/")
         names = {u["name"] for u in body["units"]}
         assert names == {
-            "approval", "dlp_block", "rate_cap", "pii_mask",
+            "input_mask", "approval", "dlp_block", "rate_cap", "pii_mask",
             "context_firewall", "injection_guard", "log_gate",
         }
         points = {u["point"] for u in body["units"]}
         assert {"pre_tool_use", "after_tool_call", "before_finish"} <= points
-        assert "on_inputs" not in points
+        assert "on_inputs" in points
         assert "before_model" not in points
 
 
@@ -251,7 +252,8 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
         "launch-policies", "run", "policy-open", "launch-policy-open",
         "run-shell", "run-title", "run-status", "run-policies", "abort",
-        "chat-panel", "chat-thread", "event-panel", "event-count",
+        "chat-panel", "chat-thread", "fork-warning", "fork-run",
+        "event-panel", "event-count",
         "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
         "details-copy", "details-title", "details-body", "steer-form",
@@ -280,6 +282,8 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
         ".run-shell",
         ".chat-panel",
         ".chat-message",
+        ".branch-group",
+        ".fork-warning",
         ".event-panel",
         ".trace-row",
         ".details-drawer",
@@ -323,14 +327,90 @@ def test_crash_with_approval_is_the_pre_park_seam():
     assert _crash_point("parallel_crash", []) == "commit"
 
 
-def test_recover_without_crash_is_409():
-    server._sessions["run-ok"] = {"units": [], "aborted": False, "scenario_id": "note", "history": None}
+def test_recover_unknown_run_is_404():
+    with TestClient(app) as c:
+        r = c.post("/api/recover", json={"run_id": "run-missing"})
+    assert r.status_code == 404
+
+
+def test_fork_rejects_unknown_source():
+    with TestClient(app) as client:
+        response = client.post("/api/fork", json={"run_id": "missing"})
+    assert response.status_code == 404
+
+
+def test_fork_rejects_nonforkable_and_repeated_source():
+    agent = object()
+    cases = {
+        "run-not-terminal": {
+            "units": ["input_mask"],
+            "agent": agent,
+            "scenario_id": "fork_masking",
+            "terminal": False,
+        },
+        "run-wrong-scenario": {
+            "units": [],
+            "agent": agent,
+            "scenario_id": "note",
+            "terminal": True,
+        },
+        "run-already-forked": {
+            "units": ["input_mask"],
+            "agent": agent,
+            "scenario_id": "fork_masking",
+            "terminal": True,
+            "forked_to": "run-existing-fork",
+        },
+    }
+    server._sessions.update(cases)
     try:
-        with TestClient(app) as c:
-            r = c.post("/api/recover", json={"run_id": "run-ok"})
-        assert r.status_code == 409
+        with TestClient(app) as client:
+            for run_id in cases:
+                before = set(server._sessions)
+                response = client.post("/api/fork", json={"run_id": run_id})
+                assert response.status_code == 409
+                assert set(server._sessions) == before
     finally:
-        server._sessions.pop("run-ok", None)
+        for run_id in cases:
+            server._sessions.pop(run_id, None)
+
+
+def test_fork_removes_input_mask_and_reuses_source_lineage(monkeypatch):
+    captured: dict = {}
+    source_id = "run-fork-source"
+    server._sessions[source_id] = {
+        "units": ["input_mask", "log_gate"],
+        "agent": object(),
+        "scenario_id": "fork_masking",
+        "terminal": True,
+        "conversation_id": "conv-fork",
+        "origin_id": "p2",
+        "source_run_id": source_id,
+    }
+
+    async def fake_run_from_original(_runtime, _store, **kwargs):
+        captured.update(kwargs)
+        return {"stop_reason": "completed"}
+
+    monkeypatch.setattr(server, "run_from_original", fake_run_from_original)
+    try:
+        with TestClient(app) as client:
+            response = client.post("/api/fork", json={"run_id": source_id})
+        assert response.status_code == 200
+        frames = [json.loads(line) for line in response.text.splitlines()]
+        fork_id = next(frame["run_id"] for frame in frames if frame["kind"] == "meta")
+        assert captured["from_run_id"] == source_id
+        assert captured["run_id"] == fork_id
+        assert captured["conversation_id"] == "conv-fork"
+        assert captured["origin_id"] == "p2"
+        assert server._sessions[source_id]["forked_to"] == fork_id
+        assert server._sessions[fork_id]["units"] == ["log_gate"]
+        assert server._sessions[fork_id]["terminal"] is True
+    finally:
+        fork_id = server._sessions.get(source_id, {}).get("forked_to")
+        server._sessions.pop(source_id, None)
+        if fork_id:
+            server._sessions.pop(fork_id, None)
 
 
 def test_abort_unknown_run_is_404():

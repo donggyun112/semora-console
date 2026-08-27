@@ -158,6 +158,29 @@ def c_dormancy():
     return bool(ok), f"rate_cap={rc}"
 
 
+def c_fork():
+    source = stream(
+        "/api/run",
+        {"scenario_id": "fork_masking", "units": ["input_mask"]},
+    )
+    source_meta = next(frame for frame in source if frame["kind"] == "meta")
+    source_branch = next(
+        frame
+        for frame in source
+        if frame["kind"] == "lifecycle" and frame.get("type") == "branch_snapshot"
+    )
+    forked = stream("/api/fork", {"run_id": source_meta["run_id"]})
+    fork_branch = next(
+        frame
+        for frame in forked
+        if frame["kind"] == "lifecycle" and frame.get("type") == "branch_snapshot"
+    )
+    source_text = str(source_branch["payload"]["messages"])
+    fork_text = str(fork_branch["payload"]["messages"])
+    ok = "***" in source_text and "123-45" not in source_text and "123-45" in fork_text
+    return ok, f"source_masked={'***' in source_text}, fork_original={'123-45' in fork_text}"
+
+
 def main() -> None:
     case("1) approval + charge → suspend → resume → exec ×1", c_approval_resume)
     case("1b) approval + parallel → one suspend over ≥2 charge_card in the batch", c_parallel_approval)
@@ -170,6 +193,7 @@ def main() -> None:
     case("6) log_gate + charge → finish-seam steer + finish", c_loggate)
     case("7) HEADLINE leak + approval+dlp_block → DENY wins over SUSPEND", c_headline)
     case("8) dormancy → rate_cap dormant with reason, pii_mask fired", c_dormancy)
+    case("9) input_mask → source masked → fork restores ledger original", c_fork)
     print()
     if FAILED:
         print(f"{FAILED} CASE(S) FAILED")

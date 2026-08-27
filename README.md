@@ -15,13 +15,15 @@ before_model → Steering   before_finish → FinishPolicy   on_suspend → Susp
 nexora's control plane is seven hooks, and every one composes variadically. A **unit** here
 declares the hook it attaches to and one function with that hook's signature;
 `compose_controls` groups the selected units by hook and assembles a single `ControlPlane`.
-Each run stores one `Agent` definition that owns its model, tools, and system prompt;
-`AgentRuntime` owns attempt state, controls, durable suspension, and recovery.
+Each run stores one `Agent` definition that owns its model, tools, and system prompt.
+The host sends `Prompt`, `Answer`, or `Recover` to `AgentRuntime.dispatch`; the runtime's
+ordered transition table selects start, steering, resume, or journal replay.
 
 ## The units
 
 | Unit | Hook → Composer | Verdict | What it does |
 | --- | --- | --- | --- |
+| `input_mask` | `on_inputs` → Ingress | **Rewrite** | Masks an SSN-shaped user input before it enters model context while keeping its ledger `origin_id`. |
 | `approval` | `pre_tool_use` → Permissions | **Suspend** | Halts the whole loop for human sign-off on any effect (write/charge/send); a pure read passes. |
 | `dlp_block` | `pre_tool_use` → Permissions | **Deny** | Scans an outbound send's **payload**; denies it if the body carries confidential data (email/SSN). Real egress DLP — it inspects what is leaving, not merely that a read happened. |
 | `rate_cap` | `pre_tool_use` → Permissions | **Deny** | Denies irreversible effects (charge/send) past a per-run budget. Session logging is not counted, so `log_gate` can still record after the cap. |
@@ -59,6 +61,11 @@ on the next model call. Stop is a button. Steer is a queue.
 result and executes the remaining calls so all three effects finish exactly once.
 `batch` is sequential so `rate_cap` can trip on the third.
 
+`fork_masking` runs `ssn is 123-45` through `input_mask`, so the source transcript shows
+`ssn is ***` while the source ledger keeps the submitted original. **원문으로 분기 실행**
+calls `fork_run` without that masker: the conversation head moves from the shared prefix,
+and the original becomes durable in the fork ledger, transcript, and `CONTEXT_INJECTED` event.
+
 **Stop is a button, not a unit.** While a run is in flight the operator can hit **중단**;
 that trips Nexora's `aborted()` hook (`POST /api/abort`) and cancels the attempt, on any
 scenario and any assembled plane. There is no locked "stop" task.
@@ -86,10 +93,10 @@ uv run pytest                    # composition + streaming-assembly tests
 
 ## Durable exactly-once
 
-`approval` suspends a call and persists a continuation to the step ledger; resuming runs
-the effect **exactly once** (`exec ×1` in the UI). Within one process this uses the
-in-memory ledger. To prove it **survives a restart**, set `DATABASE_URL` (Postgres) and run
-on one long-lived machine:
+`approval` suspends a call and persists both the continuation and conversation transcript;
+resuming runs the effect **exactly once** (`exec ×1` in the UI). Within one process these
+use in-memory stores. To prove it **survives a restart**, set `DATABASE_URL` so both use
+Postgres, then run on one long-lived machine:
 
 ```
 POST /api/run (approval + charge) → suspended
@@ -99,16 +106,16 @@ POST /api/resume by run_id → the charge runs once (exec ×1), across the resta
 
 **청구 중 장애** and **동시 청구 중 장애** arm a worker crash after the first tool
 `finish_effect`. In the parallel case the committed result is replayed and the absent
-siblings execute during **복원**: `POST /api/recover` → `AgentRuntime.recover`
-(`retry_running=False`). Process restart still needs `DATABASE_URL`.
+siblings execute during **복원**: `POST /api/recover` dispatches `Recover()`, and the
+runtime selects journal replay from durable state. Process restart still needs `DATABASE_URL`.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
 | `units.py` | The substance — units + `compose_controls()` + self-check. |
-| `scenarios.py` | 9 locked scenarios (no free-text → no LLM-proxy abuse). |
+| `scenarios.py` | 10 locked scenarios (no free-text → no LLM-proxy abuse). |
 | `dormancy.py` | Why a toggled-on unit stayed dormant in a scenario. |
 | `tools.py` | Demo effects (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
 | `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set. |
-| `server.py` | FastAPI: `/api/run`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |
+| `server.py` | FastAPI: `/api/run`, `/api/fork`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |

@@ -52,6 +52,9 @@
             <p class="eyebrow">CHAT</p>
             <h2 id="chat-title">대화</h2>
           </header>
+          <p id="fork-warning" class="fork-warning hidden" role="note">
+            원문이 새 원장과 대화 기록에 남습니다.
+          </p>
           <div id="chat-thread" class="chat-thread" role="log" aria-live="polite"></div>
         </section>
 
@@ -66,6 +69,7 @@
 
           <div id="outcome-strip" class="outcome-strip hidden"></div>
         <div class="terminal-actions hidden">
+          <button id="fork-run" class="hidden" type="button">원문으로 분기 실행</button>
           <button id="rerun-plain" type="button">정책 없이 다시 실행</button>
           <button id="rerun-same" type="button">같은 설정으로 다시 실행</button>
         </div>

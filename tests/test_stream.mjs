@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+  deriveBranchView,
   deriveChatView,
   getLaunchCopy,
 } from "../src/console/static/app.js";
@@ -12,6 +13,7 @@ import {
   DEFAULT_DRAFT,
   acceptsStreamEnd,
   attachRunId,
+  beginFork,
   beginContinuation,
   canEditDraft,
   canStartRun,
@@ -173,6 +175,44 @@ const terminal = finishRun(streaming, "completed");
 assert.equal(terminal.phase, "terminal");
 assert.equal(terminal.stopReason, "completed");
 assert.equal(canStartRun(terminal), true);
+
+const forkSourceTerminal = finishRun(
+  attachRunId(
+    startRun(updateDraft(createRunState(), {
+      scenarioId: "fork_masking",
+      unitNames: ["input_mask", "dlp_block"],
+    })),
+    "run-b",
+  ),
+  "completed",
+);
+const forking = beginFork(forkSourceTerminal);
+assert.deepEqual(forking.active.unitNames, ["dlp_block"]);
+assert.equal(forking.phase, "streaming");
+assert.equal(forking.runId, null);
+
+assert.deepEqual(
+  deriveBranchView([
+    { kind: "lifecycle", type: "branch_snapshot", payload: {
+      branch: "source", run_id: "run-b", active: true,
+      messages: [{ role: "user", content: "ssn is ***" }],
+    } },
+    { kind: "lifecycle", type: "branch_snapshot", payload: {
+      branch: "fork", run_id: "run-c", active: true,
+      messages: [{ role: "user", content: "ssn is 123-45" }],
+    } },
+  ]),
+  [
+    {
+      branch: "source", runId: "run-b", active: false,
+      messages: [{ role: "user", content: "ssn is ***" }],
+    },
+    {
+      branch: "fork", runId: "run-c", active: true,
+      messages: [{ role: "user", content: "ssn is 123-45" }],
+    },
+  ],
+);
 
 const failed = failRun(streaming, "truncated stream");
 assert.equal(failed.phase, "error");

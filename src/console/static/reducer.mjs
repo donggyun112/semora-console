@@ -12,6 +12,9 @@ function makeRow(sequence, kind, label, summary, options = {}) {
 
 function lifecycleSummary(frame) {
   const payload = frame.payload ?? {};
+  if (frame.type === "branch_snapshot") {
+    return `${payload.branch ?? "unknown"} branch`;
+  }
   return (
     payload.name ??
     payload.source ??

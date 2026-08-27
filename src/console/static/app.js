@@ -4,6 +4,7 @@ import {
   acceptsStreamEnd,
   attachRunId,
   beginContinuation,
+  beginFork,
   canEditDraft,
   canStartRun,
   canSteer,
@@ -152,6 +153,27 @@ export function deriveChatView(prompt, frames) {
   };
 }
 
+export function deriveBranchView(frames) {
+  const branches = new Map();
+  let activeBranch = null;
+  for (const frame of frames) {
+    if (frame?.kind !== "lifecycle" || frame.type !== "branch_snapshot") continue;
+    const payload = frame.payload ?? {};
+    if (!payload.branch) continue;
+    branches.set(payload.branch, {
+      branch: payload.branch,
+      runId: payload.run_id,
+      active: false,
+      messages: (payload.messages ?? []).map((message) => ({ ...message })),
+    });
+    activeBranch = payload.branch;
+  }
+  return [...branches.values()].map((branch) => ({
+    ...branch,
+    active: branch.branch === activeBranch,
+  }));
+}
+
 export function createConsole({
   document: documentRef,
   fetch: fetchRef,
@@ -161,6 +183,7 @@ export function createConsole({
     "launch", "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
     "launch-policies", "run", "policy-open", "launch-policy-open", "run-shell",
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
+    "fork-warning", "fork-run",
     "event-count", "outcome-strip",
     "rerun-plain", "rerun-same", "retry-run", "return-draft", "trace",
     "details-drawer", "details-close", "details-copy", "details-title",
@@ -205,7 +228,11 @@ export function createConsole({
 
   function chooseScenario(id) {
     if (!canEditDraft(state.run)) return;
-    state.run = updateDraft(state.run, { scenarioId: id });
+    const scenario = scenarioById(id);
+    state.run = updateDraft(state.run, {
+      scenarioId: id,
+      unitNames: scenario?.default_units ?? state.run.draft.unitNames,
+    });
     setHidden(dom["scenario-menu"], true);
     dom["scenario-trigger"].setAttribute("aria-expanded", "false");
     render();
@@ -331,8 +358,38 @@ export function createConsole({
   }
 
   function renderChat(scenario) {
-    const view = deriveChatView(scenario?.prompt ?? "", state.frames);
     dom["chat-thread"].replaceChildren();
+    const branches = scenario?.id === "fork_masking"
+      ? deriveBranchView(state.frames)
+      : [];
+
+    if (branches.length) {
+      for (const branch of branches) {
+        const group = documentRef.createElement("section");
+        group.className = `branch-group${branch.active ? " active" : ""}`;
+        const heading = documentRef.createElement("header");
+        const title = documentRef.createElement("strong");
+        title.textContent = branch.branch === "source"
+          ? "마스킹된 실행"
+          : "원문으로 다시 실행";
+        const status = documentRef.createElement("span");
+        status.textContent = branch.active ? "현재 대화" : "이전 대화";
+        heading.append(title, status);
+        group.append(heading);
+        for (const item of branch.messages) {
+          const role = item.role === "user" ? "user" : "assistant";
+          const row = makeChatMessage(role, role === "user" ? "YOU" : "NX");
+          const text = documentRef.createElement("p");
+          text.textContent = item.content;
+          row.content.append(text);
+          group.append(row.message);
+        }
+        dom["chat-thread"].append(group);
+      }
+      return;
+    }
+
+    const view = deriveChatView(scenario?.prompt ?? "", state.frames);
 
     const user = makeChatMessage("user", "YOU");
     const userText = documentRef.createElement("p");
@@ -376,8 +433,15 @@ export function createConsole({
 
   function renderOutcome() {
     const terminal = state.run.phase === "terminal";
+    const branches = deriveBranchView(state.frames);
+    const hasSource = branches.some((branch) => branch.branch === "source");
+    const hasFork = branches.some((branch) => branch.branch === "fork");
     setHidden(dom["outcome-strip"], !terminal);
     setHidden(dom.terminalActions, !terminal);
+    setHidden(
+      dom["fork-run"],
+      !(terminal && state.run.active?.scenarioId === "fork_masking" && hasSource && !hasFork),
+    );
     if (terminal) {
       const outcome = summarizeOutcome(state.frames);
       setText(
@@ -399,6 +463,7 @@ export function createConsole({
     setHidden(dom["run-error"], state.run.phase !== "error");
     setText(dom["run-error"], state.run.error);
     setHidden(dom.errorActions, state.run.phase !== "error");
+    setHidden(dom["fork-warning"], config.scenarioId !== "fork_masking");
     renderChat(scenario);
     renderOutcome();
     renderRows();
@@ -588,6 +653,18 @@ export function createConsole({
     await continueRun("/api/recover", { run_id: state.run.runId });
   }
 
+  async function forkSource() {
+    if (state.run.phase !== "terminal" || !state.run.runId) return;
+    const sourceRunId = state.run.runId;
+    try {
+      state.run = beginFork(state.run);
+    } catch {
+      return;
+    }
+    render();
+    await stream("/api/fork", { run_id: sourceRunId });
+  }
+
   async function abort() {
     if (!ACTIVE_PHASES.has(state.run.phase) || !state.run.runId) return;
     try {
@@ -654,6 +731,7 @@ export function createConsole({
     dom.approve.addEventListener("click", () => void decide(true));
     dom.deny.addEventListener("click", () => void decide(false));
     dom.recover.addEventListener("click", () => void recover());
+    dom["fork-run"].addEventListener("click", () => void forkSource());
     dom["steer-form"].addEventListener("submit", sendSteer);
     dom["details-close"].addEventListener("click", () => {
       state.selectedRowId = null;

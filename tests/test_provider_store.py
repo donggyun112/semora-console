@@ -2,6 +2,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from nexora import AgentRuntime, MemorySteps
 from nexora.orchestrator import AgentSuspended, Orchestrator
+from nexora_store import MemoryTranscript
 
 from console.provider import DEFAULT_MODEL, openrouter_model
 from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval, make_store
@@ -27,9 +28,10 @@ def test_provider_builds_with_key(monkeypatch):
 @pytest.mark.asyncio
 async def test_make_store_memory_without_db(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    store, closer = await make_store()
-    assert store is not None and closer is None
+    store, transcript, closer = await make_store()
     assert isinstance(store, FaultInjectingSteps)
+    assert isinstance(transcript, MemoryTranscript)
+    assert closer is None
 
 
 @pytest.mark.asyncio

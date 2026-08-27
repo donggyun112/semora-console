@@ -1,7 +1,7 @@
-"""Step ledger selection: in-memory for local, Postgres for a durable deploy.
+"""Step and transcript store selection for local or durable deployment.
 
-The suspend/resume-exactly-once claim survives a process restart only on a persistent
-ledger, so a live deployment that wants the durable proof must set DATABASE_URL.
+Suspension, recovery, and exactly-once effects survive a process restart only when both
+the step ledger and transcript are persistent, so durable deployments set DATABASE_URL.
 
 ``FaultInjectingSteps`` wraps whichever ledger is in use so crash scenarios can kill
 the worker at one of two seams: after ``finish_effect`` (no approval unit) or at the
@@ -14,6 +14,7 @@ import os
 from typing import Any
 
 from nexora import Continue, MemorySteps
+from nexora_store import MemoryTranscript
 
 
 class SimulatedWorkerCrash(RuntimeError):
@@ -91,17 +92,23 @@ def crash_before_approval(run_id: str, store: FaultInjectingSteps):
     return stage
 
 
-async def make_store() -> tuple[Any, Any]:
-    """Return ``(step_store, closer)``. ``closer`` is awaited on shutdown (may be None)."""
+async def make_store() -> tuple[Any, Any, Any]:
+    """Return the step store, transcript store, and optional async closer."""
     url = os.getenv("DATABASE_URL")
     if not url:
-        return FaultInjectingSteps(MemorySteps()), None
+        return FaultInjectingSteps(MemorySteps()), MemoryTranscript(), None
 
-    from nexora_store_pg import SCHEMA, PostgresSteps
+    from nexora_store_pg import (
+        SCHEMA,
+        TRANSCRIPT_SCHEMA,
+        PostgresSteps,
+        PostgresTranscript,
+    )
     from psycopg_pool import AsyncConnectionPool
 
     pool = AsyncConnectionPool(url, open=False)
     await pool.open()
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
-    return FaultInjectingSteps(PostgresSteps(pool)), pool.close
+        await conn.execute(TRANSCRIPT_SCHEMA)
+    return FaultInjectingSteps(PostgresSteps(pool)), PostgresTranscript(pool), pool.close

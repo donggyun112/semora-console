@@ -22,7 +22,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_suspend_survives_restart_and_runs_once():
-    from nexora import AgentRuntime
+    from nexora import Agent, AgentRuntime
+    from nexora.dispatch import Answer, Prompt
     from nexora.orchestrator import AgentSuspended
 
     from console.provider import openrouter_model
@@ -31,24 +32,35 @@ async def test_suspend_survives_restart_and_runs_once():
     from console.tools import DemoTools
     from console.units import compose_controls
 
-    store, closer = await make_store()
+    store, transcript, closer = await make_store()
     try:
         run_id = "durable-test-1"
         tools = DemoTools()
         controls = compose_controls(["approval"])
+        agent = Agent(
+            "durable-test",
+            "Exercises durable suspension and recovery.",
+            openrouter_model(),
+            tools,
+            SYSTEM_PROMPT,
+        )
 
-        # First runtime: run until the irreversible charge suspends.
+        # First runtime: dispatch until the irreversible charge suspends.
         with pytest.raises(AgentSuspended) as parked:
-            await AgentRuntime(store=store).run(
-                run_id, openrouter_model(), tools, "charge_card 도구로 c-001에게 49 달러를 청구해.",
-                controls=controls, system_prompt=SYSTEM_PROMPT,
+            await AgentRuntime(store=store, transcript=transcript).dispatch(
+                run_id,
+                agent,
+                Prompt("charge_card 도구로 c-001에게 49 달러를 청구해."),
+                controls=controls,
             )
         pending_id = parked.value.pending_id
 
-        # Fresh runtime over the SAME store = restart. Resume by id.
-        outcome = await AgentRuntime(store=store).resume(
-            run_id, pending_id, {"type": "text", "text": "approved by the human"},
-            openrouter_model(), tools, controls=controls, system_prompt=SYSTEM_PROMPT,
+        # Fresh runtime over the SAME stores = restart. Dispatch an answer by id.
+        outcome = await AgentRuntime(store=store, transcript=transcript).dispatch(
+            run_id,
+            agent,
+            Answer(pending_id, {"type": "text", "text": "approved by the human"}),
+            controls=controls,
         )
         assert outcome is not None
         # The charge executed exactly once across the restart.
