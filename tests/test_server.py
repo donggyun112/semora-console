@@ -184,6 +184,28 @@ def test_refused_call_emits_request_then_gate():
     assert frames[1]["call_id"] == "c1"
 
 
+def test_resumed_refusal_keeps_the_original_call_identity_without_pending_state():
+    frames = _project_event(
+        {
+            "type": "tool_result",
+            "id": "charge-2",
+            "name": "charge_card",
+            "executed": False,
+            "result": {
+                "type": "error",
+                "unit": "control",
+                "message": "denied by the human",
+            },
+        },
+        {},
+    )
+
+    blocked = frames[-1]
+    assert blocked["event"]["id"] == "charge-2"
+    assert blocked["event"]["name"] == "charge_card"
+    assert blocked["event"]["blocked"] is True
+
+
 def test_executed_call_emits_request_then_result():
     pending: dict = {}
     req = _project_event({"type": "tool_call", "id": "c1", "name": "read_customer", "input": {}}, pending)

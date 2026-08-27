@@ -223,6 +223,7 @@ def _project_event(
             if is_suspend:
                 return [unit_frame]
             blocked = dict(call or {"name": event.get("name"), "input": {}})
+            blocked["id"] = call_id
             blocked["type"] = "tool_call"
             blocked["blocked"] = True
             blocked_frame = {
