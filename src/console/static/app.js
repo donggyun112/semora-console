@@ -73,6 +73,7 @@ export function createConsole({
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
   dom.terminalActions = documentRef.querySelector(".terminal-actions");
   dom.errorActions = documentRef.querySelector(".error-actions");
+  dom.inspector = documentRef.querySelector(".inspector");
 
   const state = {
     run: createRunState(),
@@ -150,8 +151,10 @@ export function createConsole({
       state.selectedRowId = null;
       setHidden(dom["details-drawer"], true);
       dom["details-copy"].disabled = true;
+      dom.inspector.classList.remove("has-details");
       return;
     }
+    dom.inspector.classList.add("has-details");
     setHidden(dom["details-drawer"], false);
     setText(dom["details-title"], row.label);
     setText(dom["details-body"], JSON.stringify(row.details, null, 2));

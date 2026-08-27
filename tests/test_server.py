@@ -268,18 +268,24 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
     assert shell.elements["run-error"]["aria-live"] == "assertive"
 
 
-def test_stylesheet_has_responsive_focus_and_reduced_motion_contracts():
+def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
     with TestClient(app) as c:
         css = c.get("/styles.css").text
 
-    assert ".workspace.mode-demo" in css
-    assert ".composer-panel" in css
-    assert ":focus-visible" in css
-    assert "@media (max-width: 1040px)" in css
-    assert "@media (max-width: 820px)" in css
-    assert "@media (prefers-reduced-motion: reduce)" in css
-    assert "white-space: pre-wrap; overflow-wrap: anywhere;" in css
-    assert ".row.unit .msg { line-height: 1.5; overflow-wrap: anywhere; }" in css
+    for selector in [
+        ".launch",
+        ".run-shell",
+        ".trace-row",
+        ".details-drawer",
+        ".policy-drawer",
+        ".outcome-strip",
+        ":focus-visible",
+        "@media (max-width: 820px)",
+        "@media (prefers-reduced-motion: reduce)",
+    ]:
+        assert selector in css
+    assert ".workspace.mode-demo" not in css
+    assert ".composer-panel" not in css
 
 
 def test_steer_unknown_run_is_404():
