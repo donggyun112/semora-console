@@ -10,6 +10,7 @@ def test_scenarios_well_formed():
     ]
     for s in SCENARIOS:
         assert s["prompt"] and s["title"] and s["risk"]
+        assert s["forkable"] is True
 
 
 def test_fork_masking_scenario_starts_with_input_mask():

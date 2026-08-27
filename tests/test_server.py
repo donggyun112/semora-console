@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from nexora import Agent
 from nexora.contracts.events import EventType
 from nexora.dispatch import Answer, Prompt, Recover
+from nexora_fork import EventCheckpoint, ForkCoordinate
 
 from console import server
 from console.server import _crash_point, _is_aborted, _project_event, _stream, app
@@ -110,6 +111,10 @@ def test_run_uses_agent_definition(monkeypatch):
         assert command.prompt_id
         assert "system_prompt" not in captured["kwargs"]
         assert server._sessions[run_id]["agent"] is agent
+        assert captured["kwargs"]["conversation_id"] == server._sessions[run_id][
+            "conversation_id"
+        ]
+        assert all("event_id" in frame for frame in frames)
     finally:
         server._sessions.pop(run_id, None)
 
@@ -144,6 +149,7 @@ def test_resume_reuses_session_agent(monkeypatch):
         "units": [],
         "agent": agent,
         "scenario_id": "charge",
+        "conversation_id": "conv-agent-resume",
         "aborted": False,
         "crash": False,
     }
@@ -161,6 +167,7 @@ def test_resume_reuses_session_agent(monkeypatch):
         assert command.pending_id == "pending-1"
         assert command.payload == {"type": "text", "text": "approved by the human"}
         assert "system_prompt" not in captured["kwargs"]
+        assert captured["kwargs"]["conversation_id"] == "conv-agent-resume"
     finally:
         server._sessions.pop("run-agent-resume", None)
 
@@ -195,6 +202,7 @@ def test_recover_reuses_session_agent(monkeypatch):
         "units": [],
         "agent": agent,
         "scenario_id": "crash",
+        "conversation_id": "conv-agent-recover",
         "aborted": False,
     }
     try:
@@ -207,6 +215,7 @@ def test_recover_reuses_session_agent(monkeypatch):
         assert isinstance(captured["command"], Recover)
         assert "system_prompt" not in captured["kwargs"]
         assert "retry_running" not in captured["kwargs"]
+        assert captured["kwargs"]["conversation_id"] == "conv-agent-recover"
     finally:
         server._sessions.pop("run-agent-recover", None)
 
@@ -252,7 +261,7 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
         "launch-policies", "run", "policy-open", "launch-policy-open",
         "run-shell", "run-title", "run-status", "run-policies", "abort",
-        "chat-panel", "chat-thread", "fork-warning", "fork-run",
+        "chat-panel", "chat-thread",
         "event-panel", "event-count",
         "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
@@ -271,6 +280,8 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
     assert shell.elements["trace"]["role"] == "log"
     assert shell.ids.index("chat-panel") < shell.ids.index("trace")
     assert shell.elements["run-error"]["aria-live"] == "assertive"
+    assert "fork-run" not in shell.ids
+    assert "fork-warning" not in shell.ids
 
 
 def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
@@ -283,7 +294,7 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
         ".chat-panel",
         ".chat-message",
         ".branch-group",
-        ".fork-warning",
+        ".trace-fork",
         ".event-panel",
         ".trace-row",
         ".details-drawer",
@@ -335,11 +346,13 @@ def test_recover_unknown_run_is_404():
 
 def test_fork_rejects_unknown_source():
     with TestClient(app) as client:
-        response = client.post("/api/fork", json={"run_id": "missing"})
+        response = client.post(
+            "/api/fork", json={"run_id": "missing", "event_id": "event-missing"}
+        )
     assert response.status_code == 404
 
 
-def test_fork_rejects_nonforkable_and_repeated_source():
+def test_fork_rejects_inflight_and_repeated_source():
     agent = object()
     cases = {
         "run-not-terminal": {
@@ -347,12 +360,6 @@ def test_fork_rejects_nonforkable_and_repeated_source():
             "agent": agent,
             "scenario_id": "fork_masking",
             "terminal": False,
-        },
-        "run-wrong-scenario": {
-            "units": [],
-            "agent": agent,
-            "scenario_id": "note",
-            "terminal": True,
         },
         "run-already-forked": {
             "units": ["input_mask"],
@@ -367,7 +374,9 @@ def test_fork_rejects_nonforkable_and_repeated_source():
         with TestClient(app) as client:
             for run_id in cases:
                 before = set(server._sessions)
-                response = client.post("/api/fork", json={"run_id": run_id})
+                response = client.post(
+                    "/api/fork", json={"run_id": run_id, "event_id": "event-selected"}
+                )
                 assert response.status_code == 409
                 assert set(server._sessions) == before
     finally:
@@ -375,7 +384,7 @@ def test_fork_rejects_nonforkable_and_repeated_source():
             server._sessions.pop(run_id, None)
 
 
-def test_fork_removes_input_mask_and_reuses_source_lineage(monkeypatch):
+def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
     captured: dict = {}
     source_id = "run-fork-source"
     server._sessions[source_id] = {
@@ -386,26 +395,76 @@ def test_fork_removes_input_mask_and_reuses_source_lineage(monkeypatch):
         "conversation_id": "conv-fork",
         "origin_id": "p2",
         "source_run_id": source_id,
+        "origin_runs": {"p2": source_id},
+        "default_fork_origin": "p2",
     }
 
-    async def fake_run_from_original(_runtime, _store, **kwargs):
+    async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
         captured.update(kwargs)
         return {"stop_reason": "completed"}
 
-    monkeypatch.setattr(server, "run_from_original", fake_run_from_original)
+    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
+        coordinate = ForkCoordinate(source_id, "p2", None)
+        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
+
+    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
+    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
     try:
         with TestClient(app) as client:
-            response = client.post("/api/fork", json={"run_id": source_id})
+            response = client.post(
+                "/api/fork",
+                json={"run_id": source_id, "event_id": "event-selected", "edge": "before"},
+            )
         assert response.status_code == 200
         frames = [json.loads(line) for line in response.text.splitlines()]
         fork_id = next(frame["run_id"] for frame in frames if frame["kind"] == "meta")
-        assert captured["from_run_id"] == source_id
+        assert captured["event_id"] == "event-selected"
+        assert captured["edge"] == "before"
         assert captured["run_id"] == fork_id
         assert captured["conversation_id"] == "conv-fork"
-        assert captured["origin_id"] == "p2"
         assert server._sessions[source_id]["forked_to"] == fork_id
         assert server._sessions[fork_id]["units"] == ["log_gate"]
         assert server._sessions[fork_id]["terminal"] is True
+    finally:
+        fork_id = server._sessions.get(source_id, {}).get("forked_to")
+        server._sessions.pop(source_id, None)
+        if fork_id:
+            server._sessions.pop(fork_id, None)
+
+
+def test_fork_preserves_controls_for_other_scenarios(monkeypatch):
+    """Only the masking incident drops input_mask; ordinary runs keep their controls."""
+    source_id = "run-generic-source"
+    server._sessions[source_id] = {
+        "units": ["approval", "dlp_block"],
+        "agent": object(),
+        "scenario_id": "leak",
+        "terminal": True,
+        "conversation_id": "conv-generic",
+        "origin_id": "p1",
+        "source_run_id": source_id,
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+    }
+
+    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
+        return {"stop_reason": "completed"}
+
+    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
+        coordinate = ForkCoordinate(source_id, "p1", None)
+        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
+
+    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
+    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={"run_id": source_id, "event_id": "event-selected"},
+            )
+        assert response.status_code == 200
+        fork_id = server._sessions[source_id]["forked_to"]
+        assert server._sessions[fork_id]["units"] == ["approval", "dlp_block"]
     finally:
         fork_id = server._sessions.get(source_id, {}).get("forked_to")
         server._sessions.pop(source_id, None)

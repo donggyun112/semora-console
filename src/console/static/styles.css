@@ -354,18 +354,6 @@ button.primary:hover:not(:disabled) {
   padding: 38px 24px 44px;
 }
 
-.fork-warning {
-  width: min(900px, calc(100% - 48px));
-  margin: 22px auto 0;
-  padding: 11px 13px;
-  border: 1px solid rgba(244, 185, 66, 0.28);
-  border-radius: 8px;
-  color: #d7b86d;
-  background: rgba(244, 185, 66, 0.06);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 .branch-group {
   display: grid;
   gap: 22px;
@@ -607,8 +595,31 @@ button.primary:hover:not(:disabled) {
 }
 
 .trace-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
   border-bottom: 1px solid var(--line);
+}
+
+.trace-fork {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px 8px 0;
+}
+
+.trace-fork button {
+  min-height: 32px;
+  padding: 0 10px;
+  border-color: rgba(111, 156, 255, 0.26);
+  color: #aebfdf;
+  background: rgba(111, 156, 255, 0.04);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.trace-fork button:hover {
+  border-color: rgba(111, 156, 255, 0.55);
+  color: #dce7ff;
 }
 
 .trace-row {
@@ -729,6 +740,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .inline-action {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -975,11 +987,6 @@ button.primary:hover:not(:disabled) {
   .chat-thread {
     gap: 24px;
     padding: 28px 14px 32px;
-  }
-
-  .fork-warning {
-    width: calc(100% - 28px);
-    margin-top: 16px;
   }
 
   .branch-group {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deriveBranchView,
   deriveChatView,
+  getEventForkRequest,
   getLaunchCopy,
 } from "../src/console/static/app.js";
 import {
@@ -190,6 +191,24 @@ const forking = beginFork(forkSourceTerminal);
 assert.deepEqual(forking.active.unitNames, ["dlp_block"]);
 assert.equal(forking.phase, "streaming");
 assert.equal(forking.runId, null);
+const genericForking = beginFork(terminal);
+assert.deepEqual(genericForking.active.unitNames, ["approval", "dlp_block"]);
+assert.equal(genericForking.phase, "streaming");
+assert.deepEqual(
+  getEventForkRequest(forkSourceTerminal, { eventId: "event-09" }),
+  { run_id: "run-b", event_id: "event-09", edge: "before" },
+  "an event-row fork preserves the selected durable event coordinate",
+);
+assert.equal(
+  getEventForkRequest(streaming, { eventId: "event-09" }),
+  null,
+  "an in-flight run cannot start an event fork",
+);
+assert.deepEqual(
+  getEventForkRequest(terminal, { eventId: "event-generic" }),
+  { run_id: "run-1", event_id: "event-generic", edge: "before" },
+  "completed runs expose event forks for every scenario",
+);
 
 assert.deepEqual(
   deriveBranchView([
@@ -281,6 +300,8 @@ const traceFrames = [
   {
     kind: "lifecycle",
     type: "pre_tool_use",
+    event_id: "event-pre-tool",
+    fork_origin_id: "prompt-2",
     payload: { name: "send_email" },
   },
   {
@@ -310,6 +331,8 @@ const traceFrames = [
   },
 ];
 const trace = reduceFrames(traceFrames);
+assert.equal(trace[0].eventId, "event-pre-tool");
+assert.equal(trace[0].forkOriginId, "prompt-2");
 assert.deepEqual(
   trace.map(({ kind, label, summary, verdict }) => ({
     kind,

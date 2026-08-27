@@ -174,6 +174,22 @@ export function deriveBranchView(frames) {
   }));
 }
 
+export function getEventForkRequest(runState, row, hasFork = false) {
+  if (
+    runState?.phase !== "terminal" ||
+    !runState?.runId ||
+    !row?.eventId ||
+    hasFork
+  ) {
+    return null;
+  }
+  return {
+    run_id: runState.runId,
+    event_id: row.eventId,
+    edge: "before",
+  };
+}
+
 export function createConsole({
   document: documentRef,
   fetch: fetchRef,
@@ -183,7 +199,6 @@ export function createConsole({
     "launch", "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
     "launch-policies", "run", "policy-open", "launch-policy-open", "run-shell",
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
-    "fork-warning", "fork-run",
     "event-count", "outcome-strip",
     "rerun-plain", "rerun-same", "retry-run", "return-draft", "trace",
     "details-drawer", "details-close", "details-copy", "details-title",
@@ -330,11 +345,29 @@ export function createConsole({
     state.rows = reduceFrames(state.frames);
     setText(dom["event-count"], `${state.rows.length} EVENTS`);
     dom.trace.replaceChildren();
+    const branches = deriveBranchView(state.frames);
+    const hasFork = branches.some((branch) => branch.branch === "fork");
     state.rows.forEach((row, index) => {
       const entry = documentRef.createElement("article");
       entry.className = "trace-entry";
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
+      const request = getEventForkRequest(state.run, row, hasFork);
+      if (request) {
+        const action = documentRef.createElement("div");
+        action.className = "trace-fork";
+        const button = documentRef.createElement("button");
+        button.type = "button";
+        button.textContent = "이 지점에서 실행";
+        button.title = "원문이 새 원장과 대화 기록에 저장됩니다.";
+        button.setAttribute(
+          "aria-label",
+          `${index + 1}번 이벤트에서 다시 실행. 원문이 새 원장과 대화 기록에 저장됩니다.`,
+        );
+        button.addEventListener("click", () => void forkSource(row));
+        action.append(button);
+        entry.append(action);
+      }
       dom.trace.append(entry);
     });
 
@@ -359,9 +392,11 @@ export function createConsole({
 
   function renderChat(scenario) {
     dom["chat-thread"].replaceChildren();
-    const branches = scenario?.id === "fork_masking"
-      ? deriveBranchView(state.frames)
-      : [];
+    const projectedBranches = deriveBranchView(state.frames);
+    const branches = (
+      scenario?.id === "fork_masking" ||
+      projectedBranches.some((branch) => branch.branch === "fork")
+    ) ? projectedBranches : [];
 
     if (branches.length) {
       for (const branch of branches) {
@@ -433,15 +468,8 @@ export function createConsole({
 
   function renderOutcome() {
     const terminal = state.run.phase === "terminal";
-    const branches = deriveBranchView(state.frames);
-    const hasSource = branches.some((branch) => branch.branch === "source");
-    const hasFork = branches.some((branch) => branch.branch === "fork");
     setHidden(dom["outcome-strip"], !terminal);
     setHidden(dom.terminalActions, !terminal);
-    setHidden(
-      dom["fork-run"],
-      !(terminal && state.run.active?.scenarioId === "fork_masking" && hasSource && !hasFork),
-    );
     if (terminal) {
       const outcome = summarizeOutcome(state.frames);
       setText(
@@ -463,7 +491,6 @@ export function createConsole({
     setHidden(dom["run-error"], state.run.phase !== "error");
     setText(dom["run-error"], state.run.error);
     setHidden(dom.errorActions, state.run.phase !== "error");
-    setHidden(dom["fork-warning"], config.scenarioId !== "fork_masking");
     renderChat(scenario);
     renderOutcome();
     renderRows();
@@ -653,16 +680,18 @@ export function createConsole({
     await continueRun("/api/recover", { run_id: state.run.runId });
   }
 
-  async function forkSource() {
-    if (state.run.phase !== "terminal" || !state.run.runId) return;
-    const sourceRunId = state.run.runId;
+  async function forkSource(row) {
+    const branches = deriveBranchView(state.frames);
+    const hasFork = branches.some((branch) => branch.branch === "fork");
+    const request = getEventForkRequest(state.run, row, hasFork);
+    if (!request) return;
     try {
       state.run = beginFork(state.run);
     } catch {
       return;
     }
     render();
-    await stream("/api/fork", { run_id: sourceRunId });
+    await stream("/api/fork", request);
   }
 
   async function abort() {
@@ -731,7 +760,6 @@ export function createConsole({
     dom.approve.addEventListener("click", () => void decide(true));
     dom.deny.addEventListener("click", () => void decide(false));
     dom.recover.addEventListener("click", () => void recover());
-    dom["fork-run"].addEventListener("click", () => void forkSource());
     dom["steer-form"].addEventListener("submit", sendSteer);
     dom["details-close"].addEventListener("click", () => {
       state.selectedRowId = null;

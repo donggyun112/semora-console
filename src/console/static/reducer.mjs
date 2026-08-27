@@ -1,4 +1,6 @@
 function makeRow(sequence, kind, label, summary, options = {}) {
+  const raw = options.details?.raw;
+  const coordinateFrame = Array.isArray(raw) ? raw.at(-1) : raw;
   return {
     id: options.id ?? `${kind}:${sequence}`,
     kind,
@@ -7,7 +9,14 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     verdict: options.verdict ?? null,
     tone: options.tone ?? "neutral",
     details: options.details ?? {},
+    eventId: options.eventId ?? coordinateFrame?.event_id ?? null,
+    forkOriginId: options.forkOriginId ?? coordinateFrame?.fork_origin_id ?? null,
   };
+}
+
+function updateCoordinate(row, frame) {
+  if (frame?.event_id) row.eventId = frame.event_id;
+  if (frame?.fork_origin_id) row.forkOriginId = frame.fork_origin_id;
 }
 
 function lifecycleSummary(frame) {
@@ -61,6 +70,7 @@ export function reduceFrames(frames) {
       } else {
         openText.details.output += text;
         openText.details.raw.push(frame);
+        updateCoordinate(openText, frame);
       }
       continue;
     }
@@ -90,6 +100,7 @@ export function reduceFrames(frames) {
           input: event.input ?? prior.details.input,
           raw: [...(prior.details.raw ?? []), frame],
         };
+        updateCoordinate(prior, frame);
       } else {
         const row = append("tool", event.name ?? "tool", event.blocked ? "실행 안 됨" : "도구 호출 요청", {
           id: stableId,

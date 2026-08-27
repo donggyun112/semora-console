@@ -20,7 +20,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -31,10 +31,11 @@ from nexora import Agent, AgentRuntime
 from nexora.dispatch import Answer, Prompt, Recover
 from nexora.contracts.types import PendingInput
 from nexora.orchestrator import AgentSuspended
+from nexora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
 from .dormancy import dormant_reason
-from .fork_demo import run_from_original, run_masked_source
+from .fork_demo import EventCheckpointProjector, run_from_event, run_masked_source
 from .provider import DEFAULT_MODEL, openrouter_model
 from .scenarios import SCENARIOS, SYSTEM_PROMPT
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
@@ -120,9 +121,11 @@ class RecoverRequest(BaseModel):
 
 
 class ForkRequest(BaseModel):
-    """Re-run one completed masking incident from its ledger original."""
+    """Re-run one completed masking incident from a selected observation edge."""
 
     run_id: str
+    event_id: str
+    edge: Literal["before", "after"] = "before"
 
 
 def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
@@ -155,10 +158,6 @@ def _injected_text(payload: dict[str, Any]) -> str:
         data = message if isinstance(message, dict) else {}
     content = data.get("content") if isinstance(data, dict) else None
     return content if isinstance(content, str) else str(content or "")
-
-
-
-
 
 async def _capped(turn: int, _text: str, _calls: list[dict[str, Any]]) -> bool:
     """Bounded-turn backstop: runaway/cost guard for a public link, and a terminator for
@@ -236,15 +235,30 @@ async def _stream(
     fired: dict[str, int] = {}
     pending_calls: dict[str, dict[str, Any]] = {}
     projected_denials: set[str] = set()
+    session = _sessions.get(run_id)
+    projector = None
+    if session is not None and {
+        "conversation_id", "origin_runs", "default_fork_origin"
+    } <= session.keys():
+        projector = EventCheckpointProjector(
+            _transcript,
+            conversation_id=session["conversation_id"],
+            origin_runs=session["origin_runs"],
+            default_origin_id=session["default_fork_origin"],
+        )
+
+    async def put(frame: dict[str, Any]) -> None:
+        if projector is not None:
+            frame = await projector.stamp(frame)
+        await queue.put(frame)
 
     def mark(unit: str) -> None:
         fired[unit] = fired.get(unit, 0) + 1
-
     async def on_event(event: dict[str, Any]) -> None:
         for frame in _project_event(event, pending_calls, projected_denials):
             if frame.get("kind") == "unit":
                 mark(str(frame.get("unit") or "control"))
-            await queue.put(frame)
+            await put(frame)
 
     async def publish(event_type: str, payload: dict[str, Any]) -> None:
         # One queue: operator user_steer and policy Proceed both admit as context_injected.
@@ -254,11 +268,11 @@ async def _stream(
                 text = _injected_text(payload)
                 if kind == "control" and LOG_HINT in text and "log_gate" in selected:
                     mark("log_gate")
-                    await queue.put(
+                    await put(
                         {"kind": "unit", "unit": "log_gate", "verdict": "steer",
                          "message": "종료 거부"}
                     )
-                await queue.put(
+                await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
                 )
         if str(event_type).endswith("permission_denied"):
@@ -273,10 +287,10 @@ async def _stream(
                 )
                 projected_denials.add(call_id)
                 mark(str(unit))
-                await queue.put(
+                await put(
                     {"kind": "unit", "unit": unit, "verdict": "deny", "message": message}
                 )
-        await queue.put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
+        await put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
 
     def summary_frame() -> dict[str, Any]:
         rows = []
@@ -290,7 +304,7 @@ async def _stream(
 
     async def run_attempt() -> None:
         runtime = AgentRuntime(store=_store, transcript=_transcript, emit=publish)
-        await queue.put({"kind": "meta", "run_id": run_id})
+        await put({"kind": "meta", "run_id": run_id})
         if open_session:
             await runtime.events.session_start("console")
         try:
@@ -300,13 +314,13 @@ async def _stream(
             completed = _sessions.get(run_id)
             if completed is not None:
                 completed["terminal"] = True
-            await queue.put({"kind": "outcome", "outcome": outcome})
+            await put({"kind": "outcome", "outcome": outcome})
             if selected:
-                await queue.put(summary_frame())
+                await put(summary_frame())
         except AgentSuspended as stopped:
-            await queue.put({"kind": "suspended", "pending_id": stopped.pending_id, "tool_call_id": stopped.tool_call_id})
+            await put({"kind": "suspended", "pending_id": stopped.pending_id, "tool_call_id": stopped.tool_call_id})
         except SimulatedWorkerCrash as crashed:
-            await queue.put(
+            await put(
                 {
                     "kind": "recoverable",
                     "step": crashed.step,
@@ -316,16 +330,15 @@ async def _stream(
         except asyncio.CancelledError:
             await runtime.events.session_end("aborted" if _is_aborted(run_id) else "cancelled")
             if _is_aborted(run_id):
-                await queue.put({"kind": "outcome", "outcome": {"stop_reason": "aborted"}})
+                await put({"kind": "outcome", "outcome": {"stop_reason": "aborted"}})
             raise
         except Exception as failure:  # noqa: BLE001 - surface any failure as a frame
             await runtime.events.session_end("error")
-            await queue.put({"kind": "error", "message": str(failure)})
+            await put({"kind": "error", "message": str(failure)})
         finally:
             await queue.put(None)
 
     task = asyncio.create_task(run_attempt())
-    session = _sessions.get(run_id)
     if session is not None:
         session["task"] = task
     try:
@@ -371,11 +384,14 @@ async def run(request: RunRequest) -> StreamingResponse:
     agent = _new_agent()
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     prefix_run_id = f"run-{uuid.uuid4().hex[:12]}"
+    prefix_origin_id = f"{prefix_run_id}:prompt:{uuid.uuid4().hex[:8]}"
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_run_id": run_id, "prefix_run_id": prefix_run_id,
+        "origin_runs": {prefix_origin_id: prefix_run_id, prompt_id: run_id},
+        "default_fork_origin": prefix_origin_id,
         "terminal": False,
     }
     if crash_at is not None:
@@ -387,6 +403,7 @@ async def run(request: RunRequest) -> StreamingResponse:
                 runtime,
                 run_id=run_id,
                 prefix_run_id=prefix_run_id,
+                prefix_origin_id=prefix_origin_id,
                 conversation_id=conversation_id,
                 origin_id=prompt_id,
                 prompt=scenario["prompt"],
@@ -400,6 +417,7 @@ async def run(request: RunRequest) -> StreamingResponse:
             run_id,
             agent,
             Prompt(scenario["prompt"], prompt_id=prompt_id),
+            conversation_id=conversation_id,
             controls=_controls(selected, run_id, crash_at),
             on_event=on_event,
             should_stop_after_turn=_capped,
@@ -414,40 +432,52 @@ async def run(request: RunRequest) -> StreamingResponse:
 
 @app.post("/api/fork")
 async def fork(request: ForkRequest) -> StreamingResponse:
-    """Move the masking conversation head by re-running its original ledger input."""
+    """Re-run a completed scenario from the selected durable event coordinate."""
     source = _sessions.get(request.run_id)
     if source is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
-    if source.get("scenario_id") != "fork_masking" or not source.get("terminal"):
+    if not source.get("terminal"):
         raise HTTPException(status_code=409, detail="run is not forkable")
     if source.get("forked_to"):
         raise HTTPException(status_code=409, detail="run already forked")
+    try:
+        checkpoint = await read_event_checkpoint(
+            _transcript, source["conversation_id"], request.event_id
+        )
+    except ValueError as failure:
+        raise HTTPException(status_code=404, detail=str(failure)) from failure
+    coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
     fork_run_id = f"run-{uuid.uuid4().hex[:12]}"
-    fork_units = [name for name in source["units"] if name != "input_mask"]
+    fork_units = list(source["units"])
+    if source["scenario_id"] == "fork_masking":
+        fork_units = [name for name in fork_units if name != "input_mask"]
     source["forked_to"] = fork_run_id
     _sessions[fork_run_id] = {
         "units": fork_units,
         "agent": source["agent"],
-        "scenario_id": "fork_masking",
+        "scenario_id": source["scenario_id"],
         "aborted": False,
         "crash": False,
         "crash_at": None,
         "conversation_id": source["conversation_id"],
-        "origin_id": source["origin_id"],
+        "origin_id": coordinate.origin_id,
         "source_run_id": request.run_id,
+        "origin_runs": source["origin_runs"],
+        "default_fork_origin": coordinate.origin_id or source["default_fork_origin"],
         "fork_parent": request.run_id,
         "terminal": False,
     }
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        return await run_from_original(
+        return await run_from_event(
             runtime,
             _store,
-            from_run_id=request.run_id,
+            _transcript,
+            event_id=request.event_id,
+            edge=request.edge,
             run_id=fork_run_id,
             conversation_id=source["conversation_id"],
-            origin_id=source["origin_id"],
             agent=source["agent"],
             controls=compose_controls(fork_units),
             on_event=on_event,
@@ -460,7 +490,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             fork_run_id,
             attempt,
             selected=fork_units,
-            scenario_id="fork_masking",
+            scenario_id=source["scenario_id"],
             open_session=True,
         ),
         media_type="application/x-ndjson",
@@ -488,6 +518,7 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
             request.run_id,
             session["agent"],
             Answer(request.pending_id, answer),
+            conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
             should_stop_after_turn=_capped,
@@ -513,6 +544,7 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
             request.run_id,
             session["agent"],
             Recover(),
+            conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
             should_stop_after_turn=_capped,

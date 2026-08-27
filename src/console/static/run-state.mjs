@@ -95,7 +95,6 @@ export function beginContinuation(state) {
 export function beginFork(state) {
   if (
     state.phase !== "terminal" ||
-    state.active?.scenarioId !== "fork_masking" ||
     !state.runId
   ) {
     throw new Error("no forkable source run");
@@ -105,7 +104,9 @@ export function beginFork(state) {
     phase: "streaming",
     active: {
       ...state.active,
-      unitNames: state.active.unitNames.filter((name) => name !== "input_mask"),
+      unitNames: state.active.scenarioId === "fork_masking"
+        ? state.active.unitNames.filter((name) => name !== "input_mask")
+        : [...state.active.unitNames],
     },
     runId: null,
     stopReason: null,

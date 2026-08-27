@@ -2,7 +2,7 @@
 
 > Execute with TDD. Preserve the existing uncommitted `nexora-fork` package and packaging changes in `../nexora-python`.
 
-**Goal:** Let every visible console event select a durable fork checkpoint while keeping the existing input-original replay semantics and adding transcript-leaf continuation for `after` edges.
+**Goal:** Let every visible event in every console scenario select a durable fork checkpoint while keeping the existing input-original replay semantics and adding transcript-leaf continuation for `after` edges.
 
 **Architecture:** `nexora-fork` stores opaque `fork_checkpoint` entries in the existing append-only transcript. Each entry maps one observation `event_id` to `before` and `after` coordinates: source run, input origin, and transcript leaf. `fork_event` resolves that durable entry. A `before` coordinate with an input origin delegates to `fork_run`, so controls screen the ledger original again. An `after` coordinate continues from the recorded transcript leaf. The console stamps every visible row, records its coordinate, and calls `/api/fork` with the clicked `event_id` and `edge="before"`.
 
@@ -44,8 +44,8 @@
 
 1. Add failing pure tests proving reduced rows retain `eventId` and the clicked event is sent to `/api/fork`.
 2. Remove the global `#fork-run` terminal action.
-3. Render `이 지점에서 다시 실행` inside every trace row for a completed `fork_masking` source run.
-4. Keep the durable-original warning beside the inline action and disable all fork actions while the fork stream is active or after the source was forked.
+3. Render `이 지점에서 다시 실행` beside every trace row for every completed scenario run.
+4. Keep the durable-original warning on the inline action and disable all fork actions while the fork stream is active or after the source was forked. Preserve the selected controls for ordinary scenarios; only the masking incident removes `input_mask`.
 5. Run Node and static-shell tests.
 
 ## Task 4: Verify both repositories
