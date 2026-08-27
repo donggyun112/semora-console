@@ -131,6 +131,13 @@ async def test_every_projected_event_gets_a_durable_fork_coordinate():
         "run-b",
         "run-b",
     ]
+    assert [frame["forkable"] for frame in stamped] == [
+        True,
+        False,
+        True,
+        False,
+        False,
+    ]
 
 
 @pytest.mark.asyncio

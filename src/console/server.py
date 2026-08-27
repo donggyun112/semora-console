@@ -274,6 +274,10 @@ async def _stream(
         event_id = frame.get("event_id")
         if session is not None and event_id:
             session.setdefault("event_ids", set()).add(str(event_id))
+            if frame.get("forkable"):
+                session.setdefault("forkable_events", {})[str(event_id)] = frame[
+                    "restore_edge"
+                ]
         await queue.put(frame)
 
     def mark(unit: str) -> None:
@@ -431,6 +435,7 @@ async def run(request: RunRequest) -> StreamingResponse:
         "origin_runs": origin_runs,
         "default_fork_origin": default_fork_origin,
         "event_ids": set(),
+        "forkable_events": {},
         "terminal": False,
     }
     if crash_at is not None:
@@ -486,6 +491,14 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=409, detail="run is not forkable")
     if request.event_id not in source.get("event_ids", set()):
         raise HTTPException(status_code=404, detail="event does not belong to run version")
+    restore_edge = source.get("forkable_events", {}).get(request.event_id)
+    if restore_edge is None:
+        raise HTTPException(status_code=409, detail="event is not an exact restore point")
+    if request.edge != restore_edge:
+        raise HTTPException(
+            status_code=409,
+            detail=f"event is only restorable from its {restore_edge} edge",
+        )
     try:
         checkpoint = await read_event_checkpoint(
             _transcript, source["conversation_id"], request.event_id
@@ -517,6 +530,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "fork_event_id": request.event_id,
         "fork_edge": request.edge,
         "event_ids": set(),
+        "forkable_events": {},
         "terminal": False,
     }
 

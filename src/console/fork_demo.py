@@ -75,10 +75,19 @@ class EventCheckpointProjector:
             EventCheckpoint(event_id, self._conversation_id, before, after),
         )
         self._last_leaf = current_leaf
+        payload_kind = payload.get("kind") if isinstance(payload, dict) else None
+        forkable = (
+            frame.get("kind") == "lifecycle"
+            and frame.get("type") == "context_injected"
+            and payload_kind == "user_prompt"
+            and candidate in self._origin_runs
+        )
         return {
             **frame,
             "event_id": event_id,
             "fork_origin_id": before.origin_id,
+            "forkable": forkable,
+            "restore_edge": "before" if forkable else None,
         }
 
 

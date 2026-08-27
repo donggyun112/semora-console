@@ -209,9 +209,18 @@ assert.deepEqual(beginFork(editedMaskingTerminal).active.unitNames, [
 ]);
 assert.deepEqual(
   getEventForkRequest(editedMaskingTerminal, { eventId: "event-09" }),
+  null,
+  "an observation-only event does not advertise an exact restore point",
+);
+assert.deepEqual(
+  getEventForkRequest(editedMaskingTerminal, {
+    eventId: "event-03",
+    forkable: true,
+    forkEdge: "before",
+  }),
   {
     run_id: "run-b",
-    event_id: "event-09",
+    event_id: "event-03",
     edge: "before",
     units: ["dlp_block", "approval"],
   },
@@ -223,7 +232,11 @@ assert.equal(
   "an in-flight run cannot start an event fork",
 );
 assert.deepEqual(
-  getEventForkRequest(editedGenericTerminal, { eventId: "event-generic" }),
+  getEventForkRequest(editedGenericTerminal, {
+    eventId: "event-generic",
+    forkable: true,
+    forkEdge: "before",
+  }),
   {
     run_id: "run-1",
     event_id: "event-generic",
@@ -240,6 +253,8 @@ assert.deepEqual(
   getEventForkRequest(secondVersion, {
     eventId: "event-from-v1",
     runId: "run-1",
+    forkable: true,
+    forkEdge: "before",
   }, true),
   {
     run_id: "run-1",

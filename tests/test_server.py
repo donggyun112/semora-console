@@ -403,7 +403,8 @@ def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
         "source_run_id": source_id,
         "origin_runs": {"p2": source_id},
         "default_fork_origin": "p2",
-        "event_ids": {"event-selected"},
+            "event_ids": {"event-selected"},
+            "forkable_events": {"event-selected": "before"},
     }
 
     async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
@@ -463,7 +464,8 @@ def test_fork_uses_modified_controls_for_other_scenarios(monkeypatch):
         "source_run_id": source_id,
         "origin_runs": {"p1": source_id},
         "default_fork_origin": "p1",
-        "event_ids": {"event-selected"},
+            "event_ids": {"event-selected"},
+            "forkable_events": {"event-selected": "before"},
     }
 
     async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
@@ -514,7 +516,8 @@ def test_completed_version_can_create_another_fork(monkeypatch):
         "origin_runs": {"p1": source_id},
         "default_fork_origin": "p1",
         "forked_to": "run-older-child",
-        "event_ids": {"event-next"},
+            "event_ids": {"event-next"},
+            "forkable_events": {"event-next": "before"},
     }
 
     async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
@@ -552,7 +555,8 @@ def test_fork_rejects_an_event_owned_by_another_version():
         "origin_id": "p1",
         "origin_runs": {"p1": source_id},
         "default_fork_origin": "p1",
-        "event_ids": {"event-owned"},
+            "event_ids": {"event-owned"},
+            "forkable_events": {"event-owned": "before"},
     }
     try:
         with TestClient(app) as client:
@@ -562,6 +566,63 @@ def test_fork_rejects_an_event_owned_by_another_version():
             )
         assert response.status_code == 404
         assert "does not belong" in response.json()["detail"]
+    finally:
+        server._sessions.pop(source_id, None)
+
+
+def test_fork_rejects_an_observation_only_event():
+    source_id = "run-observation-source"
+    server._sessions[source_id] = {
+        "units": [],
+        "agent": object(),
+        "scenario_id": "note",
+        "terminal": True,
+        "conversation_id": "conv-observation",
+        "origin_id": "p1",
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "event_ids": {"event-tool"},
+        "forkable_events": {},
+    }
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={"run_id": source_id, "event_id": "event-tool", "units": []},
+            )
+        assert response.status_code == 409
+        assert "not an exact restore point" in response.json()["detail"]
+    finally:
+        server._sessions.pop(source_id, None)
+
+
+def test_fork_rejects_the_wrong_edge_for_an_exact_restore_point():
+    source_id = "run-edge-source"
+    server._sessions[source_id] = {
+        "units": [],
+        "agent": object(),
+        "scenario_id": "note",
+        "terminal": True,
+        "conversation_id": "conv-edge",
+        "origin_id": "p1",
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "event_ids": {"event-input"},
+        "forkable_events": {"event-input": "before"},
+    }
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={
+                    "run_id": source_id,
+                    "event_id": "event-input",
+                    "edge": "after",
+                    "units": [],
+                },
+            )
+        assert response.status_code == 409
+        assert "before edge" in response.json()["detail"]
     finally:
         server._sessions.pop(source_id, None)
 

@@ -2,9 +2,9 @@
 
 > Execute with TDD. Preserve the existing uncommitted `nexora-fork` package and packaging changes in `../nexora-python`.
 
-**Goal:** Let every visible event in every console scenario select a durable fork checkpoint while keeping the existing input-original replay semantics and adding transcript-leaf continuation for `after` edges.
+**Goal:** Give every visible event a durable audit coordinate, while exposing a fork action only where the console can restore that exact execution boundary.
 
-**Architecture:** `nexora-fork` stores opaque `fork_checkpoint` entries in the existing append-only transcript. Each entry maps one observation `event_id` to `before` and `after` coordinates: source run, input origin, and transcript leaf. `fork_event` resolves that durable entry. A `before` coordinate with an input origin delegates to `fork_run`, so controls screen the ledger original again. An `after` coordinate continues from the recorded transcript leaf. The console stamps every visible row, records its coordinate, and calls `/api/fork` with the clicked `event_id` and `edge="before"`.
+**Architecture:** `nexora-fork` stores opaque `fork_checkpoint` entries in the existing append-only transcript. Each entry maps one observation `event_id` to `before` and `after` coordinates: source run, input origin, and transcript leaf. `fork_event` resolves that durable entry. The console records coordinates for audit/version lineage on every visible row, but marks only `context_injected / user_prompt` as an exact `before` restore point. The UI renders actions only for those rows, and `/api/fork` enforces both event ownership and the supported edge.
 
 ## Task 1: Add durable event checkpoints to `nexora-fork`
 
@@ -31,7 +31,7 @@
 4. Change `ForkRequest` to `{run_id, event_id, edge, units}` and execute `fork_event` from the selected checkpoint under the newly selected controls.
 5. Preserve the existing source branch and emit the fork branch snapshot after completion.
 
-## Task 3: Put the action on every event row
+## Task 3: Put the action on exact restore rows
 
 **Files:**
 - Modify: `src/console/static/app.js`
@@ -44,7 +44,7 @@
 
 1. Add failing pure tests proving reduced rows retain `eventId` and the clicked event is sent to `/api/fork`.
 2. Remove the global `#fork-run` terminal action.
-3. Render an event-level fork action beside every trace row for every completed scenario run.
+3. Render a fork action only beside exact input-injection boundaries; keep all other rows observation-only.
 4. Treat each source/fork run as `v1`, `v2`, and later versions. Show one version's chat, event trace, outcome, and policy chips at a time, while keeping earlier versions selectable.
 5. Keep the durable-original warning on the inline action. Use the post-run policy selection for the new version; the masking incident omits `input_mask` from that selection.
 5. Run Node and static-shell tests.

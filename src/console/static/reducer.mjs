@@ -11,6 +11,8 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     details: options.details ?? {},
     eventId: options.eventId ?? coordinateFrame?.event_id ?? null,
     forkOriginId: options.forkOriginId ?? coordinateFrame?.fork_origin_id ?? null,
+    forkable: options.forkable ?? Boolean(coordinateFrame?.forkable),
+    forkEdge: options.forkEdge ?? coordinateFrame?.restore_edge ?? null,
     runId: options.runId ?? null,
   };
 }

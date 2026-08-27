@@ -250,7 +250,8 @@ export function getEventForkRequest(runState, row) {
   if (
     runState?.phase !== "terminal" ||
     !runState?.runId ||
-    !row?.eventId
+    !row?.eventId ||
+    !row?.forkable
   ) {
     return null;
   }
@@ -260,7 +261,7 @@ export function getEventForkRequest(runState, row) {
   return {
     run_id: row.runId ?? runState.runId,
     event_id: row.eventId,
-    edge: "before",
+    edge: row.forkEdge ?? "before",
     units,
   };
 }
@@ -446,7 +447,7 @@ export function createConsole({
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = `이 지점에서 분기 · 정책 ${request.units.length}개`;
+        button.textContent = `이 입력에서 분기 · 정책 ${request.units.length}개`;
         button.title = [
           `적용 정책: ${request.units.join(", ") || "없음"}`,
           "원문이 새 원장과 대화 기록에 저장됩니다.",
