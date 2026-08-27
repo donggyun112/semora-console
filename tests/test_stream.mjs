@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 
 import {
+  NdjsonParseError,
+  createNdjsonReader,
+} from "../src/console/static/ndjson.mjs";
+import {
   DEFAULT_DRAFT,
   acceptsStreamEnd,
   attachRunId,
@@ -92,6 +96,45 @@ assert.equal(retryDraft.phase, "idle");
 assert.throws(
   () => updateDraft(suspended, { scenarioId: "other" }),
   /draft locked/,
+);
+
+const frames = [];
+const ndjson = createNdjsonReader((frame) => frames.push(frame));
+ndjson.push(
+  new TextEncoder().encode(
+    '{"kind":"agent","event":{"type":"text","text":"청구"}}\n' +
+      '{"kind":"outcome","outcome":{"stop_reason":"completed"}}',
+  ),
+);
+ndjson.end();
+assert.equal(frames.length, 2, "valid trailing frame is delivered");
+assert.equal(frames[0].event.text, "청구");
+
+const hangul = [];
+const splitBytes = new TextEncoder().encode(
+  '{"kind":"agent","event":{"type":"text","text":"거부"}}\n',
+);
+const splitReader = createNdjsonReader((frame) => hangul.push(frame));
+splitReader.push(splitBytes.slice(0, splitBytes.length - 2));
+splitReader.push(splitBytes.slice(splitBytes.length - 2));
+splitReader.end();
+assert.equal(hangul[0].event.text, "거부");
+
+const malformed = createNdjsonReader(() => {});
+assert.throws(
+  () => malformed.push(new TextEncoder().encode('{"kind":}\n')),
+  (error) =>
+    error instanceof NdjsonParseError &&
+    error.line === '{"kind":}',
+);
+
+const truncated = createNdjsonReader(() => {});
+truncated.push(new TextEncoder().encode('{"kind":"agent"'));
+assert.throws(
+  () => truncated.end(),
+  (error) =>
+    error instanceof NdjsonParseError &&
+    error.message.includes("trailing"),
 );
 
 console.log("run inspector state ok");
