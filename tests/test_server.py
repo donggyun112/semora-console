@@ -282,8 +282,11 @@ def test_stylesheet_has_responsive_focus_and_reduced_motion_contracts():
     assert ".workspace.mode-demo" in css
     assert ".composer-panel" in css
     assert ":focus-visible" in css
+    assert "@media (max-width: 1040px)" in css
     assert "@media (max-width: 820px)" in css
     assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "white-space: pre-wrap; overflow-wrap: anywhere;" in css
+    assert ".row.unit .msg { line-height: 1.5; overflow-wrap: anywhere; }" in css
 
 
 def test_steer_unknown_run_is_404():
