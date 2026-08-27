@@ -172,6 +172,7 @@ export function createConsole({
     button.className = `trace-row tone-${row.tone}`;
     button.dataset.rowId = row.id;
     button.setAttribute("aria-expanded", String(row.id === state.selectedRowId));
+    button.setAttribute("aria-selected", String(row.id === state.selectedRowId));
 
     const order = documentRef.createElement("span");
     order.className = "trace-order";

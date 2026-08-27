@@ -24,8 +24,8 @@ function lifecycleSummary(frame) {
 }
 
 function steerLabel(source) {
-  if (source === "operator") return "운영자";
-  if (source === "policy") return "정책";
+  if (source === "operator" || source === "user_steer") return "운영자";
+  if (source === "policy" || source === "control") return "정책";
   return source ?? "steer";
 }
 

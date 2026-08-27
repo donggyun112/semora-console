@@ -391,7 +391,7 @@ button.primary:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.025);
 }
 
-.trace-row[aria-expanded="true"] {
+.trace-row[aria-selected="true"] {
   border-left-color: var(--blue);
   background: var(--surface-2);
 }
@@ -432,9 +432,20 @@ button.primary:hover:not(:disabled) {
   background: rgba(255, 93, 104, 0.1);
 }
 
+.tone-block .trace-verdict {
+  color: var(--red);
+  background: rgba(255, 93, 104, 0.1);
+}
+
 .tone-allow .trace-verdict {
   color: var(--green);
   background: rgba(79, 198, 138, 0.1);
+}
+
+.tone-rewrite .trace-verdict,
+.tone-steer .trace-verdict {
+  color: var(--blue);
+  background: rgba(111, 156, 255, 0.1);
 }
 
 .tone-suspend .trace-verdict,

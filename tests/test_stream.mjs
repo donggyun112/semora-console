@@ -277,7 +277,7 @@ assert.deepEqual(
 
 const operationalRows = reduceFrames([
   { kind: "steer", status: "queued", source: "operator", text: "중단" },
-  { kind: "steer", status: "admitted", source: "policy", text: "계속" },
+  { kind: "steer", phase: "admitted", source: "control", text: "계속" },
   { kind: "recoverable", message: "worker lost" },
   { kind: "outcome", outcome: { stop_reason: "completed" } },
 ]);
@@ -289,6 +289,10 @@ assert.deepEqual(
     { kind: "recovery", summary: "worker lost" },
     { kind: "outcome", summary: "completed" },
   ],
+);
+assert.deepEqual(
+  operationalRows.slice(0, 2).map(({ label }) => label),
+  ["운영자", "정책"],
 );
 
 console.log("run inspector state ok");
