@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Nexora · Run Inspector</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Nexora 홈">NEXORA</a>
+      <div class="header-actions">
+        <span class="environment"><i aria-hidden="true"></i>LOCAL DEMO</span>
+        <button id="policy-open" data-policy-open type="button">정책</button>
+      </div>
+    </header>
+
+    <main id="app">
+      <section id="launch" class="launch" aria-labelledby="launch-title">
+        <div class="scenario-picker">
+          <button id="scenario-trigger" type="button" aria-expanded="false">
+            시나리오 선택
+          </button>
+          <div id="scenario-menu" class="scenario-menu hidden"></div>
+        </div>
+        <p class="eyebrow">CONTROL PLANE PLAYGROUND</p>
+        <h1 id="launch-title"></h1>
+        <p id="launch-prompt" class="launch-prompt"></p>
+        <div id="launch-policies" class="policy-chips" aria-label="선택된 정책"></div>
+        <div class="launch-actions">
+          <button id="run" class="primary" type="button">실행</button>
+          <button id="launch-policy-open" data-policy-open type="button">정책 편집</button>
+        </div>
+      </section>
+
+      <section id="run-shell" class="run-shell hidden" aria-labelledby="run-title">
+        <header class="run-summary">
+          <div class="run-heading">
+            <p class="eyebrow">RUN INSPECTOR</p>
+            <h1 id="run-title"></h1>
+            <div id="run-policies" class="policy-chips"></div>
+          </div>
+          <div class="run-controls">
+            <span id="run-status" aria-live="polite">대기</span>
+            <button id="abort" class="hidden" type="button">중단</button>
+          </div>
+        </header>
+
+        <div id="outcome-strip" class="outcome-strip hidden"></div>
+        <div class="terminal-actions hidden">
+          <button id="rerun-plain" type="button">정책 없이 다시 실행</button>
+          <button id="rerun-same" type="button">같은 설정으로 다시 실행</button>
+        </div>
+        <div class="error-actions hidden">
+          <button id="retry-run" type="button">다시 실행</button>
+          <button id="return-draft" type="button">설정으로 돌아가기</button>
+        </div>
+        <p id="run-error" class="run-error hidden" aria-live="assertive"></p>
+
+        <div class="inspector">
+          <div id="trace" class="trace" role="log" aria-live="polite"></div>
+          <aside id="details-drawer" class="details-drawer hidden" aria-labelledby="details-title">
+            <div class="drawer-bar">
+              <button id="details-close" type="button" aria-label="상세 닫기">×</button>
+              <button id="details-copy" type="button" disabled>복사</button>
+            </div>
+            <h2 id="details-title"></h2>
+            <pre id="details-body"></pre>
+          </aside>
+        </div>
+
+        <form id="steer-form" class="steer-form hidden">
+          <label for="steer-text">실행 중 지시</label>
+          <div>
+            <input id="steer-text" maxlength="240" autocomplete="off" />
+            <button type="submit">보내기</button>
+          </div>
+        </form>
+
+        <section id="approval" class="inline-action hidden" aria-labelledby="approval-title">
+          <div>
+            <p class="eyebrow">APPROVAL REQUIRED</p>
+            <h2 id="approval-title">이 도구 호출을 실행할까요?</h2>
+          </div>
+          <div>
+            <button id="deny" type="button">거부</button>
+            <button id="approve" class="primary" type="button">승인</button>
+          </div>
+        </section>
+
+        <section id="recovery" class="inline-action hidden" aria-labelledby="recovery-title">
+          <div>
+            <p class="eyebrow">RECOVERABLE</p>
+            <h2 id="recovery-title">중단된 실행을 이어갈 수 있습니다.</h2>
+          </div>
+          <button id="recover" class="primary" type="button">복구</button>
+        </section>
+      </section>
+
+      <section id="boot-error" class="boot-error hidden" aria-live="assertive">
+        <p>데모 설정을 불러오지 못했습니다.</p>
+        <button id="boot-retry" type="button">다시 시도</button>
+      </section>
+    </main>
+
+    <dialog id="policy-drawer" class="policy-drawer hidden" aria-labelledby="policy-title">
+      <header>
+        <div>
+          <p class="eyebrow">POLICY COMPOSER</p>
+          <h2 id="policy-title">실행 정책</h2>
+        </div>
+        <button id="policy-close" type="button" aria-label="정책 닫기">×</button>
+      </header>
+      <div class="policy-layout">
+        <section>
+          <h3>시나리오</h3>
+          <div id="scenarios"></div>
+        </section>
+        <section>
+          <h3>라이프사이클 정책</h3>
+          <div id="units"></div>
+        </section>
+      </div>
+      <footer id="compose-summary"></footer>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

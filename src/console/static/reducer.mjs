@@ -122,7 +122,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "steer") {
-      const admitted = frame.status === "admitted";
+      const admitted = (frame.status ?? frame.phase) === "admitted";
       append("steer", steerLabel(frame.source), admitted ? "지시 반영" : "지시 대기", {
         tone: admitted ? "allow" : "neutral",
         details: { text: frame.text ?? frame.message ?? "", raw: frame },

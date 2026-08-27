@@ -226,7 +226,7 @@ def test_units_endpoint_shape():
         assert "before_model" not in points
 
 
-def test_static_shell_has_demo_composer_and_accessible_run_regions():
+def test_static_shell_is_run_inspector_with_contextual_drawers():
     with TestClient(app) as c:
         html = c.get("/").text
 
@@ -245,34 +245,27 @@ def test_static_shell_has_demo_composer_and_accessible_run_regions():
     shell = ShellParser()
     shell.feed(html)
 
-    for element_id in [
-        "mode-demo",
-        "mode-composer",
-        "demo-panel",
-        "composer-panel",
-        "demo-title",
-        "demo-prompt",
-        "demo-policies",
-        "demo-run",
-        "rerun-plain",
-        "open-composer",
-        "stream",
-        "status",
-        "run-error",
-    ]:
-        assert element_id in shell.elements
-
     assert len(shell.ids) == len(set(shell.ids))
-    assert "hidden" in shell.elements["demo-panel"]["class"].split()
-    assert "hidden" not in shell.elements["composer-panel"].get("class", "").split()
-    assert "mode-composer" in shell.elements["workspace"]["class"].split()
-    assert shell.elements["mode-demo"]["aria-pressed"] == "false"
-    assert shell.elements["mode-composer"]["aria-pressed"] == "true"
-    assert shell.elements["status"]["aria-live"] == "polite"
-    assert shell.elements["stream"]["role"] == "log"
-    assert shell.elements["stream"]["aria-live"] == "polite"
-    assert shell.elements["steer-text"]
-    assert 'for="steer-text"' in html
+    required = {
+        "scenario-trigger", "scenario-menu", "launch-title", "launch-prompt",
+        "launch-policies", "run", "policy-open", "launch-policy-open",
+        "run-shell", "run-title", "run-status", "run-policies", "abort",
+        "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
+        "return-draft", "trace", "details-drawer", "details-close",
+        "details-copy", "details-title", "details-body", "steer-form",
+        "steer-text", "policy-drawer", "policy-close", "scenarios", "units",
+        "compose-summary", "approval", "approve", "deny", "recovery",
+        "recover", "run-error", "boot-error", "boot-retry",
+    }
+    assert required <= set(shell.ids)
+    assert {"mode-demo", "mode-composer", "demo-panel", "composer-panel"}.isdisjoint(
+        shell.ids
+    )
+    assert "hidden" in shell.elements["run-shell"]["class"].split()
+    assert "hidden" in shell.elements["details-drawer"]["class"].split()
+    assert "hidden" in shell.elements["policy-drawer"]["class"].split()
+    assert shell.elements["trace"]["role"] == "log"
+    assert shell.elements["run-error"]["aria-live"] == "assertive"
 
 
 def test_stylesheet_has_responsive_focus_and_reduced_motion_contracts():
