@@ -225,10 +225,16 @@ def _project_event(
             blocked = dict(call or {"name": event.get("name"), "input": {}})
             blocked["type"] = "tool_call"
             blocked["blocked"] = True
+            blocked_frame = {
+                "kind": "agent",
+                "event": blocked,
+                "call_id": call_id,
+                "checkpoint_phase": "tool_result",
+            }
             if projected_denials is not None and call_id in projected_denials:
                 projected_denials.discard(call_id)
-                return [{"kind": "agent", "event": blocked}]
-            return [unit_frame, {"kind": "agent", "event": blocked}]
+                return [blocked_frame]
+            return [unit_frame, blocked_frame]
         frames: list[dict[str, Any]] = []
         if isinstance(res, dict) and res.get("redacted_by"):
             unit = res["redacted_by"]
@@ -247,6 +253,21 @@ def _project_event(
     return [{"kind": "agent", "event": event}]
 
 
+def _register_frame(session: dict[str, Any], frame: dict[str, Any]) -> None:
+    """Index a visible event and every earlier event whose restore point it finalizes."""
+    event_id = frame.get("event_id")
+    if event_id:
+        session.setdefault("event_ids", set()).add(str(event_id))
+        if frame.get("forkable"):
+            session.setdefault("forkable_events", {})[str(event_id)] = frame[
+                "restore_edge"
+            ]
+    for update in frame.get("restore_updates", []):
+        restored_id = str(update["event_id"])
+        session.setdefault("event_ids", set()).add(restored_id)
+        session.setdefault("forkable_events", {})[restored_id] = update["restore_edge"]
+
+
 async def _stream(
     run_id: str, attempt: Any, *, selected: list[str], scenario_id: str, open_session: bool = False,
 ) -> AsyncIterator[str]:
@@ -262,6 +283,7 @@ async def _stream(
     } <= session.keys():
         projector = EventCheckpointProjector(
             _transcript,
+            run_id=run_id,
             conversation_id=session["conversation_id"],
             origin_runs=session["origin_runs"],
             default_origin_id=session["default_fork_origin"],
@@ -271,13 +293,8 @@ async def _stream(
         frame = {**frame, "run_id": run_id}
         if projector is not None:
             frame = await projector.stamp(frame)
-        event_id = frame.get("event_id")
-        if session is not None and event_id:
-            session.setdefault("event_ids", set()).add(str(event_id))
-            if frame.get("forkable"):
-                session.setdefault("forkable_events", {})[str(event_id)] = frame[
-                    "restore_edge"
-                ]
+        if session is not None:
+            _register_frame(session, frame)
         await queue.put(frame)
 
     def mark(unit: str) -> None:
@@ -339,6 +356,7 @@ async def _stream(
                     "fork_parent": session["fork_parent"],
                     "fork_event_id": session["fork_event_id"],
                     "fork_edge": session["fork_edge"],
+                    "fork_mode": session["fork_mode"],
                 }
             )
         await put(meta)
@@ -509,6 +527,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
 
     fork_run_id = f"run-{uuid.uuid4().hex[:12]}"
     fork_units = [name for name in request.units if name in UNITS_BY_NAME]
+    fork_mode = "input" if coordinate.origin_id is not None else "leaf"
     child_origin_runs = dict(source["origin_runs"])
     if coordinate.origin_id is not None:
         child_origin_runs[coordinate.origin_id] = fork_run_id
@@ -525,10 +544,11 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "origin_id": coordinate.origin_id,
         "source_run_id": request.run_id,
         "origin_runs": child_origin_runs,
-        "default_fork_origin": coordinate.origin_id or source["default_fork_origin"],
+        "default_fork_origin": coordinate.origin_id,
         "fork_parent": request.run_id,
         "fork_event_id": request.event_id,
         "fork_edge": request.edge,
+        "fork_mode": fork_mode,
         "event_ids": set(),
         "forkable_events": {},
         "terminal": False,

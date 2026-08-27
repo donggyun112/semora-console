@@ -1,7 +1,11 @@
 from typing import Any
 
 import pytest
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.language_models.fake_chat_models import (
+    FakeListChatModel,
+    FakeMessagesListChatModel,
+)
+from langchain_core.messages import AIMessage
 from nexora import Agent, AgentRuntime, MemorySteps
 from nexora_fork import read_event_checkpoint
 from nexora_store import MemoryTranscript
@@ -20,6 +24,51 @@ from console.units import compose_controls
 class BoundFakeListChatModel(FakeListChatModel):
     def bind_tools(self, _tools: Any, **_kwargs: Any) -> Any:
         return self
+
+
+class BoundFakeMessagesListChatModel(FakeMessagesListChatModel):
+    def bind_tools(self, _tools: Any, **_kwargs: Any) -> Any:
+        return self
+
+
+def tool_calling_agent(tools: DemoTools, *responses: AIMessage) -> Agent:
+    return Agent(
+        "fork-tool-demo",
+        "fork tool demo",
+        BoundFakeMessagesListChatModel(responses=list(responses)),
+        tools,
+        SYSTEM_PROMPT,
+    )
+
+
+async def run_tool_source(
+    steps: MemorySteps,
+    transcript: MemoryTranscript,
+    projector: EventCheckpointProjector,
+    agent: Agent,
+) -> tuple[AgentRuntime, list[dict[str, Any]]]:
+    frames: list[dict[str, Any]] = []
+
+    async def emit(event_type: str, payload: dict[str, Any]) -> None:
+        frames.append(
+            await projector.stamp(
+                {"kind": "lifecycle", "type": str(event_type), "payload": payload}
+            )
+        )
+
+    async def on_event(event: dict[str, Any]) -> None:
+        frames.append(await projector.stamp({"kind": "agent", "event": event}))
+
+    runtime = AgentRuntime(store=steps, transcript=transcript, emit=emit)
+    await runtime.run(
+        "run-source",
+        agent,
+        prompt="고객을 조회해줘",
+        prompt_id="p1",
+        conversation_id="conv-tool",
+        on_event=on_event,
+    )
+    return runtime, frames
 
 
 @pytest.mark.asyncio
@@ -89,6 +138,7 @@ async def test_every_projected_event_gets_a_durable_fork_coordinate():
     transcript = MemoryTranscript()
     projector = EventCheckpointProjector(
         transcript,
+        run_id="run-a",
         conversation_id="conv",
         origin_runs={"p1": "run-a", "p2": "run-b"},
         default_origin_id="p1",
@@ -145,6 +195,7 @@ async def test_separate_stream_attempts_cannot_reuse_an_event_identity():
     """Resume and recovery streams restart local ordering but must not collide durably."""
     transcript = MemoryTranscript()
     options = {
+        "run_id": "run-a",
         "conversation_id": "conv",
         "origin_runs": {"p1": "run-a"},
         "default_origin_id": "p1",
@@ -174,6 +225,7 @@ async def test_an_early_event_replays_the_real_prompt_after_the_source_completes
     )
     projector = EventCheckpointProjector(
         transcript,
+        run_id="run-source",
         conversation_id="conv-early",
         origin_runs={"prompt-real": "run-source"},
         default_origin_id="prompt-real",
@@ -217,6 +269,7 @@ async def test_event_fork_applies_the_new_controls_to_the_replayed_input():
     )
     projector = EventCheckpointProjector(
         transcript,
+        run_id="run-v1",
         conversation_id="conv-policy",
         origin_runs={"p1": "run-v1"},
         default_origin_id="p1",
@@ -262,6 +315,7 @@ async def test_a_fork_event_can_be_versioned_again_from_the_child_run():
     )
     v1_projector = EventCheckpointProjector(
         transcript,
+        run_id="run-v1",
         conversation_id="conv-lineage",
         origin_runs={"p1": "run-v1"},
         default_origin_id="p1",
@@ -289,6 +343,7 @@ async def test_a_fork_event_can_be_versioned_again_from_the_child_run():
 
     v2_projector = EventCheckpointProjector(
         transcript,
+        run_id="run-v2",
         conversation_id="conv-lineage",
         origin_runs={"p1": "run-v2"},
         default_origin_id="p1",
@@ -313,3 +368,205 @@ async def test_a_fork_event_can_be_versioned_again_from_the_child_run():
 
     history = await runtime.committed_history("run-v3", "conv-lineage")
     assert [message.content for message in history] == ["version me", "v3 response"]
+
+
+def read_customer_call() -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "read-1",
+                "name": "read_customer",
+                "args": {"customer_id": "c-001"},
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def test_recovered_blocked_tool_result_uses_its_top_level_call_id():
+    frame = {
+        "kind": "agent",
+        "event": {
+            "type": "tool_call",
+            "name": "send_email",
+            "blocked": True,
+        },
+        "call_id": "send-1",
+        "checkpoint_phase": "tool_result",
+    }
+
+    assert EventCheckpointProjector._call_id(frame) == "send-1"
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_event_fork_reexecutes_the_pending_call_in_the_child_run():
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools()
+    agent = tool_calling_agent(
+        tools,
+        read_customer_call(),
+        AIMessage(content="source finished"),
+        AIMessage(content="fork finished"),
+    )
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+    pre_tool = next(
+        frame
+        for frame in frames
+        if frame["kind"] == "lifecycle" and frame["type"] == "pre_tool_use"
+    )
+    capabilities = {
+        update["event_id"]: update["restore_edge"]
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    }
+
+    assert capabilities[pre_tool["event_id"]] == "before"
+    checkpoint = await read_event_checkpoint(
+        transcript, "conv-tool", pre_tool["event_id"]
+    )
+    assert checkpoint.before.origin_id is None
+    assert checkpoint.before.leaf_uuid is not None
+
+    child_runtime = AgentRuntime(store=steps, transcript=transcript)
+    await run_from_event(
+        child_runtime,
+        steps,
+        transcript,
+        event_id=pre_tool["event_id"],
+        edge="before",
+        run_id="run-child",
+        conversation_id="conv-tool",
+        agent=agent,
+        controls=None,
+    )
+
+    assert tools.execution_counts["read-1"] == 2
+    history = await child_runtime.committed_history("run-child", "conv-tool")
+    assert history[-1].content == "fork finished"
+
+
+@pytest.mark.asyncio
+async def test_post_tool_event_fork_reuses_the_result_without_reexecuting_the_effect():
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools()
+    agent = tool_calling_agent(
+        tools,
+        read_customer_call(),
+        AIMessage(content="source finished"),
+        AIMessage(content="fork finished"),
+    )
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+    post_tool = next(
+        frame
+        for frame in frames
+        if frame["kind"] == "lifecycle" and frame["type"] == "post_tool_use"
+    )
+    capabilities = {
+        update["event_id"]: update["restore_edge"]
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    }
+
+    assert capabilities[post_tool["event_id"]] == "after"
+    checkpoint = await read_event_checkpoint(
+        transcript, "conv-tool", post_tool["event_id"]
+    )
+    assert checkpoint.after.origin_id is None
+    assert checkpoint.after.leaf_uuid is not None
+
+    child_runtime = AgentRuntime(store=steps, transcript=transcript)
+    await run_from_event(
+        child_runtime,
+        steps,
+        transcript,
+        event_id=post_tool["event_id"],
+        edge="after",
+        run_id="run-child",
+        conversation_id="conv-tool",
+        agent=agent,
+        controls=None,
+    )
+
+    assert tools.execution_counts["read-1"] == 1
+    history = await child_runtime.committed_history("run-child", "conv-tool")
+    assert history[-1].content == "fork finished"
+
+
+@pytest.mark.asyncio
+async def test_parallel_tool_checkpoints_are_stabilized_by_call_id():
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools()
+    calls = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "read-1",
+                "name": "read_customer",
+                "args": {"customer_id": "c-001"},
+                "type": "tool_call",
+            },
+            {
+                "id": "read-2",
+                "name": "read_customer",
+                "args": {"customer_id": "c-002"},
+                "type": "tool_call",
+            },
+        ],
+    )
+    agent = tool_calling_agent(tools, calls, AIMessage(content="finished"))
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+
+    event_call_ids = {
+        frame["event_id"]: EventCheckpointProjector._call_id(frame)
+        for frame in frames
+    }
+    stabilized_by = {
+        update["event_id"]: (
+            EventCheckpointProjector._call_id(frame)
+            or str((frame.get("payload") or {}).get("origin_id") or ""),
+            update["restore_edge"],
+        )
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    }
+    tool_events = {
+        event_id: call_id
+        for event_id, call_id in event_call_ids.items()
+        if call_id in {"read-1", "read-2"}
+        and event_id in stabilized_by
+    }
+
+    assert set(tool_events.values()) == {"read-1", "read-2"}
+    assert all(
+        stabilized_by[event_id][0] == call_id
+        for event_id, call_id in tool_events.items()
+    )
+    assert {
+        edge for _stabilizer, edge in stabilized_by.values()
+    } == {"before", "after"}

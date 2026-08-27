@@ -51,6 +51,7 @@ function toolResultOutput(event) {
 export function reduceFrames(frames) {
   const rows = [];
   const toolIndexes = new Map();
+  const restored = new Map();
   let sequence = 0;
   let openText = null;
   let currentRunId = null;
@@ -67,6 +68,9 @@ export function reduceFrames(frames) {
 
   for (const frame of frames) {
     if (!frame || typeof frame !== "object") continue;
+    for (const update of frame.restore_updates ?? []) {
+      restored.set(update.event_id, update.restore_edge);
+    }
 
     if (frame.kind === "meta") {
       currentRunId = frame.run_id ?? currentRunId;
@@ -185,6 +189,13 @@ export function reduceFrames(frames) {
         details: { raw: frame },
       });
     }
+  }
+
+  for (const row of rows) {
+    const edge = restored.get(row.eventId);
+    if (!edge) continue;
+    row.forkable = true;
+    row.forkEdge = edge;
   }
 
   return rows;

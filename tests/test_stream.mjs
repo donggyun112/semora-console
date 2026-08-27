@@ -6,6 +6,7 @@ import {
   deriveRunVersions,
   deriveVersionPhase,
   deriveVersionRows,
+  getForkActionLabel,
   getEventForkRequest,
   getLaunchCopy,
   selectRunFrames,
@@ -624,6 +625,97 @@ assert.deepEqual(
     { versionOrigin: "current", forkStart: false },
   ],
   "the trace exposes one readable version boundary",
+);
+
+const restoredToolRows = reduceFrames([
+  { kind: "meta", run_id: "run-tools" },
+  {
+    kind: "agent", run_id: "run-tools", event_id: "event-request",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "lifecycle", run_id: "run-tools", event_id: "event-pre",
+    type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
+  },
+  {
+    kind: "lifecycle", run_id: "run-tools", event_id: "event-post",
+    type: "post_tool_use", payload: { call_id: "read-1", name: "read_customer" },
+  },
+  {
+    kind: "agent", run_id: "run-tools", event_id: "event-result",
+    event: { type: "tool_result", id: "read-1", name: "read_customer", executed: true },
+    restore_updates: [
+      { event_id: "event-request", restore_edge: "after" },
+      { event_id: "event-pre", restore_edge: "before" },
+    ],
+  },
+  {
+    kind: "lifecycle", run_id: "run-tools", event_id: "event-context",
+    type: "context_injected", payload: { kind: "tool_result", origin_id: "read-1" },
+    forkable: true, restore_edge: "after",
+    restore_updates: [
+      { event_id: "event-post", restore_edge: "after" },
+      { event_id: "event-result", restore_edge: "after" },
+    ],
+  },
+]);
+assert.deepEqual(
+  restoredToolRows.map(({ eventId, forkable, forkEdge }) => ({
+    eventId, forkable, forkEdge,
+  })),
+  [
+    { eventId: "event-request", forkable: true, forkEdge: "after" },
+    { eventId: "event-pre", forkable: true, forkEdge: "before" },
+    { eventId: "event-post", forkable: true, forkEdge: "after" },
+    { eventId: "event-result", forkable: true, forkEdge: "after" },
+    { eventId: "event-context", forkable: true, forkEdge: "after" },
+  ],
+  "late durable coordinates activate the earlier tool rows they stabilize",
+);
+assert.equal(
+  getForkActionLabel(restoredToolRows[0], 2),
+  "툴 실행 전 분기 · 정책 2개",
+);
+assert.equal(
+  getForkActionLabel(restoredToolRows[2], 2),
+  "툴 결과에서 분기 · 정책 2개",
+);
+
+const leafVersionFrames = [
+  { kind: "meta", run_id: "leaf-v1" },
+  {
+    kind: "lifecycle", run_id: "leaf-v1", event_id: "leaf-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "agent", run_id: "leaf-v1", event_id: "leaf-request",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "lifecycle", run_id: "leaf-v1", event_id: "leaf-pre",
+    type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
+  },
+  {
+    kind: "meta", run_id: "leaf-v2", fork_parent: "leaf-v1",
+    fork_event_id: "leaf-pre", fork_edge: "before", fork_mode: "leaf",
+  },
+  {
+    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-pre",
+    type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
+  },
+  {
+    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-post",
+    type: "post_tool_use", payload: { call_id: "read-1", name: "read_customer" },
+  },
+];
+assert.deepEqual(
+  deriveVersionRows(leafVersionFrames, "leaf-v2").map(({ eventId }) => eventId),
+  ["leaf-session", "leaf-request", "leaf-child-pre", "leaf-child-post"],
+  "a leaf continuation keeps the parent prefix and does not trim its shorter child stream",
 );
 
 console.log("run inspector state ok");

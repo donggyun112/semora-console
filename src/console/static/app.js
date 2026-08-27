@@ -230,9 +230,31 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
     versionOrigin: "inherited",
     forkStart: false,
   }));
-  const current = directRows.slice(childStart);
+  const current = meta.fork_mode === "leaf"
+    ? directRows.filter((row) => row.label !== "session_start")
+    : directRows.slice(childStart);
   if (current.length) current[0] = { ...current[0], forkStart: true };
   return [...inherited, ...current];
+}
+
+export function getForkActionLabel(row, policyCount) {
+  if (row?.kind === "tool" || row?.label === "pre_tool_use") {
+    return `툴 실행 전 분기 · 정책 ${policyCount}개`;
+  }
+  if (row?.forkEdge === "after") {
+    return `툴 결과에서 분기 · 정책 ${policyCount}개`;
+  }
+  return `이 입력에서 분기 · 정책 ${policyCount}개`;
+}
+
+function getForkActionDescription(row) {
+  if (row?.kind === "tool" || row?.label === "pre_tool_use") {
+    return "선택한 정책으로 툴 호출을 다시 평가합니다.";
+  }
+  if (row?.forkEdge === "after") {
+    return "저장된 툴 결과 다음부터 이어서 실행합니다.";
+  }
+  return "원문이 새 원장과 대화 기록에 저장됩니다.";
 }
 
 export function deriveVersionPhase(frames, fallback = "idle") {
@@ -447,14 +469,15 @@ export function createConsole({
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = `이 입력에서 분기 · 정책 ${request.units.length}개`;
+        button.textContent = getForkActionLabel(row, request.units.length);
+        const forkDescription = getForkActionDescription(row);
         button.title = [
           `적용 정책: ${request.units.join(", ") || "없음"}`,
-          "원문이 새 원장과 대화 기록에 저장됩니다.",
+          forkDescription,
         ].join(" · ");
         button.setAttribute(
           "aria-label",
-          `${index + 1}번 이벤트에서 다시 실행. 원문이 새 원장과 대화 기록에 저장됩니다.`,
+          `${index + 1}번 이벤트에서 다시 실행. ${forkDescription}`,
         );
         button.addEventListener("click", () => void forkSource(row));
         action.append(button);

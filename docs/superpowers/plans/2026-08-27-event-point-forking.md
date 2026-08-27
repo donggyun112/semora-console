@@ -4,7 +4,7 @@
 
 **Goal:** Give every visible event a durable audit coordinate, while exposing a fork action only where the console can restore that exact execution boundary.
 
-**Architecture:** `nexora-fork` stores opaque `fork_checkpoint` entries in the existing append-only transcript. Each entry maps one observation `event_id` to `before` and `after` coordinates: source run, input origin, and transcript leaf. `fork_event` resolves that durable entry. The console records coordinates for audit/version lineage on every visible row, but marks only `context_injected / user_prompt` as an exact `before` restore point. The UI renders actions only for those rows, and `/api/fork` enforces both event ownership and the supported edge.
+**Architecture:** `nexora-fork` stores opaque `fork_checkpoint` entries in the existing append-only transcript. Each entry maps one observation `event_id` to `before` and `after` coordinates: source run, input origin, and transcript leaf. `fork_event` resolves that durable entry. The console records coordinates for audit/version lineage on every visible row. Input injection restores from its input origin; tool request and `pre_tool_use` rows are stabilized to the durable assistant tool-call leaf; `post_tool_use`, tool result, and tool-result injection rows are stabilized to the durable `ToolMessage` leaf. The UI activates an action only after that exact coordinate exists, and `/api/fork` enforces event ownership and the supported edge.
 
 ## Task 1: Add durable event checkpoints to `nexora-fork`
 
@@ -27,7 +27,7 @@
 
 1. Add failing stream tests asserting every visible lifecycle/agent/policy row has an `event_id` and a durable checkpoint.
 2. Give the prefix prompt an explicit origin and keep an origin→source-run route in the source session.
-3. While projecting frames, track the most recent input route and transcript leaf; record before/after coordinates with `record_event_checkpoint`.
+3. While projecting frames, track input routes, transcript leaves, and pending tool boundaries by call ID; record each checkpoint and publish capability updates when an earlier tool row becomes durable.
 4. Change `ForkRequest` to `{run_id, event_id, edge, units}` and execute `fork_event` from the selected checkpoint under the newly selected controls.
 5. Preserve the existing source branch and emit the fork branch snapshot after completion.
 
@@ -44,7 +44,7 @@
 
 1. Add failing pure tests proving reduced rows retain `eventId` and the clicked event is sent to `/api/fork`.
 2. Remove the global `#fork-run` terminal action.
-3. Render a fork action only beside exact input-injection boundaries; keep all other rows observation-only.
+3. Render a fork action beside exact input-injection and durable tool boundaries. Tool requests continue after the request row, `pre_tool_use` restarts before execution, and completed tool rows continue after the saved result without repeating the effect.
 4. Treat each source/fork run as `v1`, `v2`, and later versions. Show one version's chat, event trace, outcome, and policy chips at a time, while keeping earlier versions selectable.
 5. Keep the durable-original warning on the inline action. Use the post-run policy selection for the new version; the masking incident omits `input_mask` from that selection.
 5. Run Node and static-shell tests.

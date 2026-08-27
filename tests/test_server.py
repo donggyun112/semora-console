@@ -10,7 +10,14 @@ from nexora.dispatch import Answer, Prompt, Recover
 from nexora_fork import EventCheckpoint, ForkCoordinate
 
 from console import server
-from console.server import _crash_point, _is_aborted, _project_event, _stream, app
+from console.server import (
+    _crash_point,
+    _is_aborted,
+    _project_event,
+    _register_frame,
+    _stream,
+    app,
+)
 
 
 def test_suspend_does_not_mark_the_call_blocked():
@@ -48,6 +55,8 @@ def test_refused_call_emits_request_then_gate():
     assert frames[0]["unit"] == "dlp_block" and frames[0]["verdict"] == "deny"
     assert frames[1]["event"]["blocked"] is True
     assert frames[1]["event"]["name"] == "send_email"
+    assert frames[1]["checkpoint_phase"] == "tool_result"
+    assert frames[1]["call_id"] == "c1"
 
 
 def test_executed_call_emits_request_then_result():
@@ -65,6 +74,34 @@ def test_executed_call_emits_request_then_result():
     )
     assert [f["kind"] for f in frames] == ["unit", "agent"]
     assert frames[0]["verdict"] == "rewrite"
+
+
+def test_restore_updates_register_earlier_tool_events_as_forkable():
+    session = {"event_ids": {"event-pre"}, "forkable_events": {}}
+
+    _register_frame(
+        session,
+        {
+            "event_id": "event-result-context",
+            "forkable": True,
+            "restore_edge": "after",
+            "restore_updates": [
+                {"event_id": "event-pre", "restore_edge": "before"},
+                {"event_id": "event-post", "restore_edge": "after"},
+            ],
+        },
+    )
+
+    assert session["event_ids"] == {
+        "event-pre",
+        "event-post",
+        "event-result-context",
+    }
+    assert session["forkable_events"] == {
+        "event-pre": "before",
+        "event-post": "after",
+        "event-result-context": "after",
+    }
 
 
 def test_scenarios_endpoint():
@@ -501,6 +538,54 @@ def test_fork_uses_modified_controls_for_other_scenarios(monkeypatch):
         server._sessions.pop(source_id, None)
         if fork_id:
             server._sessions.pop(fork_id, None)
+
+
+def test_tool_leaf_fork_keeps_the_child_on_leaf_coordinates(monkeypatch):
+    source_id = "run-tool-source"
+    server._sessions[source_id] = {
+        "units": [],
+        "agent": object(),
+        "scenario_id": "customer",
+        "terminal": True,
+        "conversation_id": "conv-tool",
+        "origin_id": "p1",
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "event_ids": {"event-pre-tool"},
+        "forkable_events": {"event-pre-tool": "before"},
+    }
+
+    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
+        return {"stop_reason": "completed"}
+
+    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
+        coordinate = ForkCoordinate(source_id, None, "assistant-tool-leaf")
+        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
+
+    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
+    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={
+                    "run_id": source_id,
+                    "event_id": "event-pre-tool",
+                    "edge": "before",
+                    "units": [],
+                },
+            )
+        assert response.status_code == 200
+        frames = [json.loads(line) for line in response.text.splitlines()]
+        meta = next(frame for frame in frames if frame["kind"] == "meta")
+        child = server._sessions[meta["run_id"]]
+        assert meta["fork_mode"] == "leaf"
+        assert child["default_fork_origin"] is None
+    finally:
+        child_ids = server._sessions.get(source_id, {}).get("fork_children", [])
+        server._sessions.pop(source_id, None)
+        for child_id in child_ids:
+            server._sessions.pop(child_id, None)
 
 
 def test_completed_version_can_create_another_fork(monkeypatch):

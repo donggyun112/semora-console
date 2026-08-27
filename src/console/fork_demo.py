@@ -23,20 +23,62 @@ class EventCheckpointProjector:
         self,
         transcript: Any,
         *,
+        run_id: str,
         conversation_id: str,
         origin_runs: dict[str, str],
-        default_origin_id: str,
+        default_origin_id: str | None,
     ) -> None:
         self._transcript = transcript
+        self._run_id = run_id
         self._conversation_id = conversation_id
         self._origin_runs = dict(origin_runs)
         self._origin_id = default_origin_id
         self._last_leaf: str | None = None
+        self._before_tool_events: dict[str, list[tuple[str, str]]] = {}
+        self._after_tool_events: dict[str, list[tuple[str, str]]] = {}
         self._scope = uuid.uuid4().hex
         self._sequence = 0
 
-    def _coordinate(self, origin_id: str, leaf_uuid: str | None) -> ForkCoordinate:
-        return ForkCoordinate(self._origin_runs[origin_id], origin_id, leaf_uuid)
+    def _coordinate(self, origin_id: str | None, leaf_uuid: str | None) -> ForkCoordinate:
+        from_run_id = self._origin_runs.get(origin_id, self._run_id)
+        return ForkCoordinate(from_run_id, origin_id, leaf_uuid)
+
+    @staticmethod
+    def _call_id(frame: dict[str, Any]) -> str | None:
+        if frame.get("kind") == "agent":
+            event = frame.get("event") or {}
+            value = event.get("id") if isinstance(event, dict) else None
+            value = value or frame.get("call_id")
+            return str(value) if value else None
+        if frame.get("kind") == "lifecycle":
+            payload = frame.get("payload") or {}
+            value = payload.get("call_id") if isinstance(payload, dict) else None
+            return str(value) if value else None
+        value = frame.get("call_id")
+        return str(value) if value else None
+
+    async def _stabilize(
+        self,
+        event_points: list[tuple[str, str]],
+        *,
+        leaf_uuid: str | None,
+    ) -> list[dict[str, str]]:
+        if leaf_uuid is None:
+            return []
+        coordinate = ForkCoordinate(self._run_id, None, leaf_uuid)
+        updates: list[dict[str, str]] = []
+        for event_id, edge in event_points:
+            await record_event_checkpoint(
+                self._transcript,
+                EventCheckpoint(
+                    event_id,
+                    self._conversation_id,
+                    coordinate,
+                    coordinate,
+                ),
+            )
+            updates.append({"event_id": event_id, "restore_edge": edge})
+        return updates
 
     @staticmethod
     def _input_origin(frame: dict[str, Any]) -> str | None:
@@ -74,20 +116,74 @@ class EventCheckpointProjector:
             self._transcript,
             EventCheckpoint(event_id, self._conversation_id, before, after),
         )
-        self._last_leaf = current_leaf
+        call_id = self._call_id(frame)
+        frame_kind = str(frame.get("kind") or "")
+        frame_type = str(frame.get("type") or "")
+        event = frame.get("event") if frame_kind == "agent" else None
+        agent_type = str(event.get("type") or "") if isinstance(event, dict) else ""
+        checkpoint_phase = str(frame.get("checkpoint_phase") or "")
+        restore_updates: list[dict[str, str]] = []
+
+        if (
+            call_id
+            and frame_kind == "agent"
+            and agent_type == "tool_call"
+            and checkpoint_phase != "tool_result"
+        ):
+            self._before_tool_events.setdefault(call_id, []).append((event_id, "after"))
+        if call_id and frame_kind == "lifecycle" and frame_type.endswith("pre_tool_use"):
+            self._before_tool_events.setdefault(call_id, []).append((event_id, "before"))
+
+        is_tool_result = frame_kind == "agent" and (
+            agent_type == "tool_result" or checkpoint_phase == "tool_result"
+        )
+        if call_id and is_tool_result:
+            restore_updates.extend(
+                await self._stabilize(
+                    self._before_tool_events.pop(call_id, []),
+                    leaf_uuid=current_leaf,
+                )
+            )
+            self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
+
+        if call_id and frame_kind == "lifecycle" and frame_type.endswith(
+            ("post_tool_use", "post_tool_use_failure")
+        ):
+            self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
+
         payload_kind = payload.get("kind") if isinstance(payload, dict) else None
-        forkable = (
+        tool_result_origin = (
+            str(payload.get("origin_id"))
+            if frame_kind == "lifecycle"
+            and frame_type.endswith("context_injected")
+            and payload_kind == "tool_result"
+            and payload.get("origin_id")
+            else None
+        )
+        if tool_result_origin:
+            restore_updates.extend(
+                await self._stabilize(
+                    self._after_tool_events.pop(tool_result_origin, []),
+                    leaf_uuid=current_leaf,
+                )
+            )
+
+        self._last_leaf = current_leaf
+        input_fork = (
             frame.get("kind") == "lifecycle"
-            and frame.get("type") == "context_injected"
+            and frame_type.endswith("context_injected")
             and payload_kind == "user_prompt"
             and candidate in self._origin_runs
         )
+        tool_result_fork = bool(tool_result_origin and current_leaf)
+        restore_edge = "before" if input_fork else "after" if tool_result_fork else None
         return {
             **frame,
             "event_id": event_id,
             "fork_origin_id": before.origin_id,
-            "forkable": forkable,
-            "restore_edge": "before" if forkable else None,
+            "forkable": bool(restore_edge),
+            "restore_edge": restore_edge,
+            "restore_updates": restore_updates,
         }
 
 
