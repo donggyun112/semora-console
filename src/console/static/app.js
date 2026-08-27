@@ -124,6 +124,16 @@ export function deriveChatView(prompt, frames) {
       continue;
     }
 
+    if (frame?.kind === "lifecycle" && frame.type === "post_tool_use") {
+      const tool = toolById.get(frame.payload?.call_id);
+      if (tool) {
+        tool.status = "completed";
+        tool.summary = "실행 완료";
+        tool.reason = null;
+      }
+      continue;
+    }
+
     if (frame?.kind === "unit" && String(frame.verdict).toLowerCase() === "deny") {
       lastDenial = frame;
       continue;
@@ -189,8 +199,30 @@ export function deriveRunVersions(frames) {
   }));
 }
 
-export function selectRunFrames(frames, runId) {
+function selectVersionChatFrames(frames, runId, ancestors = new Set()) {
+  const directFrames = frames.filter((frame) => frame?.run_id === runId);
+  const meta = directFrames.find((frame) => frame?.kind === "meta");
+  const parentRunId = meta?.fork_parent;
+  if (!parentRunId || ancestors.has(runId)) return directFrames;
+
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(runId);
+  const parentFrames = selectVersionChatFrames(frames, parentRunId, nextAncestors);
+  const forkIndex = parentFrames.findIndex(
+    (frame) => frame?.event_id === meta.fork_event_id,
+  );
+  if (forkIndex < 0) return directFrames;
+
+  const prefixEnd = forkIndex + (meta.fork_edge === "after" ? 1 : 0);
+  const currentFrames = directFrames.filter(
+    (frame) => frame?.kind !== "meta" && frame?.type !== "session_start",
+  );
+  return [...parentFrames.slice(0, prefixEnd), ...currentFrames];
+}
+
+export function selectRunFrames(frames, runId, options = {}) {
   if (!runId) return frames;
+  if (options.inheritFork) return selectVersionChatFrames(frames, runId);
   return frames.filter((frame) => frame?.run_id === runId);
 }
 
@@ -618,7 +650,12 @@ export function createConsole({
     setText(dom["run-error"], versionError?.message ?? (selectedIsCurrent ? state.run.error : null));
     setHidden(dom.errorActions, !(selectedIsCurrent && selectedPhase === "error"));
     renderVersions();
-    renderChat(scenario, frames);
+    const chatFrames = selectRunFrames(
+      state.frames,
+      state.selectedVersionRunId,
+      { inheritFork: true },
+    );
+    renderChat(scenario, chatFrames);
     renderOutcome(frames, selectedPhase, selectedIsCurrent);
     renderRows(selectedPhase, selectedIsCurrent);
   }

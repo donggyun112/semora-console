@@ -718,4 +718,133 @@ assert.deepEqual(
   "a leaf continuation keeps the parent prefix and does not trim its shorter child stream",
 );
 
+const versionedChatFrames = [
+  { kind: "meta", run_id: "chat-v1" },
+  {
+    kind: "agent", run_id: "chat-v1", event_id: "chat-read-request",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "agent", run_id: "chat-v1", event_id: "chat-read-result",
+    event: { type: "tool_result", id: "read-1", name: "read_customer", executed: true },
+  },
+  {
+    kind: "agent", run_id: "chat-v1", event_id: "chat-send-request",
+    event: { type: "tool_call", id: "send-1", name: "send_email", input: {} },
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v1", event_id: "chat-send-pre",
+    type: "pre_tool_use", payload: { call_id: "send-1", name: "send_email" },
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v1", event_id: "chat-send-post",
+    type: "post_tool_use", payload: { call_id: "send-1", name: "send_email" },
+  },
+  {
+    kind: "agent", run_id: "chat-v1", event_id: "chat-send-result",
+    event: { type: "tool_result", id: "send-1", name: "send_email", executed: true },
+  },
+  {
+    kind: "agent", run_id: "chat-v1", event_id: "chat-old-text",
+    event: { type: "text", text: "이전 응답" },
+  },
+  {
+    kind: "meta", run_id: "chat-v2", fork_parent: "chat-v1",
+    fork_event_id: "chat-send-post", fork_edge: "after", fork_mode: "leaf",
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v2", event_id: "chat-child-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "agent", run_id: "chat-v2", event_id: "chat-new-text",
+    event: { type: "text", text: "새 응답" },
+  },
+];
+assert.deepEqual(
+  deriveChatView(
+    "고객을 조회하고 메일로 보내줘.",
+    selectRunFrames(versionedChatFrames, "chat-v2", { inheritFork: true }),
+  ),
+  {
+    user: { role: "user", text: "고객을 조회하고 메일로 보내줘." },
+    assistant: {
+      role: "assistant",
+      text: "새 응답",
+      tools: [
+        {
+          id: "read-1", name: "read_customer", status: "completed",
+          summary: "실행 완료", reason: null,
+        },
+        {
+          id: "send-1", name: "send_email", status: "completed",
+          summary: "실행 완료", reason: null,
+        },
+      ],
+    },
+  },
+  "a forked chat keeps completed parent tools and replaces the abandoned response",
+);
+
+const nestedVersionedChatFrames = [
+  ...versionedChatFrames,
+  {
+    kind: "agent", run_id: "chat-v2", event_id: "chat-audit-request",
+    event: { type: "tool_call", id: "audit-1", name: "write_audit", input: {} },
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v2", event_id: "chat-audit-pre",
+    type: "pre_tool_use", payload: { call_id: "audit-1", name: "write_audit" },
+  },
+  {
+    kind: "agent", run_id: "chat-v2", event_id: "chat-audit-old-result",
+    event: { type: "tool_result", id: "audit-1", name: "write_audit", executed: false },
+  },
+  {
+    kind: "meta", run_id: "chat-v3", fork_parent: "chat-v2",
+    fork_event_id: "chat-audit-pre", fork_edge: "before", fork_mode: "leaf",
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v3", event_id: "chat-v3-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "lifecycle", run_id: "chat-v3", event_id: "chat-audit-new-post",
+    type: "post_tool_use", payload: { call_id: "audit-1", name: "write_audit" },
+  },
+  {
+    kind: "agent", run_id: "chat-v3", event_id: "chat-audit-new-result",
+    event: { type: "tool_result", id: "audit-1", name: "write_audit", executed: true },
+  },
+  {
+    kind: "agent", run_id: "chat-v3", event_id: "chat-final-text",
+    event: { type: "text", text: "최종 응답" },
+  },
+];
+assert.deepEqual(
+  deriveChatView(
+    "고객을 조회하고 메일로 보내줘.",
+    selectRunFrames(nestedVersionedChatFrames, "chat-v3", { inheritFork: true }),
+  ).assistant,
+  {
+    role: "assistant",
+    text: "새 응답최종 응답",
+    tools: [
+      {
+        id: "read-1", name: "read_customer", status: "completed",
+        summary: "실행 완료", reason: null,
+      },
+      {
+        id: "send-1", name: "send_email", status: "completed",
+        summary: "실행 완료", reason: null,
+      },
+      {
+        id: "audit-1", name: "write_audit", status: "completed",
+        summary: "실행 완료", reason: null,
+      },
+    ],
+  },
+  "a nested fork keeps chat context inherited through every ancestor version",
+);
+
 console.log("run inspector state ok");
