@@ -158,27 +158,43 @@ def c_dormancy():
     return bool(ok), f"rate_cap={rc}"
 
 
+def _forkable_before(frames: list[dict]) -> str | None:
+    for frame in frames:
+        for update in frame.get("restore_updates") or []:
+            if update.get("restore_edge") == "before":
+                return str(update["event_id"])
+        if frame.get("forkable") and frame.get("restore_edge") == "before":
+            event_id = frame.get("event_id")
+            if event_id:
+                return str(event_id)
+    return None
+
+
 def c_fork():
-    source = stream(
-        "/api/run",
-        {"scenario_id": "fork_masking", "units": ["input_mask"]},
-    )
+    source = stream("/api/run", {"scenario_id": "fork_masking", "units": ["pii_mask"]})
     source_meta = next(frame for frame in source if frame["kind"] == "meta")
-    source_branch = next(
-        frame
-        for frame in source
-        if frame["kind"] == "lifecycle" and frame.get("type") == "branch_snapshot"
+    masked = any(
+        r.get("redacted_by") == "pii_mask" or "***" in str(r.get("text", ""))
+        for r in results(source)
     )
-    forked = stream("/api/fork", {"run_id": source_meta["run_id"]})
-    fork_branch = next(
-        frame
-        for frame in forked
-        if frame["kind"] == "lifecycle" and frame.get("type") == "branch_snapshot"
+    event_id = _forkable_before(source)
+    if not event_id:
+        return False, f"no forkable tool event: masked={masked}"
+    forked = stream(
+        "/api/fork",
+        {
+            "run_id": source_meta["run_id"],
+            "event_id": event_id,
+            "edge": "before",
+            "units": [],
+        },
     )
-    source_text = str(source_branch["payload"]["messages"])
-    fork_text = str(fork_branch["payload"]["messages"])
-    ok = "***" in source_text and "123-45" not in source_text and "123-45" in fork_text
-    return ok, f"source_masked={'***' in source_text}, fork_original={'123-45' in fork_text}"
+    original = any(
+        "123-45-6789" in str(r.get("text", "")) and not r.get("redacted_by")
+        for r in results(forked)
+    )
+    ok = masked and original
+    return ok, f"source_masked={masked}, fork_original={original}"
 
 
 def main() -> None:
@@ -193,7 +209,7 @@ def main() -> None:
     case("6) log_gate + charge → finish-seam steer + finish", c_loggate)
     case("7) HEADLINE leak + approval+dlp_block → DENY wins over SUSPEND", c_headline)
     case("8) dormancy → rate_cap dormant with reason, pii_mask fired", c_dormancy)
-    case("9) input_mask → source masked → fork restores ledger original", c_fork)
+    case("9) pii_mask on → fork off → tool result unmasked", c_fork)
     print()
     if FAILED:
         print(f"{FAILED} CASE(S) FAILED")

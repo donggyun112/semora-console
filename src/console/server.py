@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,15 +41,19 @@ from .fork_demo import (
     EventCheckpointProjector,
     branch_snapshot,
     run_from_event,
-    run_masked_source,
 )
-from .provider import DEFAULT_MODEL, openrouter_model
+from .provider import model_name, openrouter_model
 from .scenarios import SCENARIOS, SYSTEM_PROMPT
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
 from .tools import DemoTools
 from .units import LOG_HINT, UNITS, UNITS_BY_NAME, compose_controls
 
 load_dotenv()
+# MODEL is edited in .env while trying models out, so let that edit beat a stale
+# exported value. Credentials and DATABASE_URL keep normal precedence — overriding
+# those let a leftover .env silently replace the key or the durable-proof DSN.
+if (_dotenv_model := dotenv_values().get("MODEL")):
+    os.environ["MODEL"] = _dotenv_model
 
 STATIC = Path(__file__).parent / "static"
 _SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
@@ -72,13 +77,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Nexora Control Plane Console", lifespan=lifespan)
 
 
-def _new_agent() -> Agent:
-    """Create the model-visible definition shared by a run and its continuations."""
+def _new_agent(payment_batch_id: str) -> Agent:
+    """Create the run agent. Payment records are keyed by scenario id so a rerun can reuse them."""
     return Agent(
         name="control-plane-console",
         description="Runs locked operator control-plane scenarios.",
         model=openrouter_model(),
-        tools=DemoTools(),
+        tools=DemoTools(payment_batch_id=payment_batch_id),
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -219,6 +224,11 @@ def _project_event(
                 "unit": unit,
                 "verdict": "suspend" if is_suspend else "deny",
                 "message": (res.get("message") or res.get("reason") or "denied") if isinstance(res, dict) else "denied",
+                # Which call this verdict gates. Without it a parallel batch shows N
+                # identical SUSPEND rows and the operator cannot tell them apart.
+                "call_id": call_id,
+                "name": event.get("name") or (call or {}).get("name"),
+                "input": (call or {}).get("input") or {},
             }
             if is_suspend:
                 return [unit_frame]
@@ -421,7 +431,7 @@ async def scenarios() -> list[dict[str, Any]]:
 async def units() -> dict[str, Any]:
     """Return composable units and the default model, for the composition view."""
     return {
-        "model": DEFAULT_MODEL,
+        "model": model_name(),
         "units": [
             {"name": u.name, "point": u.point, "composer": u.composer,
              "verdict": u.verdict, "title": u.title, "desc": u.desc}
@@ -440,22 +450,16 @@ async def run(request: RunRequest) -> StreamingResponse:
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
-    agent = _new_agent()
+    agent = _new_agent(request.scenario_id)
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
-    prefix_run_id = f"run-{uuid.uuid4().hex[:12]}"
-    prefix_origin_id = f"{prefix_run_id}:prompt:{uuid.uuid4().hex[:8]}"
     origin_runs = {prompt_id: run_id}
-    default_fork_origin = prompt_id
-    if request.scenario_id == "fork_masking":
-        origin_runs[prefix_origin_id] = prefix_run_id
-        default_fork_origin = prefix_origin_id
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
-        "source_run_id": run_id, "prefix_run_id": prefix_run_id,
+        "source_run_id": run_id,
         "origin_runs": origin_runs,
-        "default_fork_origin": default_fork_origin,
+        "default_fork_origin": prompt_id,
         "event_ids": set(),
         "forkable_events": {},
         "terminal": False,
@@ -464,21 +468,6 @@ async def run(request: RunRequest) -> StreamingResponse:
         _store.arm(run_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        if request.scenario_id == "fork_masking":
-            return await run_masked_source(
-                runtime,
-                run_id=run_id,
-                prefix_run_id=prefix_run_id,
-                prefix_origin_id=prefix_origin_id,
-                conversation_id=conversation_id,
-                origin_id=prompt_id,
-                prompt=scenario["prompt"],
-                agent=agent,
-                controls=_controls(selected, run_id, crash_at),
-                on_event=on_event,
-                should_stop_after_turn=_capped,
-                aborted=lambda: _is_aborted(run_id),
-            )
         outcome = await runtime.dispatch(
             run_id,
             agent,

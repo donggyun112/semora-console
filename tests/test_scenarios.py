@@ -13,9 +13,10 @@ def test_scenarios_well_formed():
         assert s["forkable"] is True
 
 
-def test_fork_masking_scenario_starts_with_input_mask():
+def test_fork_masking_scenario_starts_with_pii_mask():
     scenario = next(item for item in SCENARIOS if item["id"] == "fork_masking")
-    assert scenario["default_units"] == ["input_mask"]
+    assert scenario["default_units"] == ["pii_mask"]
+    assert "read_customer" in scenario["prompt"]
     assert scenario["forkable"] is True
 
 

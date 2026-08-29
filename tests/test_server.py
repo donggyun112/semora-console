@@ -12,6 +12,7 @@ from nexora.dispatch import Answer, Prompt, Recover
 from nexora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 
 from console import server
+from console.provider import model_name
 from console.server import (
     _crash_point,
     _is_aborted,
@@ -117,6 +118,10 @@ def test_resume_result_stabilizes_the_completed_tool_boundary(monkeypatch):
         assert restored[result["event_id"]] == "after"
         assert injected["forkable"] is True
         assert injected["restore_edge"] == "after"
+        assert result["event"]["result"]["idempotency"] == {
+            "key": "charge:c-001",
+            "replayed": False,
+        }
     finally:
         server._sessions.pop(run_id, None)
 
@@ -160,6 +165,29 @@ def test_suspend_does_not_mark_the_call_blocked():
     )
     assert [f["kind"] for f in frames] == ["unit"]
     assert frames[0]["verdict"] == "suspend"
+
+
+def test_suspend_frame_names_the_call_it_gates():
+    """A parallel batch suspends once per call; without the id every SUSPEND row
+    looks identical and the operator cannot tell which charge is being approved."""
+    pending: dict = {}
+    for cid, customer in (("c1", "c-001"), ("c2", "c-002")):
+        _project_event(
+            {"type": "tool_call", "id": cid, "name": "charge_card",
+             "input": {"customer_id": customer, "amount": "10"}},
+            pending,
+        )
+    frames = [
+        _project_event(
+            {"type": "tool_result", "id": cid, "name": "charge_card", "executed": False,
+             "result": {"type": "suspend", "unit": "approval", "reason": "승인 필요"}},
+            pending,
+        )[0]
+        for cid in ("c1", "c2")
+    ]
+    assert [f["call_id"] for f in frames] == ["c1", "c2"]
+    assert [f["input"]["customer_id"] for f in frames] == ["c-001", "c-002"]
+    assert {f["name"] for f in frames} == {"charge_card"}
 
 
 def test_refused_call_emits_request_then_gate():
@@ -286,6 +314,7 @@ def test_run_uses_agent_definition(monkeypatch):
         assert agent.description
         assert agent.model is model
         assert isinstance(agent.tools, server.DemoTools)
+        assert agent.tools.payment_batch_id == "note"
         assert agent.system_prompt == server.SYSTEM_PROMPT
         command = captured["command"]
         assert isinstance(command, Prompt)
@@ -309,6 +338,63 @@ def test_run_uses_agent_definition(monkeypatch):
         )
     finally:
         server._sessions.pop(run_id, None)
+
+
+def _charge_result_frames(text: str) -> list[dict]:
+    frames = []
+    for line in text.splitlines():
+        frame = json.loads(line)
+        event = frame.get("event") or {}
+        if frame.get("kind") == "agent" and event.get("type") == "tool_result":
+            frames.append(frame)
+    return frames
+
+
+def test_rerun_reuses_the_scenario_payment_ledger(monkeypatch):
+    model = BoundFakeMessagesListChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "charge-run-1",
+                        "name": "charge_card",
+                        "args": {"customer_id": "c-001", "amount": "10"},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="청구가 완료됐습니다."),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "charge-run-2",
+                        "name": "charge_card",
+                        "args": {"customer_id": "c-001", "amount": "10"},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="청구가 완료됐습니다."),
+        ]
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        first = client.post("/api/run", json={"scenario_id": "parallel", "units": []})
+        second = client.post("/api/run", json={"scenario_id": "parallel", "units": []})
+
+    first_results = _charge_result_frames(first.text)
+    second_results = _charge_result_frames(second.text)
+    assert first_results[0]["event"]["result"]["idempotency"] == {
+        "key": "parallel:c-001",
+        "replayed": False,
+    }
+    assert second_results[0]["event"]["result"]["idempotency"] == {
+        "key": "parallel:c-001",
+        "replayed": True,
+    }
+    assert second_results[0]["event"]["result"]["execution"]["replayed"] is False
 
 
 def test_resume_reuses_session_agent(monkeypatch):
@@ -417,7 +503,7 @@ def test_units_endpoint_shape():
         r = c.get("/api/units")
         assert r.status_code == 200
         body = r.json()
-        assert body["model"].startswith("deepseek/")
+        assert body["model"] == model_name()
         names = {u["name"] for u in body["units"]}
         assert names == {
             "input_mask", "approval", "dlp_block", "rate_cap", "pii_mask",
@@ -455,7 +541,7 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "run-shell", "run-title", "run-status", "run-policies", "abort",
         "chat-panel", "chat-thread", "version-switcher",
         "event-panel", "event-count",
-        "outcome-strip", "rerun-plain", "rerun-same", "retry-run",
+        "outcome-strip", "rerun", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
         "details-copy", "details-title", "details-body", "steer-form",
         "steer-text", "policy-drawer", "policy-close", "scenarios", "units",
@@ -574,7 +660,7 @@ def test_fork_rejects_inflight_source():
             server._sessions.pop(run_id, None)
 
 
-def test_fork_uses_selected_event_and_removes_input_mask(monkeypatch):
+def test_fork_uses_selected_event_and_units(monkeypatch):
     captured: dict = {}
     source_id = "run-fork-source"
     server._sessions[source_id] = {

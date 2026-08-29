@@ -400,7 +400,7 @@ def test_recovered_blocked_tool_result_uses_its_top_level_call_id():
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_event_fork_reexecutes_the_pending_call_in_the_child_run():
+async def test_pre_tool_event_fork_reuses_the_pending_call_result_in_the_child_run():
     steps = MemorySteps()
     transcript = MemoryTranscript()
     tools = DemoTools()
@@ -449,7 +449,7 @@ async def test_pre_tool_event_fork_reexecutes_the_pending_call_in_the_child_run(
         controls=None,
     )
 
-    assert tools.execution_counts["read-1"] == 2
+    assert tools.execution_counts["read-1"] == 1
     history = await child_runtime.committed_history("run-child", "conv-tool")
     assert history[-1].content == "fork finished"
 
