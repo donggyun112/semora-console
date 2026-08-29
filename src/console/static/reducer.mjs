@@ -7,6 +7,7 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     label,
     summary,
     verdict: options.verdict ?? null,
+    badges: options.badges ?? [],
     tone: options.tone ?? "neutral",
     details: options.details ?? {},
     eventId: options.eventId ?? coordinateFrame?.event_id ?? null,
@@ -14,6 +15,7 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     forkable: options.forkable ?? Boolean(coordinateFrame?.forkable),
     forkEdge: options.forkEdge ?? coordinateFrame?.restore_edge ?? null,
     runId: options.runId ?? null,
+    callId: options.callId ?? coordinateFrame?.call_id ?? coordinateFrame?.payload?.call_id ?? null,
   };
 }
 
@@ -47,8 +49,46 @@ function steerLabel(source) {
   return source ?? "steer";
 }
 
-function toolResultOutput(event) {
+// A call row and its result row both carried the bare tool name, so the trace read
+// as the same event twice. The role rides on the label; the tool name stays intact.
+export const toolCallLabel = (name) => `${name ?? "tool"} 호출`;
+export const toolResultLabel = (name) => `${name ?? "tool"} 결과`;
+
+export function toolResultOutput(event) {
   return event.output ?? event.result ?? event.content ?? null;
+}
+
+export const CALL_REPLAY_BADGE = {
+  kind: "call_replay",
+  label: "CALL REPLAY",
+  detail: "도구 호출 생략",
+};
+
+export const PAYMENT_DEDUPE_BADGE = {
+  kind: "payment_dedupe",
+  label: "PAYMENT DEDUPE",
+  detail: "결제 원장 재사용",
+};
+
+export const RESULT_MASK_BADGE = {
+  kind: "result_mask",
+  label: "RESULT MASK",
+  detail: "도구 결과 가림",
+};
+
+export function resultBadges(event) {
+  const result = toolResultOutput(event);
+  const badges = [];
+  if (result?.execution?.replayed === true) {
+    badges.push({ ...CALL_REPLAY_BADGE });
+  }
+  if (event?.name === "charge_card" && result?.idempotency?.replayed === true) {
+    badges.push({ ...PAYMENT_DEDUPE_BADGE });
+  }
+  if (result?.redacted_by) {
+    badges.push({ ...RESULT_MASK_BADGE });
+  }
+  return badges;
 }
 
 function toolCallSummary(event) {
@@ -61,6 +101,14 @@ function toolCallSummary(event) {
     return `${input.customer_id} · $${input.amount}`;
   }
   return "도구 호출 요청";
+}
+
+export function unitSummary(frame) {
+  const message = frame.message ?? "정책 평가";
+  if (!frame.call_id) return message;
+  const target = toolCallSummary({ name: frame.name, input: frame.input });
+  const label = target === "도구 호출 요청" ? frame.name : `${frame.name} · ${target}`;
+  return label ? `${label} — ${message}` : message;
 }
 
 export function reduceFrames(frames) {
@@ -110,8 +158,10 @@ export function reduceFrames(frames) {
     if (frame.kind !== "lifecycle") openText = null;
 
     if (frame.kind === "lifecycle") {
+      const payload = frame.payload ?? {};
       append("lifecycle", frame.type ?? "lifecycle", lifecycleSummary(frame), {
-        details: { raw: frame },
+        callId: payload.call_id ?? null,
+        details: { raw: frame, output: payload.result ?? null },
       });
       continue;
     }
@@ -120,10 +170,9 @@ export function reduceFrames(frames) {
       const event = frame.event;
       const callId = event.id ?? `anonymous-${sequence}`;
       const stableId = `tool:${callId}`;
-      const priorIndex = toolIndexes.get(stableId);
-      if (priorIndex !== undefined) {
-        const prior = rows[priorIndex];
-        prior.label = event.name ?? prior.label;
+      const prior = toolIndexes.get(stableId);
+      if (prior !== undefined) {
+        prior.label = event.name ? toolCallLabel(event.name) : prior.label;
         prior.summary = event.blocked ? "실행 안 됨" : prior.summary;
         prior.verdict = event.blocked ? null : prior.verdict;
         prior.tone = event.blocked ? "deny" : prior.tone;
@@ -141,38 +190,57 @@ export function reduceFrames(frames) {
       } else {
         const row = append(
           "tool",
-          event.name ?? "tool",
+          toolCallLabel(event.name),
           event.blocked ? "실행 안 됨" : toolCallSummary(event),
           {
             id: stableId,
+            callId,
             verdict: null,
             tone: event.blocked ? "deny" : "neutral",
             details: { input: event.input ?? null, raw: [frame] },
           },
         );
-        toolIndexes.set(stableId, rows.indexOf(row));
+        toolIndexes.set(stableId, row);
       }
       continue;
     }
 
     if (frame.kind === "agent" && frame.event?.type === "tool_result") {
       const event = frame.event;
-      append("result", event.name ?? "tool result", "실행 완료", {
-        details: {
-          output: toolResultOutput(event),
-          executionCount: event.execution_count ?? event.executionCount ?? null,
-          raw: frame,
+      const result = toolResultOutput(event);
+      const execution = result?.execution;
+      const idempotency = result?.idempotency;
+      append(
+        "result",
+        toolResultLabel(event.name),
+        "실행 완료",
+        {
+          callId: execution?.call_id ?? event.id ?? null,
+          badges: resultBadges(event),
+          details: {
+            output: result,
+            executionCount: (
+              result?.execution_count ??
+              event.execution_count ??
+              event.executionCount ??
+              null
+            ),
+            callId: execution?.call_id ?? event.id ?? null,
+            idempotencyKey: idempotency?.key ?? null,
+            raw: frame,
+          },
         },
-      });
+      );
       continue;
     }
 
     if (frame.kind === "unit") {
       const verdict = String(frame.verdict ?? "").toUpperCase() || null;
-      append("policy", frame.unit ?? "policy", frame.message ?? "정책 평가", {
+      append("policy", frame.unit ?? "policy", unitSummary(frame), {
+        callId: frame.call_id ?? null,
         verdict,
         tone: verdict?.toLowerCase() ?? "neutral",
-        details: { raw: frame },
+        details: { input: frame.input ?? null, raw: frame },
       });
       continue;
     }
@@ -187,6 +255,16 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "recoverable") {
+      // The approval-gate crash fires before the park is written, so the pre_tool_use
+      // row it left behind records work that never committed. Drop that orphan or the
+      // recovered replay reads as a duplicate of it. A crash at the commit seam carries
+      // an effect key rather than a call id, so it matches nothing and keeps its rows.
+      const voided = rows.findIndex((row) => (
+        row.kind === "lifecycle"
+        && row.label === "pre_tool_use"
+        && row.callId === frame.step
+      ));
+      if (voided >= 0) rows.splice(voided, 1);
       append("recovery", "recover", frame.message ?? "worker failure", {
         tone: "halt",
         details: { raw: frame },

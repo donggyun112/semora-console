@@ -1,5 +1,10 @@
 import { createNdjsonReader } from "./ndjson.mjs";
-import { reduceFrames, summarizeOutcome } from "./reducer.mjs";
+import {
+  reduceFrames,
+  resultBadges,
+  summarizeOutcome,
+  toolResultOutput,
+} from "./reducer.mjs";
 import {
   acceptsStreamEnd,
   attachRunId,
@@ -50,6 +55,23 @@ function policyChip(documentRef, name) {
   return chip;
 }
 
+function makeResultBadge(documentRef, badge) {
+  const chip = documentRef.createElement("span");
+  chip.className = `result-badge kind-${badge.kind}`;
+  chip.textContent = `${badge.label} · ${badge.detail}`;
+  return chip;
+}
+
+export function makeResultBadges(documentRef, badges) {
+  if (!badges?.length) return null;
+  const group = documentRef.createElement("span");
+  group.className = "result-badges";
+  for (const badge of badges) {
+    group.append(makeResultBadge(documentRef, badge));
+  }
+  return group;
+}
+
 function checkedNames(container) {
   return [...container.querySelectorAll('input[type="checkbox"]:checked')].map(
     (input) => input.value,
@@ -65,6 +87,58 @@ export function getLaunchCopy(scenario) {
 
 function lastPendingTool(tools) {
   return [...tools].reverse().find((tool) => tool.status === "running");
+}
+
+const JOURNAL_UNITS = new Set(["pii_mask", "context_firewall", "injection_guard"]);
+
+function journalUnitsChanged(runState) {
+  const selected = new Set(
+    (runState?.draft?.unitNames ?? []).filter((name) => JOURNAL_UNITS.has(name)),
+  );
+  const source = new Set(
+    (runState?.active?.unitNames ?? []).filter((name) => JOURNAL_UNITS.has(name)),
+  );
+  if (selected.size !== source.size) return true;
+  for (const name of source) {
+    if (!selected.has(name)) return true;
+  }
+  return false;
+}
+
+function applyToolOutput(tool, result, blocked = false) {
+  if (blocked || result == null) {
+    if (blocked) {
+      delete tool.output;
+      delete tool.redactedBy;
+      tool.badges = [];
+    }
+    return;
+  }
+  const text = typeof result.text === "string" ? result.text : null;
+  if (text) tool.output = text;
+  else delete tool.output;
+  if (result.redacted_by) tool.redactedBy = result.redacted_by;
+  else delete tool.redactedBy;
+  tool.badges = resultBadges({ name: tool.name, result });
+}
+
+export function pickInlineActionHost(chatToolNodes, callId, status) {
+  // The decision belongs next to the call it gates. Fall back to the newest node in
+  // the matching status, then to nothing — the caller parks it in the thread.
+  const byId = callId ? chatToolNodes.get(callId) : null;
+  if (byId) return byId;
+  return [...chatToolNodes.values()].reverse()
+    .find((node) => node.dataset?.status === status) ?? null;
+}
+
+function rowCallId(row) {
+  return (
+    row?.callId ??
+    row?.details?.callId ??
+    row?.details?.raw?.payload?.call_id ??
+    row?.details?.raw?.event?.id ??
+    null
+  );
 }
 
 export function deriveChatView(prompt, frames) {
@@ -85,6 +159,7 @@ export function deriveChatView(prompt, frames) {
           status: "running",
           summary: "실행 중",
           reason: null,
+          badges: [],
         };
         tools.push(tool);
         toolById.set(id, tool);
@@ -107,15 +182,18 @@ export function deriveChatView(prompt, frames) {
           status: "running",
           summary: "실행 중",
           reason: null,
+          badges: [],
         };
         tools.push(tool);
         toolById.set(id, tool);
       }
-      tool.status = event.executed === false ? "blocked" : "completed";
-      tool.summary = event.executed === false ? "실행 안 됨" : "실행 완료";
-      tool.reason = event.executed === false
+      const blocked = event.executed === false;
+      tool.status = blocked ? "blocked" : "completed";
+      tool.summary = blocked ? "실행 안 됨" : "실행 완료";
+      tool.reason = blocked
         ? (event.result?.message ?? lastDenial?.message ?? null)
         : null;
+      applyToolOutput(tool, toolResultOutput(event), blocked);
       continue;
     }
 
@@ -125,11 +203,26 @@ export function deriveChatView(prompt, frames) {
     }
 
     if (frame?.kind === "lifecycle" && frame.type === "post_tool_use") {
-      const tool = toolById.get(frame.payload?.call_id);
+      const payload = frame.payload ?? {};
+      const id = payload.call_id;
+      let tool = toolById.get(id);
+      if (!tool && id) {
+        tool = {
+          id,
+          name: payload.name ?? "tool",
+          status: "completed",
+          summary: "실행 완료",
+          reason: null,
+          badges: [],
+        };
+        tools.push(tool);
+        toolById.set(id, tool);
+      }
       if (tool) {
         tool.status = "completed";
         tool.summary = "실행 완료";
         tool.reason = null;
+        applyToolOutput(tool, payload.result);
       }
       continue;
     }
@@ -140,7 +233,9 @@ export function deriveChatView(prompt, frames) {
     }
 
     if (frame?.kind === "suspended") {
-      const tool = lastPendingTool(tools);
+      // pending_id is the call id. Guessing the last running call put "승인 대기" on
+      // the wrong charge in a parallel batch.
+      const tool = toolById.get(frame.pending_id) ?? lastPendingTool(tools);
       if (tool) {
         tool.status = "approval";
         tool.summary = "승인 대기";
@@ -149,7 +244,9 @@ export function deriveChatView(prompt, frames) {
     }
 
     if (frame?.kind === "recoverable") {
-      const tool = lastPendingTool(tools);
+      // step is the call id at the approval-gate seam; at the commit seam it is an
+      // effect key that matches nothing, so fall back to the call still in flight.
+      const tool = toolById.get(frame.step) ?? lastPendingTool(tools);
       if (tool) {
         tool.status = "recoverable";
         tool.summary = "복구 대기";
@@ -184,18 +281,25 @@ export function deriveBranchView(frames) {
   }));
 }
 
+function versionPolicySuffix(units) {
+  if (!Array.isArray(units)) return "";
+  return units.length ? ` · ${units.join(", ")}` : " · 정책 없음";
+}
+
 export function deriveRunVersions(frames) {
   const seen = new Set();
   const runIds = [];
+  const unitsByRun = new Map();
   for (const frame of frames) {
     if (frame?.kind !== "meta" || !frame.run_id || seen.has(frame.run_id)) continue;
     seen.add(frame.run_id);
     runIds.push(frame.run_id);
+    if (Array.isArray(frame.units)) unitsByRun.set(frame.run_id, frame.units);
   }
   return runIds.map((runId, index) => ({
     runId,
     number: index + 1,
-    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}`,
+    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}${versionPolicySuffix(unitsByRun.get(runId))}`,
   }));
 }
 
@@ -279,14 +383,17 @@ export function getForkActionLabel(row, policyCount) {
   return `이 입력에서 분기 · 정책 ${policyCount}개`;
 }
 
-function getForkActionDescription(row) {
+function getForkActionDescription(row, request) {
+  if (request && row?.eventId && request.event_id !== row.eventId) {
+    return "선택한 마스킹 정책으로 툴 결과를 다시 만듭니다.";
+  }
   if (row?.kind === "tool" || row?.label === "pre_tool_use") {
-    return "선택한 정책으로 툴 호출을 다시 평가합니다.";
+    return "선택한 정책으로 툴 결과를 다시 만듭니다.";
   }
   if (row?.forkEdge === "after") {
     return "저장된 툴 결과 다음부터 이어서 실행합니다.";
   }
-  return "원문이 새 원장과 대화 기록에 저장됩니다.";
+  return "선택한 정책으로 이 입력부터 다시 실행합니다.";
 }
 
 export function deriveVersionPhase(frames, fallback = "idle") {
@@ -300,7 +407,7 @@ export function deriveVersionPhase(frames, fallback = "idle") {
   return fallback;
 }
 
-export function getEventForkRequest(runState, row) {
+export function getEventForkRequest(runState, row, rows = []) {
   if (
     runState?.phase !== "terminal" ||
     !runState?.runId ||
@@ -309,13 +416,35 @@ export function getEventForkRequest(runState, row) {
   ) {
     return null;
   }
-  const units = runState.active.scenarioId === "fork_masking"
-    ? runState.draft.unitNames.filter((name) => name !== "input_mask")
-    : [...runState.draft.unitNames];
+  const units = [...runState.draft.unitNames];
+  let eventId = row.eventId;
+  let edge = row.forkEdge ?? "before";
+  if (
+    journalUnitsChanged(runState) &&
+    row.forkEdge === "after" &&
+    (row.label === "post_tool_use" || row.kind === "result")
+  ) {
+    const callId = rowCallId(row);
+    const target = rows.indexOf(row);
+    // The most recent boundary for this call, not the first one. An approved call has
+    // two forkable pre_tool_use rows — the gate and the 승인 후 재검증 replay — and
+    // forking from the first rewinds past the approval, discarding the operator's
+    // decision without saying so.
+    const pre = (target >= 0 ? rows.slice(0, target) : rows).findLast((item) => (
+      item.forkable
+      && item.label === "pre_tool_use"
+      && rowCallId(item) === callId
+      && item.eventId
+    ));
+    if (pre) {
+      eventId = pre.eventId;
+      edge = pre.forkEdge ?? "before";
+    }
+  }
   return {
     run_id: row.runId ?? runState.runId,
-    event_id: row.eventId,
-    edge: row.forkEdge ?? "before",
+    event_id: eventId,
+    edge,
     units,
   };
 }
@@ -331,7 +460,7 @@ export function createConsole({
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
     "version-switcher",
     "event-count", "outcome-strip",
-    "rerun-plain", "rerun-same", "retry-run", "return-draft", "trace",
+    "rerun", "retry-run", "return-draft", "trace",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
@@ -356,6 +485,7 @@ export function createConsole({
     policyOpener: null,
     forkEventIds: new Set(),
     selectedVersionRunId: null,
+    chatToolNodes: new Map(),
   };
 
   const scenarioById = (id) => state.scenarios.find((item) => item.id === id);
@@ -464,6 +594,8 @@ export function createConsole({
       verdict.textContent = row.verdict;
       button.append(verdict);
     }
+    const badges = makeResultBadges(documentRef, row.badges);
+    if (badges) button.append(badges);
     if (state.forkEventIds.has(row.eventId)) {
       const marker = documentRef.createElement("span");
       marker.className = "trace-fork-origin";
@@ -474,10 +606,10 @@ export function createConsole({
     return button;
   }
 
-  function attachInlineAction(section, rowKind) {
-    const candidates = [...dom.trace.querySelectorAll(".trace-entry")];
-    const host = [...candidates].reverse().find((entry) => entry.dataset.kind === rowKind);
-    (host ?? dom.trace).append(section);
+  function attachInlineAction(section, callId, status) {
+    const host = pickInlineActionHost(state.chatToolNodes, callId, status)
+      ?? dom["chat-thread"];
+    host.append(section);
   }
 
   function renderRows(selectedPhase, selectedIsCurrent) {
@@ -495,14 +627,16 @@ export function createConsole({
       entry.className = `trace-entry version-${row.versionOrigin ?? "current"}`;
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
-      const request = getEventForkRequest(state.run, row);
+      const request = getEventForkRequest(state.run, row, state.rows);
       if (request) {
         const action = documentRef.createElement("div");
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = getForkActionLabel(row, request.units.length);
-        const forkDescription = getForkActionDescription(row);
+        button.textContent = request.event_id !== row.eventId
+          ? `마스킹 정책으로 결과 다시 실행 · 정책 ${request.units.length}개`
+          : getForkActionLabel(row, request.units.length);
+        const forkDescription = getForkActionDescription(row, request);
         button.title = [
           `적용 정책: ${request.units.join(", ") || "없음"}`,
           forkDescription,
@@ -518,12 +652,6 @@ export function createConsole({
       dom.trace.append(entry);
     });
 
-    const canApprove = selectedIsCurrent && selectedPhase === "suspended";
-    setHidden(dom.approval, !canApprove);
-    if (canApprove) attachInlineAction(dom.approval, "tool");
-    const canRecover = selectedIsCurrent && selectedPhase === "recoverable";
-    setHidden(dom.recovery, !canRecover);
-    if (canRecover) attachInlineAction(dom.recovery, "recovery");
     renderDetails();
   }
 
@@ -541,40 +669,7 @@ export function createConsole({
 
   function renderChat(scenario, frames) {
     dom["chat-thread"].replaceChildren();
-    const projectedBranches = deriveBranchView(frames);
-    const branches = (
-      scenario?.id === "fork_masking" ||
-      projectedBranches.some((branch) => branch.branch === "fork")
-    ) ? projectedBranches : [];
-
-    if (branches.length) {
-      for (const branch of branches) {
-        const group = documentRef.createElement("section");
-        group.className = `branch-group${branch.active ? " active" : ""}`;
-        const heading = documentRef.createElement("header");
-        const title = documentRef.createElement("strong");
-        if (branch.branch === "source") {
-          title.textContent = scenario?.id === "fork_masking" ? "마스킹된 실행" : "원본 실행";
-        } else {
-          title.textContent = scenario?.id === "fork_masking" ? "원문으로 다시 실행" : "분기 실행";
-        }
-        const status = documentRef.createElement("span");
-        status.textContent = branch.active ? "현재 대화" : "이전 대화";
-        heading.append(title, status);
-        group.append(heading);
-        for (const item of branch.messages) {
-          const role = item.role === "user" ? "user" : "assistant";
-          const row = makeChatMessage(role, role === "user" ? "YOU" : "NX");
-          const text = documentRef.createElement("p");
-          text.textContent = item.content;
-          row.content.append(text);
-          group.append(row.message);
-        }
-        dom["chat-thread"].append(group);
-      }
-      return;
-    }
-
+    state.chatToolNodes.clear();
     const view = deriveChatView(scenario?.prompt ?? "", frames);
 
     const user = makeChatMessage("user", "YOU");
@@ -589,6 +684,9 @@ export function createConsole({
       for (const tool of view.assistant.tools) {
         const item = documentRef.createElement("div");
         item.className = `chat-tool status-${tool.status}`;
+        item.dataset.callId = tool.id;
+        item.dataset.status = tool.status;
+        state.chatToolNodes.set(tool.id, item);
         const mark = documentRef.createElement("span");
         mark.className = "chat-tool-mark";
         mark.textContent = tool.status === "completed"
@@ -599,11 +697,24 @@ export function createConsole({
         const copy = documentRef.createElement("span");
         const name = documentRef.createElement("strong");
         name.textContent = tool.name;
-        const status = documentRef.createElement("small");
-        status.textContent = tool.reason
-          ? `${tool.summary} · ${tool.reason}`
-          : tool.summary;
-        copy.append(name, status);
+        copy.append(name);
+        if (tool.reason) {
+          const status = documentRef.createElement("small");
+          status.textContent = `${tool.summary} · ${tool.reason}`;
+          copy.append(status);
+        } else if (!tool.badges?.length) {
+          const status = documentRef.createElement("small");
+          status.textContent = tool.summary;
+          copy.append(status);
+        }
+        const badges = makeResultBadges(documentRef, tool.badges);
+        if (badges) copy.append(badges);
+        if (tool.output) {
+          const output = documentRef.createElement("pre");
+          output.className = `chat-tool-output${tool.redactedBy ? " is-redacted" : ""}`;
+          output.textContent = tool.output;
+          copy.append(output);
+        }
         item.append(mark, copy);
         toolList.append(item);
       }
@@ -656,6 +767,12 @@ export function createConsole({
       { inheritFork: true },
     );
     renderChat(scenario, chatFrames);
+    const canApprove = selectedIsCurrent && selectedPhase === "suspended";
+    setHidden(dom.approval, !canApprove);
+    if (canApprove) attachInlineAction(dom.approval, state.run.pendingId, "approval");
+    const canRecover = selectedIsCurrent && selectedPhase === "recoverable";
+    setHidden(dom.recovery, !canRecover);
+    if (canRecover) attachInlineAction(dom.recovery, null, "recoverable");
     renderOutcome(frames, selectedPhase, selectedIsCurrent);
     renderRows(selectedPhase, selectedIsCurrent);
   }
@@ -847,7 +964,10 @@ export function createConsole({
   async function continueRun(path, body) {
     try {
       state.run = beginContinuation(state.run);
-    } catch {
+    } catch (error) {
+      // A double-click while a continuation is in flight is benign; anything else
+      // means the button was live over a run that cannot continue — show that.
+      if (!state.run.continuationBusy) failCurrent(error);
       return;
     }
     render();
@@ -870,12 +990,15 @@ export function createConsole({
   }
 
   async function forkSource(row) {
-    const request = getEventForkRequest(state.run, row);
+    const request = getEventForkRequest(state.run, row, state.rows);
     if (!request) return;
-    state.forkEventIds.add(row.eventId);
+    // The request may retarget to an earlier tool boundary; mark where the branch
+    // actually starts, not where the operator clicked.
+    state.forkEventIds.add(request.event_id);
     try {
       state.run = beginFork(state.run);
-    } catch {
+    } catch (error) {
+      failCurrent(error);
       return;
     }
     render();
@@ -918,12 +1041,6 @@ export function createConsole({
     } catch (error) {
       failCurrent(error);
     }
-  }
-
-  function rerun(withoutPolicies) {
-    if (!canStartRun(state.run)) return;
-    state.run = returnToDraft(state.run, { source: "active", withoutPolicies });
-    void runActive();
   }
 
   function returnDraft() {
@@ -976,9 +1093,8 @@ export function createConsole({
       event.preventDefault();
       closePolicy();
     });
-    dom["rerun-plain"].addEventListener("click", () => rerun(true));
-    dom["rerun-same"].addEventListener("click", () => rerun(false));
-    dom["retry-run"].addEventListener("click", () => rerun(false));
+    dom.rerun.addEventListener("click", () => void runActive());
+    dom["retry-run"].addEventListener("click", () => void runActive());
     dom["return-draft"].addEventListener("click", returnDraft);
     dom["boot-retry"].addEventListener("click", () => void boot());
   }

@@ -8,6 +8,7 @@
   --text: #eef2f7;
   --muted: #8d98a8;
   --blue: #6f9cff;
+  --violet: #a78bfa;
   --amber: #f4b942;
   --red: #ff5d68;
   --green: #4fc68a;
@@ -512,10 +513,68 @@ button.primary:hover:not(:disabled) {
   font-size: 11px;
 }
 
-.chat-tool > span:last-child {
+/* nth-of-type, not :last-child — the approve panel is appended after the copy
+   column and would otherwise steal the match and collapse the layout. */
+.chat-tool > span:nth-of-type(2) {
   display: grid;
   min-width: 0;
   gap: 3px;
+}
+
+/* The decision lives with the call it gates, inside the conversation. The trace-tuned
+   padding is too loose here, and the gated call needs to be findable in a long batch. */
+.chat-tool.status-approval,
+.chat-tool.status-recoverable {
+  box-shadow: inset 2px 0 0 var(--amber);
+  background: rgba(244, 185, 66, 0.05);
+}
+
+.chat-tool > .inline-action {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding: 12px 14px;
+  gap: 14px;
+  border: 1px solid rgba(244, 185, 66, 0.3);
+  border-radius: var(--radius);
+}
+
+@media (max-width: 720px) {
+  .chat-tool > .inline-action {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.result-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.result-badge {
+  padding: 4px 7px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.result-badge.kind-call_replay {
+  color: var(--blue);
+  background: rgba(111, 156, 255, 0.12);
+}
+
+.result-badge.kind-payment_dedupe {
+  color: var(--violet);
+  background: rgba(167, 139, 250, 0.14);
+}
+
+.result-badge.kind-result_mask {
+  color: var(--amber);
+  background: rgba(244, 185, 66, 0.14);
 }
 
 .chat-tool strong {
@@ -530,6 +589,23 @@ button.primary:hover:not(:disabled) {
   font-size: 11px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.chat-tool-output {
+  margin: 4px 0 0;
+  padding: 8px 9px;
+  border-radius: 6px;
+  color: #c5ccd6;
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-tool-output.is-redacted {
+  color: var(--amber);
 }
 
 .chat-tool.status-completed .chat-tool-mark {
@@ -715,6 +791,52 @@ button.primary:hover:not(:disabled) {
   font-size: 13px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+/* The trace mixes four families under one monospace label. Colour separates them:
+   the tool being called, the runtime event around it, the control plane deciding
+   on it, and the fault seam. Tone classes only touch .trace-verdict, so these do
+   not fight the verdict pills. */
+.trace-entry[data-kind="tool"] .trace-label,
+.trace-entry[data-kind="result"] .trace-label {
+  color: var(--blue);
+}
+
+.trace-entry[data-kind="lifecycle"] .trace-label,
+.trace-entry[data-kind="agent"] .trace-label {
+  color: var(--muted);
+  font-weight: 560;
+}
+
+.trace-entry[data-kind="policy"] .trace-label,
+.trace-entry[data-kind="steer"] .trace-label {
+  color: var(--violet);
+}
+
+.trace-entry[data-kind="recovery"] .trace-label {
+  color: var(--amber);
+}
+
+.trace-entry[data-kind="error"] .trace-label {
+  color: var(--red);
+}
+
+/* A control-plane row is a decision, not a record — mark the whole row, not just
+   its label, so a SUSPEND is findable while scrolling a long batch. */
+.trace-entry[data-kind="tool"],
+.trace-entry[data-kind="result"] {
+  box-shadow: inset 2px 0 0 rgba(111, 156, 255, 0.45);
+}
+
+.trace-entry[data-kind="policy"],
+.trace-entry[data-kind="steer"] {
+  box-shadow: inset 2px 0 0 var(--violet);
+  background: rgba(167, 139, 250, 0.045);
+}
+
+.trace-entry[data-kind="recovery"] {
+  box-shadow: inset 2px 0 0 var(--amber);
+  background: rgba(244, 185, 66, 0.045);
 }
 
 .trace-verdict {
@@ -1102,7 +1224,8 @@ button.primary:hover:not(:disabled) {
     grid-column: 2;
   }
 
-  .trace-verdict {
+  .trace-verdict,
+  .trace-row > .result-badges {
     grid-column: 2;
     width: fit-content;
   }

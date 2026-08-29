@@ -6,6 +6,11 @@ export const DEFAULT_DRAFT = Object.freeze({
 const STARTABLE = new Set(["idle", "terminal", "error"]);
 const EDITABLE = new Set(["idle", "terminal", "error"]);
 const ENDABLE = new Set(["suspended", "recoverable", "terminal", "error"]);
+// A stream can park more than once (a parallel batch suspends per call, and a
+// recovered run parks again). Re-parking an already parked run is the server's
+// truth, not a client bug — throwing here flipped the run to "error" while the
+// frame log still read "suspended", leaving the approve button rendered but dead.
+const PARKABLE = new Set(["streaming", "suspended", "recoverable"]);
 
 const copyConfig = (config) => ({
   scenarioId: config.scenarioId,
@@ -64,7 +69,7 @@ export function attachRunId(state, runId) {
 }
 
 export function suspendRun(state, pendingId) {
-  if (state.phase !== "streaming") throw new Error("cannot suspend run");
+  if (!PARKABLE.has(state.phase)) throw new Error("cannot suspend run");
   return {
     ...state,
     phase: "suspended",
@@ -74,7 +79,7 @@ export function suspendRun(state, pendingId) {
 }
 
 export function markRecoverable(state) {
-  if (state.phase !== "streaming") throw new Error("cannot park recovery");
+  if (!PARKABLE.has(state.phase)) throw new Error("cannot park recovery");
   return {
     ...state,
     phase: "recoverable",
@@ -99,9 +104,7 @@ export function beginFork(state) {
   ) {
     throw new Error("no forkable source run");
   }
-  const unitNames = state.active.scenarioId === "fork_masking"
-    ? state.draft.unitNames.filter((name) => name !== "input_mask")
-    : [...state.draft.unitNames];
+  const unitNames = [...state.draft.unitNames];
   return {
     ...state,
     phase: "streaming",

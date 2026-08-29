@@ -8,7 +8,9 @@ import {
   deriveVersionRows,
   getForkActionLabel,
   getEventForkRequest,
+  pickInlineActionHost,
   getLaunchCopy,
+  makeResultBadges,
   selectRunFrames,
 } from "../src/console/static/app.js";
 import {
@@ -34,7 +36,12 @@ import {
   updateDraft,
 } from "../src/console/static/run-state.mjs";
 import {
+  CALL_REPLAY_BADGE,
+  PAYMENT_DEDUPE_BADGE,
+  RESULT_MASK_BADGE,
   reduceFrames,
+  resultBadges,
+  unitSummary,
   summarizeOutcome,
 } from "../src/console/static/reducer.mjs";
 
@@ -111,6 +118,8 @@ assert.deepEqual(
           status: "completed",
           summary: "실행 완료",
           reason: null,
+          badges: [],
+          output: "customer found",
         },
         {
           id: "call-send",
@@ -118,11 +127,347 @@ assert.deepEqual(
           status: "blocked",
           summary: "정책으로 차단",
           reason: "메일 본문에 개인정보가 있습니다",
+          badges: [],
         },
       ],
     },
   },
   "chat view turns protocol frames into one user turn and one assistant turn",
+);
+
+function replayPresentation(prompt, frames) {
+  const chat = deriveChatView(prompt, frames).assistant.tools[0];
+  const row = reduceFrames(frames).find((item) => item.kind === "result");
+  return {
+    chat: {
+      id: chat.id,
+      name: chat.name,
+      status: chat.status,
+      summary: chat.summary,
+      reason: chat.reason,
+      badges: chat.badges,
+    },
+    trace: {
+      summary: row.summary,
+      verdict: row.verdict,
+      badges: row.badges,
+      tone: row.tone,
+      callId: row.details.callId,
+      idempotencyKey: row.details.idempotencyKey,
+    },
+  };
+}
+
+function toolResultFrames(id, name, result) {
+  return [
+    {
+      kind: "agent",
+      event: {
+        type: "tool_call",
+        id,
+        name,
+        input: name === "charge_card"
+          ? { customer_id: "c-001", amount: "10" }
+          : { customer_id: "c-001" },
+      },
+    },
+    {
+      kind: "agent",
+      event: {
+        type: "tool_result",
+        id,
+        name,
+        executed: true,
+        result,
+      },
+    },
+  ];
+}
+
+const replayedToolFrames = toolResultFrames("read-1", "read_customer", {
+  type: "text",
+  text: "customer found",
+  execution_count: 1,
+  execution: { call_id: "read-1", replayed: true },
+});
+assert.deepEqual(
+  replayPresentation("조회해줘.", replayedToolFrames),
+  {
+    chat: {
+      id: "read-1",
+      name: "read_customer",
+      status: "completed",
+      summary: "실행 완료",
+      reason: null,
+      badges: [CALL_REPLAY_BADGE],
+    },
+    trace: {
+      summary: "실행 완료",
+      verdict: null,
+      badges: [CALL_REPLAY_BADGE],
+      tone: "neutral",
+      callId: "read-1",
+      idempotencyKey: null,
+    },
+  },
+  "call replay only: CALL REPLAY on the chat card and event row",
+);
+
+const replayedChargeFrames = toolResultFrames("charge-1", "charge_card", {
+  type: "text",
+  text: '{"status":"charged","amount":"10"}',
+  execution_count: 1,
+  execution: { call_id: "charge-1", replayed: false },
+  idempotency: { key: "batch-1:c-001", replayed: true },
+});
+assert.deepEqual(
+  replayPresentation("결제해줘.", replayedChargeFrames),
+  {
+    chat: {
+      id: "charge-1",
+      name: "charge_card",
+      status: "completed",
+      summary: "실행 완료",
+      reason: null,
+      badges: [PAYMENT_DEDUPE_BADGE],
+    },
+    trace: {
+      summary: "실행 완료",
+      verdict: null,
+      badges: [PAYMENT_DEDUPE_BADGE],
+      tone: "neutral",
+      callId: "charge-1",
+      idempotencyKey: "batch-1:c-001",
+    },
+  },
+  "payment dedupe only: PAYMENT DEDUPE on the chat card and event row",
+);
+
+const bothReplayFrames = toolResultFrames("charge-2", "charge_card", {
+  type: "text",
+  text: '{"status":"charged","amount":"10"}',
+  execution_count: 1,
+  execution: { call_id: "charge-2", replayed: true },
+  idempotency: { key: "batch-1:c-001", replayed: true },
+});
+assert.deepEqual(
+  replayPresentation("결제해줘.", bothReplayFrames),
+  {
+    chat: {
+      id: "charge-2",
+      name: "charge_card",
+      status: "completed",
+      summary: "실행 완료",
+      reason: null,
+      badges: [CALL_REPLAY_BADGE, PAYMENT_DEDUPE_BADGE],
+    },
+    trace: {
+      summary: "실행 완료",
+      verdict: null,
+      badges: [CALL_REPLAY_BADGE, PAYMENT_DEDUPE_BADGE],
+      tone: "neutral",
+      callId: "charge-2",
+      idempotencyKey: "batch-1:c-001",
+    },
+  },
+  "both markers: CALL REPLAY and PAYMENT DEDUPE show together",
+);
+
+const maskedCustomer = {
+  type: "text",
+  text: '{"email":"j***@***","ssn":"***-**-****","plan":"pro"}',
+  redacted_by: "pii_mask",
+  control_note: "이메일·주민번호 가림",
+};
+const rawCustomer = {
+  type: "text",
+  text: '{"email":"jane@doe.io","ssn":"123-45-6789","plan":"pro"}',
+};
+assert.deepEqual(
+  resultBadges({ name: "read_customer", result: maskedCustomer }),
+  [RESULT_MASK_BADGE],
+  "a rewritten tool result carries a result-mask badge",
+);
+assert.deepEqual(
+  resultBadges({ name: "read_customer", result: rawCustomer }),
+  [],
+  "an unmasked tool result has no result-mask badge",
+);
+
+const maskedChat = deriveChatView(
+  "read_customer로 고객을 조회해줘.",
+  toolResultFrames("read-mask", "read_customer", maskedCustomer),
+).assistant.tools[0];
+assert.equal(maskedChat.output, maskedCustomer.text);
+assert.equal(maskedChat.redactedBy, "pii_mask");
+assert.deepEqual(maskedChat.badges, [RESULT_MASK_BADGE]);
+
+const rawChat = deriveChatView(
+  "read_customer로 고객을 조회해줘.",
+  toolResultFrames("read-raw", "read_customer", rawCustomer),
+).assistant.tools[0];
+assert.equal(rawChat.output, rawCustomer.text);
+assert.equal(rawChat.redactedBy, undefined);
+assert.deepEqual(rawChat.badges, []);
+
+const maskingForkFrames = [
+  { kind: "meta", run_id: "mask-v1", units: ["pii_mask"] },
+  {
+    kind: "agent", run_id: "mask-v1", event_id: "mask-call",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "agent", run_id: "mask-v1", event_id: "mask-result",
+    event: {
+      type: "tool_result", id: "read-1", name: "read_customer",
+      executed: true, result: maskedCustomer,
+    },
+  },
+  {
+    kind: "lifecycle", run_id: "mask-v1", type: "branch_snapshot",
+    payload: {
+      branch: "source",
+      run_id: "mask-v1",
+      messages: [{ role: "user", content: "조회해줘." }],
+    },
+  },
+  {
+    kind: "meta", run_id: "mask-v2", units: [],
+    fork_parent: "mask-v1", fork_event_id: "mask-call", fork_edge: "before",
+  },
+  {
+    kind: "lifecycle", run_id: "mask-v2", type: "branch_snapshot",
+    payload: {
+      branch: "fork",
+      run_id: "mask-v2",
+      messages: [{ role: "user", content: "조회해줘." }],
+    },
+  },
+  {
+    kind: "agent", run_id: "mask-v2", event_id: "plain-result",
+    event: {
+      type: "tool_result", id: "read-1", name: "read_customer",
+      executed: true, result: rawCustomer,
+    },
+  },
+];
+const forkedMaskChat = deriveChatView(
+  "조회해줘.",
+  selectRunFrames(maskingForkFrames, "mask-v2", { inheritFork: true }),
+).assistant.tools[0];
+assert.equal(
+  forkedMaskChat.output,
+  rawCustomer.text,
+  "a tool-call fork with masking off shows the original tool result in chat",
+);
+assert.equal(forkedMaskChat.redactedBy, undefined);
+assert.deepEqual(
+  deriveChatView(
+    "조회해줘.",
+    selectRunFrames(maskingForkFrames, "mask-v1", { inheritFork: true }),
+  ).assistant.tools[0].output,
+  maskedCustomer.text,
+  "the source version keeps the masked tool result after the fork exists",
+);
+
+const postOnlyMasked = deriveChatView("조회해줘.", [
+  {
+    kind: "agent",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "lifecycle",
+    type: "post_tool_use",
+    payload: { call_id: "read-1", name: "read_customer", result: maskedCustomer },
+  },
+]).assistant.tools[0];
+assert.equal(
+  postOnlyMasked.output,
+  maskedCustomer.text,
+  "a completed tool without a tool_result frame still shows the post_tool_use payload",
+);
+assert.equal(postOnlyMasked.redactedBy, "pii_mask");
+assert.deepEqual(postOnlyMasked.badges, [RESULT_MASK_BADGE]);
+
+const replayUnmasks = deriveChatView("조회해줘.", [
+  {
+    kind: "agent",
+    event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
+  },
+  {
+    kind: "agent",
+    event: {
+      type: "tool_result",
+      id: "read-1",
+      name: "read_customer",
+      executed: true,
+      result: maskedCustomer,
+    },
+  },
+  {
+    kind: "lifecycle",
+    type: "post_tool_use",
+    payload: { call_id: "read-1", name: "read_customer", result: rawCustomer },
+  },
+]).assistant.tools[0];
+assert.equal(
+  replayUnmasks.output,
+  rawCustomer.text,
+  "a later post_tool_use payload replaces the inherited masked tool result",
+);
+assert.equal(replayUnmasks.redactedBy, undefined);
+
+function miniDocument() {
+  return {
+    createElement(tag) {
+      const node = {
+        tagName: String(tag).toUpperCase(),
+        className: "",
+        textContent: "",
+        childNodes: [],
+        append(...kids) {
+          this.childNodes.push(...kids);
+        },
+      };
+      return node;
+    },
+  };
+}
+
+function serializeNode(node) {
+  if (!node) return "";
+  const inner = node.childNodes.length
+    ? node.childNodes.map(serializeNode).join("")
+    : node.textContent;
+  const cls = node.className ? ` class="${node.className}"` : "";
+  return `<${node.tagName.toLowerCase()}${cls}>${inner}</${node.tagName.toLowerCase()}>`;
+}
+
+assert.equal(
+  serializeNode(makeResultBadges(miniDocument(), [CALL_REPLAY_BADGE])),
+  '<span class="result-badges"><span class="result-badge kind-call_replay">CALL REPLAY · 도구 호출 생략</span></span>',
+  "call replay badge markup",
+);
+assert.equal(
+  serializeNode(makeResultBadges(miniDocument(), [PAYMENT_DEDUPE_BADGE])),
+  '<span class="result-badges"><span class="result-badge kind-payment_dedupe">PAYMENT DEDUPE · 결제 원장 재사용</span></span>',
+  "payment dedupe badge markup",
+);
+assert.equal(
+  serializeNode(makeResultBadges(
+    miniDocument(),
+    [CALL_REPLAY_BADGE, PAYMENT_DEDUPE_BADGE],
+  )),
+  '<span class="result-badges">'
+    + '<span class="result-badge kind-call_replay">CALL REPLAY · 도구 호출 생략</span>'
+    + '<span class="result-badge kind-payment_dedupe">PAYMENT DEDUPE · 결제 원장 재사용</span>'
+    + "</span>",
+  "both badges render side by side in one group",
+);
+assert.equal(
+  serializeNode(makeResultBadges(miniDocument(), [RESULT_MASK_BADGE])),
+  '<span class="result-badges"><span class="result-badge kind-result_mask">RESULT MASK · 도구 결과 가림</span></span>',
+  "result mask badge markup",
 );
 
 const idle = createRunState();
@@ -186,14 +531,14 @@ const forkSourceTerminal = finishRun(
   attachRunId(
     startRun(updateDraft(createRunState(), {
       scenarioId: "fork_masking",
-      unitNames: ["input_mask", "dlp_block"],
+      unitNames: ["pii_mask", "dlp_block"],
     })),
     "run-b",
   ),
   "completed",
 );
 const forking = beginFork(forkSourceTerminal);
-assert.deepEqual(forking.active.unitNames, ["dlp_block"]);
+assert.deepEqual(forking.active.unitNames, ["pii_mask", "dlp_block"]);
 assert.equal(forking.phase, "streaming");
 assert.equal(forking.runId, null);
 const genericForking = beginFork(terminal);
@@ -202,12 +547,19 @@ assert.equal(genericForking.phase, "streaming");
 const editedGenericTerminal = updateDraft(terminal, { unitNames: ["rate_cap"] });
 assert.deepEqual(beginFork(editedGenericTerminal).active.unitNames, ["rate_cap"]);
 const editedMaskingTerminal = updateDraft(forkSourceTerminal, {
-  unitNames: ["input_mask", "dlp_block", "approval"],
+  unitNames: ["pii_mask", "dlp_block", "approval"],
 });
 assert.deepEqual(beginFork(editedMaskingTerminal).active.unitNames, [
+  "pii_mask",
   "dlp_block",
   "approval",
 ]);
+const unmaskedMaskingTerminal = updateDraft(forkSourceTerminal, { unitNames: [] });
+assert.deepEqual(
+  beginFork(unmaskedMaskingTerminal).active.unitNames,
+  [],
+  "turning pii_mask off is the fork control set, not an automatic strip",
+);
 assert.deepEqual(
   getEventForkRequest(editedMaskingTerminal, { eventId: "event-09" }),
   null,
@@ -223,9 +575,59 @@ assert.deepEqual(
     run_id: "run-b",
     event_id: "event-03",
     edge: "before",
-    units: ["dlp_block", "approval"],
+    units: ["pii_mask", "dlp_block", "approval"],
   },
-  "an event-row fork preserves the selected durable event coordinate",
+  "an event-row fork keeps the operator-selected masking policy",
+);
+assert.deepEqual(
+  getEventForkRequest(unmaskedMaskingTerminal, {
+    eventId: "event-03",
+    forkable: true,
+    forkEdge: "after",
+  }),
+  {
+    run_id: "run-b",
+    event_id: "event-03",
+    edge: "after",
+    units: [],
+  },
+  "forking a tool result with masking off sends an empty control set",
+);
+const preToolRow = {
+  eventId: "event-pre",
+  label: "pre_tool_use",
+  kind: "lifecycle",
+  forkable: true,
+  forkEdge: "before",
+  callId: "read-1",
+};
+const postToolRow = {
+  eventId: "event-post",
+  label: "post_tool_use",
+  kind: "lifecycle",
+  forkable: true,
+  forkEdge: "after",
+  callId: "read-1",
+};
+assert.deepEqual(
+  getEventForkRequest(unmaskedMaskingTerminal, postToolRow, [preToolRow, postToolRow]),
+  {
+    run_id: "run-b",
+    event_id: "event-pre",
+    edge: "before",
+    units: [],
+  },
+  "turning pii_mask off at a saved tool result replays the original through the new journal",
+);
+assert.deepEqual(
+  getEventForkRequest(forkSourceTerminal, postToolRow, [preToolRow, postToolRow]),
+  {
+    run_id: "run-b",
+    event_id: "event-post",
+    edge: "after",
+    units: ["pii_mask", "dlp_block"],
+  },
+  "unchanged journal units keep the after-result continue edge",
 );
 assert.equal(
   getEventForkRequest(streaming, { eventId: "event-09" }),
@@ -409,7 +811,7 @@ assert.deepEqual(
     },
     {
       kind: "tool",
-      label: "send_email",
+      label: "send_email 호출",
       summary: "실행 안 됨",
       verdict: null,
     },
@@ -582,6 +984,17 @@ assert.deepEqual(deriveRunVersions(versionFrames), [
   { runId: "run-source", number: 1, label: "v1 · 원본" },
   { runId: "run-fork", number: 2, label: "v2 · 분기" },
 ]);
+assert.deepEqual(
+  deriveRunVersions([
+    { kind: "meta", run_id: "run-masked", units: ["pii_mask"] },
+    { kind: "meta", run_id: "run-plain", units: [] },
+  ]),
+  [
+    { runId: "run-masked", number: 1, label: "v1 · 원본 · pii_mask" },
+    { runId: "run-plain", number: 2, label: "v2 · 분기 · 정책 없음" },
+  ],
+  "version labels expose the masking policy that produced each run",
+);
 assert.deepEqual(
   selectRunFrames(versionFrames, "run-source"),
   versionFrames.slice(0, 2),
@@ -812,11 +1225,11 @@ assert.deepEqual(
       tools: [
         {
           id: "read-1", name: "read_customer", status: "completed",
-          summary: "실행 완료", reason: null,
+          summary: "실행 완료", reason: null, badges: [],
         },
         {
           id: "send-1", name: "send_email", status: "completed",
-          summary: "실행 완료", reason: null,
+          summary: "실행 완료", reason: null, badges: [],
         },
       ],
     },
@@ -870,19 +1283,161 @@ assert.deepEqual(
     tools: [
       {
         id: "read-1", name: "read_customer", status: "completed",
-        summary: "실행 완료", reason: null,
+        summary: "실행 완료", reason: null, badges: [],
       },
       {
         id: "send-1", name: "send_email", status: "completed",
-        summary: "실행 완료", reason: null,
+        summary: "실행 완료", reason: null, badges: [],
       },
       {
         id: "audit-1", name: "write_audit", status: "completed",
-        summary: "실행 완료", reason: null,
+        summary: "실행 완료", reason: null, badges: [],
       },
     ],
   },
   "a nested fork keeps chat context inherited through every ancestor version",
 );
+
+// A parallel batch parks once per call: the second suspend frame used to throw,
+// flipping the run to "error" while the frame log still read "suspended" — the
+// approve panel rendered over a dead button.
+const batchParked = suspendRun(suspendRun(streaming, "call-a"), "call-b");
+assert.equal(batchParked.phase, "suspended");
+assert.equal(batchParked.pendingId, "call-b");
+assert.equal(markRecoverable(batchParked).phase, "recoverable");
+assert.equal(suspendRun(markRecoverable(streaming), "call-c").phase, "suspended");
+assert.throws(() => suspendRun(terminal, "call-d"), /cannot suspend run/);
+assert.throws(() => suspendRun(failRun(streaming, "x"), "call-e"), /cannot suspend run/);
+
+// A suspend verdict names the call it gates, so N identical rows stay tellable apart.
+assert.equal(
+  unitSummary({
+    unit: "approval", verdict: "suspend", message: "승인이 필요합니다.",
+    call_id: "call-a", name: "charge_card",
+    input: { customer_id: "c-002", amount: "10" },
+  }),
+  "charge_card · c-002 · $10 — 승인이 필요합니다.",
+);
+assert.equal(unitSummary({ unit: "approval", message: "정책" }), "정책");
+
+const suspendRows = reduceFrames([
+  {
+    kind: "unit", unit: "approval", verdict: "suspend",
+    message: "charge_card은 되돌릴 수 없습니다. 승인이 필요합니다.",
+    call_id: "call-b", name: "charge_card",
+    input: { customer_id: "c-003", amount: "10" },
+  },
+]);
+assert.equal(suspendRows[0].callId, "call-b");
+assert.match(suspendRows[0].summary, /c-003 · \$10/);
+
+// The approval-gate crash rolls back: its pre_tool_use never committed, so the row
+// must not survive next to the replayed one. The recover marker itself stays.
+const crashRows = reduceFrames([
+  { kind: "agent", event: { type: "tool_call", id: "call-a", name: "charge_card", input: { customer_id: "c-001", amount: "10" } } },
+  { kind: "lifecycle", type: "pre_tool_use", payload: { call_id: "call-a", name: "charge_card" } },
+  { kind: "recoverable", step: "call-a", message: "워커 장애" },
+  { kind: "lifecycle", type: "pre_tool_use", payload: { call_id: "call-a", name: "charge_card" } },
+]);
+assert.deepEqual(
+  crashRows.map((row) => `${row.kind}:${row.label}`),
+  ["tool:charge_card 호출", "recovery:recover", "lifecycle:pre_tool_use"],
+  "the uncommitted pre-crash pre_tool_use row is dropped, the recover marker kept",
+);
+
+// A crash at the commit seam carries an effect key, not a call id — nothing is dropped.
+const commitCrashRows = reduceFrames([
+  { kind: "lifecycle", type: "pre_tool_use", payload: { call_id: "call-a", name: "charge_card" } },
+  { kind: "recoverable", step: "effect:charge_card:1", message: "워커 장애" },
+]);
+assert.deepEqual(
+  commitCrashRows.map((row) => `${row.kind}:${row.label}`),
+  ["lifecycle:pre_tool_use", "recovery:recover"],
+);
+
+// An approved call leaves two forkable pre_tool_use rows: the gate, and the
+// 승인 후 재검증 replay. Re-running the journal must resume from the later one —
+// forking from the gate rewinds past the approval and drops the operator's decision.
+const resumedPreToolRow = {
+  eventId: "event-pre-resumed",
+  label: "pre_tool_use",
+  kind: "lifecycle",
+  forkable: true,
+  forkEdge: "before",
+  callId: "read-1",
+};
+assert.deepEqual(
+  getEventForkRequest(
+    unmaskedMaskingTerminal,
+    postToolRow,
+    [preToolRow, resumedPreToolRow, postToolRow],
+  ),
+  { run_id: "run-b", event_id: "event-pre-resumed", edge: "before", units: [] },
+  "an approved call re-runs from the post-approval boundary, not the gate",
+);
+// Only boundaries that precede the forked row count.
+assert.deepEqual(
+  getEventForkRequest(
+    unmaskedMaskingTerminal,
+    postToolRow,
+    [preToolRow, postToolRow, resumedPreToolRow],
+  ),
+  { run_id: "run-b", event_id: "event-pre", edge: "before", units: [] },
+);
+
+// A call and its result are two different events; the trace must not print the
+// same name twice for them.
+const callAndResult = reduceFrames([
+  { kind: "agent", event: { type: "tool_call", id: "c1", name: "charge_card", input: { customer_id: "c-001", amount: "10" } } },
+  { kind: "agent", event: { type: "tool_result", id: "c1", name: "charge_card", executed: true, result: { type: "text", text: "{}" } } },
+]);
+assert.deepEqual(
+  callAndResult.map((row) => [row.kind, row.label]),
+  [["tool", "charge_card 호출"], ["result", "charge_card 결과"]],
+);
+
+// 승인 대기 must land on the call the server actually parked, not on whichever
+// call happens to be last — a parallel batch parks a specific one.
+const parkedChat = deriveChatView("청구해줘", [
+  { kind: "agent", event: { type: "tool_call", id: "call-a", name: "charge_card" } },
+  { kind: "agent", event: { type: "tool_call", id: "call-b", name: "charge_card" } },
+  { kind: "agent", event: { type: "tool_call", id: "call-c", name: "charge_card" } },
+  { kind: "suspended", pending_id: "call-b" },
+]);
+assert.deepEqual(
+  parkedChat.assistant.tools.map((tool) => [tool.id, tool.status]),
+  [["call-a", "running"], ["call-b", "approval"], ["call-c", "running"]],
+);
+
+const crashedChat = deriveChatView("청구해줘", [
+  { kind: "agent", event: { type: "tool_call", id: "call-a", name: "charge_card" } },
+  { kind: "agent", event: { type: "tool_call", id: "call-b", name: "charge_card" } },
+  { kind: "recoverable", step: "call-a" },
+]);
+assert.deepEqual(
+  crashedChat.assistant.tools.map((tool) => [tool.id, tool.status]),
+  [["call-a", "recoverable"], ["call-b", "running"]],
+);
+
+// The approve panel attaches to the parked call inside the chat, not to the trace.
+const node = (id, status) => ({ id, dataset: { callId: id, status } });
+const chatNodes = new Map([
+  ["call-a", node("call-a", "completed")],
+  ["call-b", node("call-b", "approval")],
+  ["call-c", node("call-c", "running")],
+]);
+assert.equal(pickInlineActionHost(chatNodes, "call-b", "approval").id, "call-b");
+assert.equal(
+  pickInlineActionHost(chatNodes, null, "approval").id,
+  "call-b",
+  "with no pending id it still finds the call awaiting approval",
+);
+assert.equal(
+  pickInlineActionHost(chatNodes, "call-gone", "approval").id,
+  "call-b",
+  "a stale pending id falls back to the call actually parked",
+);
+assert.equal(pickInlineActionHost(chatNodes, null, "recoverable"), null);
+assert.equal(pickInlineActionHost(new Map(), "call-b", "approval"), null);
 
 console.log("run inspector state ok");
