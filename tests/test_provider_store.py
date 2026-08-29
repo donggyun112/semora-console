@@ -1,10 +1,15 @@
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from nexora import AgentRuntime, MemorySteps
 from nexora.orchestrator import AgentSuspended, Orchestrator
 from nexora_store import MemoryTranscript
 
-from console.provider import DEFAULT_MODEL, openrouter_model
+from console.provider import (
+    DEFAULT_MODEL,
+    openrouter_model,
+    parse_dsml_tool_calls,
+    recover_dsml_chunks,
+)
 from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval, make_store
 from console.tools import DemoTools
 from console.units import compose_controls
@@ -21,8 +26,80 @@ def test_provider_builds_with_key(monkeypatch):
     monkeypatch.delenv("MODEL", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     m = openrouter_model()
-    assert DEFAULT_MODEL.startswith("deepseek/")
     assert m.model_name == DEFAULT_MODEL
+    monkeypatch.setenv("MODEL", "vendor/other")
+    assert openrouter_model().model_name == "vendor/other"
+
+
+_USER_DSML = """<｜DSML｜tool_calls>
+<｜DSML｜invoke name="charge_card">
+<｜DSML｜parameter name="customer_id" string="true">c-001</｜DSML｜parameter>
+<｜DSML｜parameter name="amount" string="true">10</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"""
+
+
+def test_parse_dsml_tool_calls_reads_charge_card():
+    calls = parse_dsml_tool_calls(_USER_DSML)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "charge_card"
+    assert calls[0]["args"] == {"customer_id": "c-001", "amount": "10"}
+    assert calls[0]["id"].startswith("call_")
+
+
+def test_parse_dsml_tool_calls_empty_on_prose():
+    assert parse_dsml_tool_calls("청구했습니다.") == []
+
+
+@pytest.mark.asyncio
+async def test_recover_dsml_chunks_emits_tool_calls_not_text():
+    async def leaked():
+        yield AIMessageChunk(content=_USER_DSML)
+
+    out = [chunk async for chunk in recover_dsml_chunks(leaked())]
+    assert len(out) == 1
+    assert out[0].content == ""
+    assert out[0].tool_calls[0]["name"] == "charge_card"
+    assert out[0].tool_calls[0]["args"]["customer_id"] == "c-001"
+
+
+@pytest.mark.asyncio
+async def test_recover_dsml_chunks_hides_a_truncated_open_tag():
+    async def leaked():
+        yield AIMessageChunk(content="<｜DSML｜tool_c")
+        yield AIMessageChunk(content="alls>\n<｜DSML｜invoke name=\"charge_card\">\n")
+        yield AIMessageChunk(
+            content="<｜DSML｜parameter name=\"customer_id\" string=\"true\">c-001</｜DSML｜parameter>\n"
+            "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+        )
+
+    out = [chunk async for chunk in recover_dsml_chunks(leaked())]
+    texts = "".join(
+        chunk.content if isinstance(chunk.content, str) else "" for chunk in out
+    )
+    assert "DSML" not in texts
+    assert out[-1].tool_calls[0]["name"] == "charge_card"
+
+
+@pytest.mark.asyncio
+async def test_recover_dsml_chunks_passes_native_tool_calls_through():
+    native = AIMessageChunk(
+        content="",
+        tool_calls=[
+            {
+                "name": "charge_card",
+                "args": {"customer_id": "c-002", "amount": "10"},
+                "id": "call_native",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    async def stream():
+        yield native
+
+    out = [chunk async for chunk in recover_dsml_chunks(stream())]
+    assert out == [native]
 
 
 @pytest.mark.asyncio
@@ -181,3 +258,43 @@ async def test_recover_parallel_round_finishes_each_call_exactly_once():
         "charge-c002": 1,
         "charge-c003": 1,
     }
+
+
+async def _recovered_text(pieces):
+    async def source():
+        for piece in pieces:
+            yield piece if isinstance(piece, AIMessageChunk) else AIMessageChunk(content=piece)
+
+    parts = []
+    async for chunk in recover_dsml_chunks(source()):
+        if isinstance(chunk.content, str):
+            parts.append(chunk.content)
+    return "".join(parts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pieces",
+    [
+        ["금액은 ", "<", "10 달러입니다."],
+        ["확인했습니다 ", "<｜", " 끝"],
+        ["<", "|", "그냥 텍스트"],
+        ["평범한 ", "응답입니다."],
+    ],
+)
+async def test_a_held_open_tag_prefix_is_emitted_exactly_once(pieces):
+    """A chunk boundary that isolates a DSML open-tag prefix used to replay the held
+    chunk after the whole reply, appending a stray fragment to every answer."""
+    assert await _recovered_text(pieces) == "".join(pieces)
+
+
+@pytest.mark.asyncio
+async def test_text_held_before_a_native_tool_call_is_not_dropped():
+    native = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {"name": "charge_card", "args": "{}", "id": "c1", "index": 0,
+             "type": "tool_call_chunk"},
+        ],
+    )
+    assert await _recovered_text(["확인했습니다 ", "<", native]) == "확인했습니다 <"
