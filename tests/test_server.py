@@ -590,6 +590,211 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
     assert ".composer-panel" not in css
 
 
+def test_run_workspace_pairs_chat_with_trace_and_stacks_below_desktop():
+    with TestClient(app) as c:
+        html = c.get("/").text
+        css = c.get("/styles.css").text
+
+    class WorkspaceParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.panel_ids: list[str] = []
+
+        def handle_starttag(self, _tag, attrs):
+            attributes = dict(attrs)
+            classes = (attributes.get("class") or "").split()
+            if self.depth == 0 and "run-workspace" in classes:
+                self.depth = 1
+                return
+            if self.depth:
+                if self.depth == 1 and (panel_id := attributes.get("id")):
+                    self.panel_ids.append(panel_id)
+                self.depth += 1
+
+        def handle_endtag(self, _tag):
+            if self.depth:
+                self.depth -= 1
+
+    workspace = WorkspaceParser()
+    workspace.feed(html)
+
+    assert workspace.panel_ids == ["chat-panel", "event-panel"]
+
+    desktop_rule = css[css.index(".run-workspace {"):]
+    desktop_rule = desktop_rule[:desktop_rule.index("}")]
+    assert "display: grid" in desktop_rule
+    assert "minmax(420px" in desktop_rule
+    assert "minmax(640px" in desktop_rule
+
+    responsive_rules = css[css.index("@media (max-width: 1180px)"):]
+    responsive_workspace = responsive_rules[responsive_rules.index(".run-workspace {"):]
+    responsive_workspace = responsive_workspace[:responsive_workspace.index("}")]
+    assert "grid-template-columns: 1fr" in responsive_workspace
+
+
+def test_branch_switcher_sits_inside_the_event_panel_above_the_trace():
+    with TestClient(app) as c:
+        html = c.get("/").text
+
+    class EventPanelParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.ids: list[str] = []
+
+        def handle_starttag(self, _tag, attrs):
+            attributes = dict(attrs)
+            if self.depth == 0 and attributes.get("id") == "event-panel":
+                self.depth = 1
+                return
+            if self.depth:
+                if element_id := attributes.get("id"):
+                    self.ids.append(element_id)
+                self.depth += 1
+
+        def handle_endtag(self, _tag):
+            if self.depth:
+                self.depth -= 1
+
+    event_panel = EventPanelParser()
+    event_panel.feed(html)
+
+    assert event_panel.ids.index("version-switcher") < event_panel.ids.index("event-count")
+    assert event_panel.ids.index("event-count") < event_panel.ids.index("trace")
+
+
+def test_live_instruction_form_sits_in_the_chat_panel_after_the_thread():
+    with TestClient(app) as c:
+        html = c.get("/").text
+
+    class ChatPanelParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.ids: list[str] = []
+
+        def handle_starttag(self, _tag, attrs):
+            attributes = dict(attrs)
+            if self.depth == 0 and attributes.get("id") == "chat-panel":
+                self.depth = 1
+                return
+            if self.depth:
+                if element_id := attributes.get("id"):
+                    self.ids.append(element_id)
+                self.depth += 1
+
+        def handle_endtag(self, _tag):
+            if self.depth:
+                self.depth -= 1
+
+    chat_panel = ChatPanelParser()
+    chat_panel.feed(html)
+
+    assert chat_panel.ids.index("chat-thread") < chat_panel.ids.index("steer-form")
+    assert chat_panel.ids.index("steer-form") < chat_panel.ids.index("steer-text")
+
+
+def test_policy_button_sits_with_the_run_status_and_abort_control():
+    with TestClient(app) as c:
+        html = c.get("/").text
+
+    class RunControlsParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.ids: list[str] = []
+
+        def handle_starttag(self, _tag, attrs):
+            attributes = dict(attrs)
+            classes = (attributes.get("class") or "").split()
+            if self.depth == 0 and "run-controls" in classes:
+                self.depth = 1
+                return
+            if self.depth:
+                if element_id := attributes.get("id"):
+                    self.ids.append(element_id)
+                self.depth += 1
+
+        def handle_endtag(self, _tag):
+            if self.depth:
+                self.depth -= 1
+
+    controls = RunControlsParser()
+    controls.feed(html)
+
+    assert controls.ids == ["run-status", "policy-open", "abort"]
+
+
+def test_run_control_buttons_keep_a_compact_click_target():
+    with TestClient(app) as c:
+        css = c.get("/styles.css").text
+
+    selector = ".run-controls button {"
+    assert selector in css
+    rule = css[css.index(selector):]
+    rule = rule[:rule.index("}")]
+    assert "min-height: 34px" in rule
+    assert "padding: 0 13px" in rule
+    assert "font-size: 13px" in rule
+
+
+def test_launch_content_starts_nearer_the_header_across_viewports():
+    with TestClient(app) as c:
+        css = c.get("/styles.css").text
+
+    launch_rule = css[css.index(".launch {"):]
+    launch_rule = launch_rule[:launch_rule.index("}")]
+    assert "margin: clamp(48px, 9vh, 96px) auto 48px" in launch_rule
+
+    mobile = css[css.index("@media (max-width: 820px)"):]
+    mobile_launch_rule = mobile[mobile.index(".launch {"):]
+    mobile_launch_rule = mobile_launch_rule[:mobile_launch_rule.index("}")]
+    assert "margin-top: 36px" in mobile_launch_rule
+
+
+def test_desktop_workspace_scrolls_chat_and_events_inside_the_viewport():
+    with TestClient(app) as c:
+        css = c.get("/styles.css").text
+
+    desktop_marker = "@media (min-width: 1181px)"
+    assert desktop_marker in css
+    desktop = css[css.index(desktop_marker):]
+
+    def rule(selector: str) -> str:
+        block = desktop[desktop.index(f"{selector} {{"):]
+        return block[:block.index("}")]
+
+    run_shell = rule(".run-shell")
+    assert "height: calc(100dvh - 64px)" in run_shell
+    assert "grid-template-rows: auto minmax(0, 1fr)" in run_shell
+    assert "padding-bottom: 64px" in run_shell
+
+    assert "min-height: 0" in rule(".run-workspace")
+    assert "overflow: hidden" in rule(".chat-panel")
+    assert "overflow: auto" in rule(".chat-thread")
+    assert "overflow: hidden" in rule(".event-panel")
+    assert "grid-template-rows: minmax(0, 1fr)" in rule(".inspector")
+    assert "overflow: auto" in rule(".trace")
+
+
+def test_event_details_overlay_does_not_widen_the_trace_column():
+    with TestClient(app) as c:
+        css = c.get("/styles.css").text
+
+    inspector_rule = css[css.index(".inspector.has-details {"):]
+    inspector_rule = inspector_rule[:inspector_rule.index("}")]
+    assert "grid-template-columns: minmax(0, 1fr)" in inspector_rule
+
+    drawer_rule = css[css.index(".details-drawer {"):]
+    drawer_rule = drawer_rule[:drawer_rule.index("}")]
+    assert "position: absolute" in drawer_rule
+    assert "right: 0" in drawer_rule
+    assert "height: 100%" in drawer_rule
+    assert "max-height: 100%" in drawer_rule
+    assert "min-height: 0" in drawer_rule
+
+
 def test_steer_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/steer", json={"run_id": "run-missing", "text": "기록하라"})

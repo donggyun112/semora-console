@@ -12,7 +12,6 @@
       <a class="brand" href="/" aria-label="Nexora 홈">NEXORA</a>
       <div class="header-actions">
         <span class="environment"><i aria-hidden="true"></i>LOCAL DEMO</span>
-        <button id="policy-open" data-policy-open type="button">정책</button>
       </div>
     </header>
 
@@ -43,78 +42,79 @@
           </div>
           <div class="run-controls">
             <span id="run-status" aria-live="polite">대기</span>
+            <button id="policy-open" data-policy-open type="button">정책</button>
             <button id="abort" class="hidden" type="button">중단</button>
           </div>
         </header>
 
-        <nav id="version-switcher" class="version-switcher hidden" aria-label="실행 버전"></nav>
+        <div class="run-workspace">
+          <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title">
+            <header class="surface-heading">
+              <p class="eyebrow">CHAT</p>
+              <h2 id="chat-title">대화</h2>
+            </header>
+            <div id="chat-thread" class="chat-thread" role="log" aria-live="polite"></div>
+            <form id="steer-form" class="steer-form hidden">
+              <label for="steer-text">실행 중 지시</label>
+              <div>
+                <input id="steer-text" maxlength="240" autocomplete="off" />
+                <button type="submit">보내기</button>
+              </div>
+            </form>
+          </section>
 
-        <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title">
-          <header class="surface-heading">
-            <p class="eyebrow">CHAT</p>
-            <h2 id="chat-title">대화</h2>
-          </header>
-          <div id="chat-thread" class="chat-thread" role="log" aria-live="polite"></div>
-        </section>
+          <section id="event-panel" class="event-panel" aria-labelledby="event-title">
+            <nav id="version-switcher" class="version-switcher hidden" aria-label="실행 버전"></nav>
+            <header class="event-heading">
+              <div>
+                <p class="eyebrow">EVENT TRACE</p>
+                <h2 id="event-title">이벤트 기록</h2>
+              </div>
+              <span id="event-count">0 EVENTS</span>
+            </header>
 
-        <section id="event-panel" class="event-panel" aria-labelledby="event-title">
-          <header class="event-heading">
-            <div>
-              <p class="eyebrow">EVENT TRACE</p>
-              <h2 id="event-title">이벤트 기록</h2>
+            <div id="outcome-strip" class="outcome-strip hidden"></div>
+            <div class="terminal-actions hidden">
+              <button id="rerun" type="button">현재 정책으로 실행</button>
             </div>
-            <span id="event-count">0 EVENTS</span>
-          </header>
-
-          <div id="outcome-strip" class="outcome-strip hidden"></div>
-        <div class="terminal-actions hidden">
-          <button id="rerun" type="button">현재 정책으로 실행</button>
-        </div>
-        <div class="error-actions hidden">
-          <button id="retry-run" type="button">다시 실행</button>
-          <button id="return-draft" type="button">설정으로 돌아가기</button>
-        </div>
-        <p id="run-error" class="run-error hidden" aria-live="assertive"></p>
-
-        <div class="inspector">
-          <div id="trace" class="trace" role="log" aria-live="polite"></div>
-          <aside id="details-drawer" class="details-drawer hidden" aria-labelledby="details-title">
-            <div class="drawer-bar">
-              <button id="details-close" type="button" aria-label="상세 닫기">×</button>
-              <button id="details-copy" type="button" disabled>복사</button>
+            <div class="error-actions hidden">
+              <button id="retry-run" type="button">다시 실행</button>
+              <button id="return-draft" type="button">설정으로 돌아가기</button>
             </div>
-            <h2 id="details-title"></h2>
-            <pre id="details-body"></pre>
-          </aside>
+            <p id="run-error" class="run-error hidden" aria-live="assertive"></p>
+
+            <div class="inspector">
+              <div id="trace" class="trace" role="log" aria-live="polite"></div>
+              <aside id="details-drawer" class="details-drawer hidden" aria-labelledby="details-title">
+                <div class="drawer-bar">
+                  <button id="details-close" type="button" aria-label="상세 닫기">×</button>
+                  <button id="details-copy" type="button" disabled>복사</button>
+                </div>
+                <h2 id="details-title"></h2>
+                <pre id="details-body"></pre>
+              </aside>
+            </div>
+
+            <section id="approval" class="inline-action hidden" aria-labelledby="approval-title">
+              <div>
+                <p class="eyebrow">APPROVAL REQUIRED</p>
+                <h2 id="approval-title">이 도구 호출을 실행할까요?</h2>
+              </div>
+              <div>
+                <button id="deny" type="button">거부</button>
+                <button id="approve" class="primary" type="button">승인</button>
+              </div>
+            </section>
+
+            <section id="recovery" class="inline-action hidden" aria-labelledby="recovery-title">
+              <div>
+                <p class="eyebrow">RECOVERABLE</p>
+                <h2 id="recovery-title">중단된 실행을 이어갈 수 있습니다.</h2>
+              </div>
+              <button id="recover" class="primary" type="button">복구</button>
+            </section>
+          </section>
         </div>
-
-        <form id="steer-form" class="steer-form hidden">
-          <label for="steer-text">실행 중 지시</label>
-          <div>
-            <input id="steer-text" maxlength="240" autocomplete="off" />
-            <button type="submit">보내기</button>
-          </div>
-        </form>
-
-        <section id="approval" class="inline-action hidden" aria-labelledby="approval-title">
-          <div>
-            <p class="eyebrow">APPROVAL REQUIRED</p>
-            <h2 id="approval-title">이 도구 호출을 실행할까요?</h2>
-          </div>
-          <div>
-            <button id="deny" type="button">거부</button>
-            <button id="approve" class="primary" type="button">승인</button>
-          </div>
-        </section>
-
-        <section id="recovery" class="inline-action hidden" aria-labelledby="recovery-title">
-          <div>
-            <p class="eyebrow">RECOVERABLE</p>
-            <h2 id="recovery-title">중단된 실행을 이어갈 수 있습니다.</h2>
-          </div>
-          <button id="recover" class="primary" type="button">복구</button>
-        </section>
-        </section>
       </section>
 
       <section id="boot-error" class="boot-error hidden" aria-live="assertive">
