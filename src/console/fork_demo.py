@@ -63,6 +63,7 @@ class EventCheckpointProjector:
         event_points: list[tuple[str, str]],
         *,
         leaf_uuid: str | None,
+        boundary: str,
         rebuild: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         if leaf_uuid is None:
@@ -86,6 +87,10 @@ class EventCheckpointProjector:
                 "event_id": event_id,
                 "restore_edge": edge,
                 "seam": leaf_uuid,
+                # What kind of boundary this is, said by the one that decided it. The
+                # console prints a name for each and had been reading row labels to
+                # pick one, which made renaming an event a UI change.
+                "boundary": boundary,
             }
             if rebuild is not None:
                 # Where to go to make this boundary again. A recorded result restores as
@@ -178,7 +183,9 @@ class EventCheckpointProjector:
         if call_id and is_tool_result:
             before_tool = self._before_tool_events.pop(call_id, [])
             restore_updates.extend(
-                await self._stabilize(before_tool, leaf_uuid=current_leaf)
+                await self._stabilize(
+                    before_tool, leaf_uuid=current_leaf, boundary="tool"
+                )
             )
             if before_tool:
                 # The last gate rather than the first: an approved call is gated twice,
@@ -204,6 +211,7 @@ class EventCheckpointProjector:
                 await self._stabilize(
                     self._after_tool_events.pop(tool_result_origin, []),
                     leaf_uuid=current_leaf,
+                    boundary="result",
                     rebuild=rebuild,
                 )
             )
@@ -211,6 +219,7 @@ class EventCheckpointProjector:
                 await self._stabilize(
                     [(event_id, "after")],
                     leaf_uuid=current_leaf,
+                    boundary="result",
                     rebuild=rebuild,
                 )
             )
@@ -236,6 +245,7 @@ class EventCheckpointProjector:
             "forkable": bool(restore_edge),
             "restore_edge": restore_edge,
             "seam": seam,
+            "boundary": "input" if input_fork else "result" if tool_result_fork else None,
             "rebuild": rebuild if tool_result_fork else None,
             "restore_updates": restore_updates,
         }

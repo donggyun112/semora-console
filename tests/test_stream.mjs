@@ -1115,17 +1115,17 @@ const restoredToolRows = reduceFrames([
     kind: "agent", run_id: "run-tools", event_id: "event-result",
     event: { type: "tool_result", id: "read-1", name: "read_customer", executed: true },
     restore_updates: [
-      { event_id: "event-request", restore_edge: "after" },
-      { event_id: "event-pre", restore_edge: "before" },
+      { event_id: "event-request", restore_edge: "after", boundary: "tool" },
+      { event_id: "event-pre", restore_edge: "before", boundary: "tool" },
     ],
   },
   {
     kind: "lifecycle", run_id: "run-tools", event_id: "event-context",
     type: "context_injected", payload: { kind: "tool_result", origin_id: "read-1" },
-    forkable: true, restore_edge: "after",
+    forkable: true, restore_edge: "after", boundary: "result",
     restore_updates: [
-      { event_id: "event-post", restore_edge: "after" },
-      { event_id: "event-result", restore_edge: "after" },
+      { event_id: "event-post", restore_edge: "after", boundary: "result" },
+      { event_id: "event-result", restore_edge: "after", boundary: "result" },
     ],
   },
 ]);
@@ -1545,6 +1545,7 @@ assert.equal(forkSeamRow(seamRows, 6), null, "a row that is no coordinate has no
 // boundary it is leaving.
 const resultRow = {
   eventId: "ev-result", label: "context_injected", forkable: true, forkEdge: "after",
+  boundary: "result",
 };
 assert.equal(isRetargetedFork(resultRow, { event_id: "ev-gate" }), true);
 assert.equal(isRetargetedFork(resultRow, { event_id: "ev-result" }), false);
@@ -1555,8 +1556,18 @@ assert.equal(
 );
 assert.equal(getForkActionLabel(resultRow, 1, false), "툴 결과에서 분기 · 정책 1개");
 assert.equal(
-  getForkActionLabel({ label: "pre_tool_use", forkable: true }, 2),
+  getForkActionLabel({ label: "pre_tool_use", forkable: true, boundary: "tool" }, 2),
   "툴 실행 전 분기 · 정책 2개",
+);
+// The name comes from the projector, so an event renamed upstream keeps its button
+// text — and a coordinate the projector did not name says nothing it cannot support.
+assert.equal(
+  getForkActionLabel({ label: "그 무엇이든", forkable: true, boundary: "input" }, 1),
+  "이 입력에서 분기 · 정책 1개",
+);
+assert.equal(
+  getForkActionLabel({ label: "pre_tool_use", forkable: true }, 1),
+  "이 지점에서 분기 · 정책 1개",
 );
 
 console.log("run inspector state ok");

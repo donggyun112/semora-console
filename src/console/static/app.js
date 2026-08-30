@@ -124,12 +124,6 @@ export const GUIDE = Object.freeze([
 ]);
 
 
-// Both gates are durable tool boundaries you can branch from: the one before the call
-// and the one after a person answered. They carry different labels so the trace does not
-// read as the same row twice, so anything matching on the label has to accept both.
-const TOOL_GATES = new Set(["pre_tool_use", "on_resume"]);
-const isToolGate = (row) => TOOL_GATES.has(row?.label);
-
 export function guideMatch(config) {
   // Which scene the current draft is sitting on, or -1 once the operator has wandered
   // off the path. Compared by value: the composer is free the moment it stops matching.
@@ -452,21 +446,27 @@ function forkSeam(rows, index) {
   return members.length ? members : [index];
 }
 
+const BOUNDARY_LABELS = {
+  input: "이 입력에서 분기",
+  tool: "툴 실행 전 분기",
+  result: "툴 결과에서 분기",
+};
+
+const BOUNDARY_DESCRIPTIONS = {
+  input: "선택한 정책으로 이 입력부터 다시 실행합니다.",
+  tool: "선택한 정책으로 툴 결과를 다시 만듭니다.",
+  result: "저장된 툴 결과 다음부터 이어서 실행합니다.",
+};
+
 export function getForkActionLabel(row, policyCount, retargeted = false) {
   // A result row can only branch to where the transcript has a leaf, and that leaf holds
   // the result a journal unit already rewrote. Change one and there is nothing at this
   // coordinate to change it on, so the branch moves back to the call — which the button
   // has to say, because "결과에서 분기" would be describing a boundary it is leaving.
-  if (retargeted) {
-    return `저장된 결과를 버리고 툴부터 다시 · 정책 ${policyCount}개`;
-  }
-  if (row?.kind === "tool" || isToolGate(row)) {
-    return `툴 실행 전 분기 · 정책 ${policyCount}개`;
-  }
-  if (row?.forkEdge === "after") {
-    return `툴 결과에서 분기 · 정책 ${policyCount}개`;
-  }
-  return `이 입력에서 분기 · 정책 ${policyCount}개`;
+  const name = retargeted
+    ? "저장된 결과를 버리고 툴부터 다시"
+    : BOUNDARY_LABELS[row?.boundary] ?? "이 지점에서 분기";
+  return `${name} · 정책 ${policyCount}개`;
 }
 
 export function isRetargetedFork(row, request) {
@@ -478,13 +478,8 @@ function getForkActionDescription(row, request) {
   if (isRetargetedFork(row, request)) {
     return "기록된 결과는 버려집니다. 툴이 다시 실행되고 새 정책을 통과합니다.";
   }
-  if (row?.kind === "tool" || isToolGate(row)) {
-    return "선택한 정책으로 툴 결과를 다시 만듭니다.";
-  }
-  if (row?.forkEdge === "after") {
-    return "저장된 툴 결과 다음부터 이어서 실행합니다.";
-  }
-  return "선택한 정책으로 이 입력부터 다시 실행합니다.";
+  return BOUNDARY_DESCRIPTIONS[row?.boundary]
+    ?? "선택한 정책으로 이 지점부터 다시 실행합니다.";
 }
 
 export function deriveVersionPhase(frames, fallback = "idle") {
