@@ -1392,10 +1392,8 @@ def test_an_effect_that_started_and_never_reported_is_not_guessed(monkeypatch):
         run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
         assert any(f["kind"] == "recoverable" for f in frames), frames
 
-        reported = client.post(
-            "/api/recover", json={"run_id": run_id, "retry_running": False}
-        )
-        after = [json.loads(line) for line in reported.text.splitlines()]
+        recovered = client.post("/api/recover", json={"run_id": run_id})
+        after = [json.loads(line) for line in recovered.text.splitlines()]
 
     unknown = [f for f in after if f["kind"] == "indeterminate"]
     assert unknown, after
@@ -1405,7 +1403,7 @@ def test_an_effect_that_started_and_never_reported_is_not_guessed(monkeypatch):
         if f.get("kind") == "agent"
         and f["event"].get("type") == "tool_result"
         and "charged" in str((f["event"].get("result") or {}).get("text", ""))
-    ], "reporting must not repeat the effect it cannot vouch for"
+    ], "the runtime refuses rather than repeating an effect it cannot vouch for"
 
 
 @pytest.mark.asyncio

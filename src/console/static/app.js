@@ -503,7 +503,7 @@ export function createConsole({
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
     "version-switcher",
     "event-count", "outcome-strip",
-    "rerun", "retry-run", "return-draft", "trace", "guide", "recover-safe",
+    "rerun", "retry-run", "return-draft", "trace", "guide",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
@@ -1078,12 +1078,9 @@ export function createConsole({
     await continueRun("/api/resume", body);
   }
 
-  async function recover(retryRunning = true) {
+  async function recover() {
     if (state.run.phase !== "recoverable") return;
-    await continueRun("/api/recover", {
-      run_id: state.run.runId,
-      retry_running: retryRunning,
-    });
+    await continueRun("/api/recover", { run_id: state.run.runId });
   }
 
   async function forkSource(row) {
@@ -1178,8 +1175,7 @@ export function createConsole({
     dom.abort.addEventListener("click", () => void abort());
     dom.approve.addEventListener("click", () => void decide(true));
     dom.deny.addEventListener("click", () => void decide(false));
-    dom.recover.addEventListener("click", () => void recover(true));
-    dom["recover-safe"].addEventListener("click", () => void recover(false));
+    dom.recover.addEventListener("click", () => void recover());
     dom["steer-form"].addEventListener("submit", sendSteer);
     dom["details-close"].addEventListener("click", () => {
       state.selectedRowId = null;

@@ -130,7 +130,8 @@ The durable proof needs a ledger that outlives the worker, so the compose stack 
 honest way to run this. `.env` beside `compose.yaml` supplies `OPENROUTER_API_KEY`.
 
 ```bash
-docker compose up --build      # → http://localhost:8850
+make up          # → http://localhost:8850
+make             # every other target
 ```
 
 `nexora` is resolved by path from the neighbouring checkout, so it arrives as a named
@@ -142,7 +143,7 @@ away.
 A second worker on the same ledger, for the contention a single process cannot show:
 
 ```bash
-docker compose --profile two-workers up -d      # worker-a :8850, worker-b :8851
+make two-workers      # worker-a :8850, worker-b :8851
 ```
 
 They take separate lease owners on purpose. Workers sharing a name renew each other's
@@ -202,5 +203,5 @@ runtime selects journal replay from durable state. Process restart still needs `
 | `dormancy.py` | Why a toggled-on unit stayed dormant in a scenario. |
 | `tools.py` | Demo effects (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
 | `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set. |
-| `Dockerfile` · `compose.yaml` | The stack with a Postgres ledger, where a parked run outlives its worker. |
+| `Dockerfile` · `compose.yaml` · `Makefile` | The stack with a Postgres ledger, where a parked run outlives its worker. |
 | `server.py` | FastAPI: `/api/run`, `/api/fork`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |

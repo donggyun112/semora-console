@@ -33,7 +33,7 @@ from langchain_core.messages import HumanMessage
 from nexora import Agent, AgentRuntime, new_run_id
 from nexora.contracts.types import PendingInput
 from nexora.dispatch import Answer, Prompt, Recover
-from nexora.orchestrator import AgentSuspended
+from nexora.orchestrator import AgentSuspended, Orchestrator
 from nexora_store import Contended, Fenced, Indeterminate
 from nexora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
@@ -143,10 +143,6 @@ class RecoverRequest(BaseModel):
     """Continue a run after the worker died mid-round."""
 
     run_id: str
-    retry_running: bool = True
-    """Whether to repeat a step that started and never reported. Only the operator knows
-    whether repeating that particular effect is safe, so the runtime asks instead of
-    guessing; False surfaces ``Indeterminate`` and stops."""
 
 
 class ForkRequest(BaseModel):
@@ -727,29 +723,17 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
     session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        if request.retry_running:
-            return await runtime.dispatch(
-                request.run_id,
-                session["agent"],
-                Recover(),
-                conversation_id=session["conversation_id"],
-                controls=compose_controls(session["units"]),
-                on_event=on_event,
-                should_stop_after_turn=_capped,
-                aborted=lambda: _is_aborted(request.run_id),
-            )
-        # dispatch has no say over an ambiguous step; recover() is where that choice lives.
-        history = await runtime.committed_history(
-            request.run_id, session["conversation_id"]
-        )
-        return await runtime.recover(
+        # Journal replay, not recover(history, ...). A crashed round's assistant turn is
+        # deliberately absent from the transcript — recording it before execution would
+        # make a failed round a transcript fact — so the history a host could hand over
+        # is empty and the durable model step is what reconstructs the round.
+        return await runtime.dispatch(
             request.run_id,
-            history,
             session["agent"],
+            Recover(),
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
-            retry_running=False,
             should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(request.run_id),
         )
@@ -758,6 +742,20 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         _stream(request.run_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
         media_type="application/x-ndjson",
     )
+
+
+async def _running_step(run_id: str) -> str | None:
+    """The first committed call that started and never reported, if there is one.
+
+    Read, not recovered. The operator is told the run holds an ambiguous effect before
+    they press anything, because recovering is how they find out otherwise and by then
+    the answer has already arrived as a refusal.
+    """
+    for call in await Orchestrator(run_id, _store).pending_calls():
+        call_id = str(call.get("id") or "")
+        if call_id and (await _store.read(run_id, call_id)).status == "running":
+            return call_id
+    return None
 
 
 async def _drop_queued_inputs(run_id: str) -> int:

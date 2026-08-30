@@ -5,9 +5,9 @@ the step ledger and transcript are persistent, so durable deployments set DATABA
 
 ``FaultInjectingSteps`` wraps whichever ledger is in use so crash scenarios can kill
 the worker at one of three seams: after ``finish_effect`` (the effect committed), at the
-first ``pre_tool_use`` (before the park), or between ``start`` and ``finish_effect`` —
-the only one that leaves a step ``running``, which is to say an effect nobody can say
-happened or did not.
+first ``pre_tool_use`` (before the park), or after the tool ran and before its result was
+recorded. Only the last leaves a step ``running`` with the effect already out in the
+world, which is the state nobody can decide from the ledger alone.
 """
 
 from __future__ import annotations
@@ -74,26 +74,18 @@ class FaultInjectingSteps:
         child._effect = self._effect
         return child
 
-    async def start(self, run_id: str, key: str, token: int = 0) -> bool:
-        """Record intent, then die before the effect can report. The step stays ``running``.
-
-        This is the seam the other two cannot reach. A crash before the park leaves nothing
-        started; a crash after ``finish_effect`` leaves a committed result. Only here does
-        the ledger end up holding a step that may or may not have reached the world, which
-        is the state ``Indeterminate`` names.
-        """
-        started = await self._inner.start(run_id, key, token)
+    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         if (
             run_id in self._armed
             and run_id in self._effect
             and not str(key).startswith(("agent:", "signal:", "suspend:", "after:"))
         ):
+            # Before delegating, so the tool has run and its result never lands. The step
+            # stays running with the effect already out — the one case the ledger cannot
+            # settle, and the caller has to.
             self._armed.discard(run_id)
             self._effect.discard(run_id)
             raise SimulatedWorkerCrash(run_id, str(key))
-        return started
-
-    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         await self._inner.finish_effect(run_id, key, value, token)
         if (
             run_id in self._armed
