@@ -603,34 +603,29 @@ assert.deepEqual(
   },
   "forking a tool result with masking off sends an empty control set",
 );
-const preToolRow = {
-  eventId: "event-pre",
-  label: "pre_tool_use",
-  kind: "lifecycle",
-  forkable: true,
-  forkEdge: "before",
-  callId: "read-1",
-};
+// The projector sends both coordinates for a saved result: where it restores, and
+// where it was made. Changing a policy that only speaks while a tool runs takes the
+// second one, because there is nothing to rewrite at the first.
 const postToolRow = {
   eventId: "event-post",
   label: "post_tool_use",
   kind: "lifecycle",
   forkable: true,
   forkEdge: "after",
-  callId: "read-1",
+  rebuild: { event_id: "event-pre", edge: "before" },
 };
 assert.deepEqual(
-  getEventForkRequest(unmaskedMaskingTerminal, postToolRow, [preToolRow, postToolRow]),
+  getEventForkRequest(unmaskedMaskingTerminal, postToolRow),
   {
     run_id: "run-b",
     event_id: "event-pre",
     edge: "before",
     units: [],
   },
-  "turning pii_mask off at a saved tool result replays the original through the new journal",
+  "turning pii_mask off at a saved tool result runs the tool again through the new journal",
 );
 assert.deepEqual(
-  getEventForkRequest(forkSourceTerminal, postToolRow, [preToolRow, postToolRow]),
+  getEventForkRequest(forkSourceTerminal, postToolRow),
   {
     run_id: "run-b",
     event_id: "event-post",
@@ -638,6 +633,20 @@ assert.deepEqual(
     units: ["pii_mask", "dlp_block"],
   },
   "unchanged journal units keep the after-result continue edge",
+);
+assert.deepEqual(
+  getEventForkRequest(unmaskedMaskingTerminal, {
+    eventId: "event-post",
+    forkable: true,
+    forkEdge: "after",
+  }),
+  {
+    run_id: "run-b",
+    event_id: "event-post",
+    edge: "after",
+    units: [],
+  },
+  "a boundary the projector cannot rebuild stays where it is",
 );
 assert.equal(
   getEventForkRequest(streaming, { eventId: "event-09" }),
@@ -1365,35 +1374,8 @@ assert.deepEqual(
   ["lifecycle:pre_tool_use", "recovery:recover"],
 );
 
-// An approved call leaves two forkable pre_tool_use rows: the gate, and the
-// 승인 후 재검증 replay. Re-running the journal must resume from the later one —
-// forking from the gate rewinds past the approval and drops the operator's decision.
-const resumedPreToolRow = {
-  eventId: "event-pre-resumed",
-  label: "on_resume",
-  kind: "lifecycle",
-  forkable: true,
-  forkEdge: "before",
-  callId: "read-1",
-};
-assert.deepEqual(
-  getEventForkRequest(
-    unmaskedMaskingTerminal,
-    postToolRow,
-    [preToolRow, resumedPreToolRow, postToolRow],
-  ),
-  { run_id: "run-b", event_id: "event-pre-resumed", edge: "before", units: [] },
-  "an approved call re-runs from the post-approval boundary, not the gate",
-);
-// Only boundaries that precede the forked row count.
-assert.deepEqual(
-  getEventForkRequest(
-    unmaskedMaskingTerminal,
-    postToolRow,
-    [preToolRow, postToolRow, resumedPreToolRow],
-  ),
-  { run_id: "run-b", event_id: "event-pre", edge: "before", units: [] },
-);
+// Which coordinate rebuilds a boundary is the projector's answer, not a scan over
+// rows — tests/test_fork_demo.py holds that property. Here it is only carried.
 
 // A call and its result are two different events; the trace must not print the
 // same name twice for them.

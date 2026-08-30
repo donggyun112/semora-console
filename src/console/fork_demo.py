@@ -36,6 +36,7 @@ class EventCheckpointProjector:
         self._last_leaf: str | None = None
         self._before_tool_events: dict[str, list[tuple[str, str]]] = {}
         self._after_tool_events: dict[str, list[tuple[str, str]]] = {}
+        self._rebuild: dict[str, dict[str, str]] = {}
         self._scope = uuid.uuid4().hex
         self._sequence = 0
 
@@ -62,11 +63,12 @@ class EventCheckpointProjector:
         event_points: list[tuple[str, str]],
         *,
         leaf_uuid: str | None,
-    ) -> list[dict[str, str]]:
+        rebuild: dict[str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         if leaf_uuid is None:
             return []
         coordinate = ForkCoordinate(self._run_id, None, leaf_uuid)
-        updates: list[dict[str, str]] = []
+        updates: list[dict[str, Any]] = []
         for event_id, edge in event_points:
             await record_event_checkpoint(
                 self._transcript,
@@ -80,9 +82,18 @@ class EventCheckpointProjector:
             # Every event promoted together lands on one coordinate, which makes the
             # leaf the boundary's identity. Sent along so the client groups by what the
             # projector already decided instead of guessing from row labels.
-            updates.append(
-                {"event_id": event_id, "restore_edge": edge, "seam": leaf_uuid}
-            )
+            update: dict[str, Any] = {
+                "event_id": event_id,
+                "restore_edge": edge,
+                "seam": leaf_uuid,
+            }
+            if rebuild is not None:
+                # Where to go to make this boundary again. A recorded result restores as
+                # a result, so a policy that rewrites results has nothing to rewrite
+                # unless the tool runs — and only the projector knows which coordinate
+                # ran it.
+                update["rebuild"] = rebuild
+            updates.append(update)
         return updates
 
     @staticmethod
@@ -149,7 +160,7 @@ class EventCheckpointProjector:
         event = frame.get("event") if frame_kind == "agent" else None
         agent_type = str(event.get("type") or "") if isinstance(event, dict) else ""
         checkpoint_phase = str(frame.get("checkpoint_phase") or "")
-        restore_updates: list[dict[str, str]] = []
+        restore_updates: list[dict[str, Any]] = []
 
         if (
             call_id
@@ -165,12 +176,15 @@ class EventCheckpointProjector:
             agent_type == "tool_result" or checkpoint_phase == "tool_result"
         )
         if call_id and is_tool_result:
+            before_tool = self._before_tool_events.pop(call_id, [])
             restore_updates.extend(
-                await self._stabilize(
-                    self._before_tool_events.pop(call_id, []),
-                    leaf_uuid=current_leaf,
-                )
+                await self._stabilize(before_tool, leaf_uuid=current_leaf)
             )
+            if before_tool:
+                # The last gate rather than the first: an approved call is gated twice,
+                # and rewinding past the approval discards the operator's decision.
+                gate_event, gate_edge = before_tool[-1]
+                self._rebuild[call_id] = {"event_id": gate_event, "edge": gate_edge}
             self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
 
         if call_id and frame_kind == "lifecycle" and frame_type.endswith(
@@ -184,17 +198,20 @@ class EventCheckpointProjector:
             frame_type,
             payload if isinstance(payload, dict) else {},
         )
+        rebuild = self._rebuild.get(tool_result_origin) if tool_result_origin else None
         if tool_result_origin:
             restore_updates.extend(
                 await self._stabilize(
                     self._after_tool_events.pop(tool_result_origin, []),
                     leaf_uuid=current_leaf,
+                    rebuild=rebuild,
                 )
             )
             restore_updates.extend(
                 await self._stabilize(
                     [(event_id, "after")],
                     leaf_uuid=current_leaf,
+                    rebuild=rebuild,
                 )
             )
 
@@ -219,6 +236,7 @@ class EventCheckpointProjector:
             "forkable": bool(restore_edge),
             "restore_edge": restore_edge,
             "seam": seam,
+            "rebuild": rebuild if tool_result_fork else None,
             "restore_updates": restore_updates,
         }
 

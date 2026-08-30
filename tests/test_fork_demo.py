@@ -18,6 +18,7 @@ from console.fork_demo import (
     run_masked_source,
 )
 from console.scenarios import SYSTEM_PROMPT
+from console.units import compose_controls
 from console.tools import DemoTools
 
 
@@ -584,3 +585,69 @@ async def test_parallel_tool_checkpoints_are_stabilized_by_call_id():
     assert {
         edge for _stabilizer, edge in stabilized_by.values()
     } == {"before", "after"}
+
+
+@pytest.mark.asyncio
+async def test_a_saved_result_carries_the_coordinate_that_makes_it_again():
+    """Restoring a result and making it again are two different coordinates.
+
+    A journal policy only speaks while the tool runs, so an operator who turns one on
+    at a saved result has nothing to rewrite there. The projector knows which coordinate
+    ran the tool and sends it along, which is what the console branches from — the
+    client is in no position to work that out from row labels.
+    """
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools(session=session_on(steps))
+    agent = tool_calling_agent(
+        tools,
+        read_customer_call(),
+        AIMessage(content="source finished"),
+        AIMessage(content="fork finished"),
+    )
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+
+    by_event = {frame["event_id"]: frame for frame in frames if frame.get("event_id")}
+    updates = {
+        update["event_id"]: update
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    }
+    post_tool = next(
+        frame for frame in frames
+        if frame["kind"] == "lifecycle" and frame["type"] == "post_tool_use"
+    )
+    rebuild = updates[post_tool["event_id"]]["rebuild"]
+    assert by_event[rebuild["event_id"]]["type"].endswith("pre_tool_use")
+    assert rebuild["edge"] == "before"
+
+    before = {
+        event_id for event_id, update in updates.items()
+        if update.get("rebuild") is None
+    }
+    assert rebuild["event_id"] in before, "the gate itself has nothing to rebuild"
+
+    child_runtime = AgentRuntime(store=steps, transcript=transcript)
+    await run_from_event(
+        child_runtime,
+        steps,
+        transcript,
+        event_id=rebuild["event_id"],
+        edge=rebuild["edge"],
+        run_id="run-child",
+        conversation_id="conv-tool",
+        agent=agent,
+        controls=compose_controls(["pii_mask"]),
+    )
+
+    history = await child_runtime.committed_history("run-child", "conv-tool")
+    masked = [item for item in history if "***" in str(getattr(item, "content", ""))]
+    assert masked, "the tool boundary ran again, so the new journal had its say"
+    assert tools.execution_counts["read-1"] == 1, "and the effect still happened once"

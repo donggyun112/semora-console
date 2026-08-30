@@ -17,6 +17,9 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     // Which boundary this coordinate belongs to, decided by the projector that recorded
     // it. Rows sharing one are one branch, and the client never has to work that out.
     seam: options.seam ?? coordinateFrame?.seam ?? null,
+    // The coordinate that makes this boundary again instead of restoring it, for when the
+    // operator changed a policy that only has something to say while the tool runs.
+    rebuild: options.rebuild ?? coordinateFrame?.rebuild ?? null,
     runId: options.runId ?? null,
     callId: options.callId ?? coordinateFrame?.call_id ?? coordinateFrame?.payload?.call_id ?? null,
   };
@@ -156,6 +159,7 @@ export function reduceFrames(frames) {
       restored.set(update.event_id, {
         edge: update.restore_edge,
         seam: update.seam ?? null,
+        rebuild: update.rebuild ?? null,
       });
     }
 
@@ -349,6 +353,7 @@ export function reduceFrames(frames) {
     row.forkable = true;
     row.forkEdge = update.edge;
     row.seam = update.seam ?? row.seam;
+    row.rebuild = update.rebuild ?? row.rebuild;
   }
 
   return rows;

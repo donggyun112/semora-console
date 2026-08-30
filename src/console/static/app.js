@@ -190,16 +190,6 @@ export function pickInlineActionHost(chatToolNodes, callId, status) {
     .find((node) => node.dataset?.status === status) ?? null;
 }
 
-function rowCallId(row) {
-  return (
-    row?.callId ??
-    row?.details?.callId ??
-    row?.details?.raw?.payload?.call_id ??
-    row?.details?.raw?.event?.id ??
-    null
-  );
-}
-
 export function deriveChatView(prompt, frames) {
   const tools = [];
   const toolById = new Map();
@@ -508,7 +498,7 @@ export function deriveVersionPhase(frames, fallback = "idle") {
   return fallback;
 }
 
-export function getEventForkRequest(runState, row, rows = []) {
+export function getEventForkRequest(runState, row) {
   if (
     runState?.phase !== "terminal" ||
     !runState?.runId ||
@@ -520,29 +510,12 @@ export function getEventForkRequest(runState, row, rows = []) {
   const units = [...runState.draft.unitNames];
   let eventId = row.eventId;
   let edge = row.forkEdge ?? "before";
-  if (
-    journalUnitsChanged(runState) &&
-    row.forkEdge === "after" &&
-    (row.label === "post_tool_use"
-      || row.kind === "result"
-      || row.label === "context_injected")
-  ) {
-    const callId = rowCallId(row);
-    const target = rows.indexOf(row);
-    // The most recent boundary for this call, not the first one. An approved call has
-    // two forkable pre_tool_use rows — the gate and the 승인 후 재검증 replay — and
-    // forking from the first rewinds past the approval, discarding the operator's
-    // decision without saying so.
-    const pre = (target >= 0 ? rows.slice(0, target) : rows).findLast((item) => (
-      item.forkable
-      && isToolGate(item)
-      && rowCallId(item) === callId
-      && item.eventId
-    ));
-    if (pre) {
-      eventId = pre.eventId;
-      edge = pre.forkEdge ?? "before";
-    }
+  if (journalUnitsChanged(runState) && row.rebuild) {
+    // A recorded result restores as a result, so a policy that rewrites results has
+    // nothing to rewrite at this coordinate. The projector sent the coordinate that
+    // makes the boundary again instead of restoring it, so the branch goes there.
+    eventId = row.rebuild.event_id;
+    edge = row.rebuild.edge;
   }
   return {
     run_id: row.runId ?? runState.runId,
@@ -790,7 +763,7 @@ export function createConsole({
         ? forkSeamRow(state.rows, index)
         : null;
       const request = seam
-        ? getEventForkRequest(state.run, seam, state.rows)
+        ? getEventForkRequest(state.run, seam)
         : null;
       if (request) {
         const action = documentRef.createElement("div");
@@ -1178,7 +1151,7 @@ export function createConsole({
   }
 
   async function forkSource(row) {
-    const request = getEventForkRequest(state.run, row, state.rows);
+    const request = getEventForkRequest(state.run, row);
     if (!request) return;
     // The request may retarget to an earlier tool boundary; mark where the branch
     // actually starts, not where the operator clicked.
