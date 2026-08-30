@@ -89,13 +89,13 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Semora Control Plane Console", lifespan=lifespan)
 
 
-def _new_agent(payment_batch_id: str) -> Agent:
+def _new_agent(session_id: str) -> Agent:
     """Create the run agent. Payment records are keyed by scenario id so a rerun can reuse them."""
     return Agent(
         name="control-plane-console",
         description="Runs locked operator control-plane scenarios.",
         model=openrouter_model(),
-        tools=DemoTools(payment_batch_id=payment_batch_id),
+        tools=DemoTools(session=_session_step(session_id)),
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -146,16 +146,30 @@ class SteerRequest(BaseModel):
 _OPERATOR = re.compile(r"[^a-z0-9_-]")
 
 
-def _payment_batch(operator: str, scenario_id: str) -> str:
-    """Scope the payment ledger to whoever is driving.
+def _session_id(operator: str, scenario_id: str) -> str:
+    """The run whose steps this operator's effects are.
 
-    Payment records are shared by batch so a rerun can reuse them, and the batch used to
-    be the scenario alone. On a link two people can open at once that put every visitor
-    in the same ledger: the first one charges, and everyone after watches a replay of it
-    instead of their own run.
+    One session per person per scenario, so a charge outlives the agent run that made it
+    without outliving the visitor who made it. On a link two people can open at once,
+    sharing this would mean the first one charges and everyone after replays it.
     """
     who = _OPERATOR.sub("", operator.strip().lower())[:24]
-    return f"{who}:{scenario_id}" if who else scenario_id
+    return f"session:{who}:{scenario_id}" if who else f"session:{scenario_id}"
+
+
+def _session_step(session_id: str) -> Any:
+    """``Orchestrator.run`` for that session, taken and released per effect.
+
+    A fresh attempt each time rather than one held open: nothing else holds this run's
+    lease, and a worker that grabbed it for the length of an agent turn would contend
+    with its own tools.
+    """
+
+    async def run(step: str, fn: Any) -> Any:
+        orchestrator = Orchestrator(session_id, _store, owner=WORKER, ttl=LEASE_TTL)
+        return await orchestrator.run(step, fn)
+
+    return run
 
 
 class RecoverRequest(BaseModel):
@@ -178,7 +192,7 @@ _SESSION_KEY = "console:session"
 # What a later process needs to continue a run. `agent` is rebuilt from `scenario_id`,
 # and the projector's event bookkeeping is per-process, so neither is stored.
 _DURABLE_SESSION = (
-    "units", "scenario_id", "payment_batch", "conversation_id", "origin_id", "source_run_id",
+    "units", "scenario_id", "session_id", "conversation_id", "origin_id", "source_run_id",
     "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
     "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
     # Which coordinates a fork may start from. Rebuilt only by watching a run stream, so
@@ -215,10 +229,10 @@ async def _session(run_id: str) -> dict[str, Any]:
         # event_ids is the same set of keys; it is a membership check, not a second fact.
         "event_ids": set(forkable),
         "forkable_events": dict(forkable),
-        # The batch, not the scenario: a resumed run must land in the same ledger it
-        # started in, or the charge it already made is invisible to it.
+        # The session, not the scenario: a resumed run must rejoin the session whose
+        # steps its effects are, or the charge it already made is invisible to it.
         "agent": _new_agent(
-            str(stored.get("payment_batch") or stored.get("scenario_id") or "local")
+            str(stored.get("session_id") or f"session:{stored.get('scenario_id')}")
         ),
         "aborted": False,
     }
@@ -584,13 +598,13 @@ async def run(request: RunRequest) -> StreamingResponse:
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
-    batch = _payment_batch(request.operator, request.scenario_id)
-    agent = _new_agent(batch)
+    session_id = _session_id(request.operator, request.scenario_id)
+    agent = _new_agent(session_id)
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     origin_runs = {prompt_id: run_id}
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
-        "payment_batch": batch,
+        "session_id": session_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_run_id": run_id,
@@ -773,20 +787,6 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         _stream(request.run_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
         media_type="application/x-ndjson",
     )
-
-
-async def _running_step(run_id: str) -> str | None:
-    """The first committed call that started and never reported, if there is one.
-
-    Read, not recovered. The operator is told the run holds an ambiguous effect before
-    they press anything, because recovering is how they find out otherwise and by then
-    the answer has already arrived as a refusal.
-    """
-    for call in await Orchestrator(run_id, _store).pending_calls():
-        call_id = str(call.get("id") or "")
-        if call_id and (await _store.read(run_id, call_id)).status == "running":
-            return call_id
-    return None
 
 
 async def _drop_queued_inputs(run_id: str) -> int:

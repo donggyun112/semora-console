@@ -7,6 +7,7 @@ from langchain_core.language_models.fake_chat_models import (
 )
 from langchain_core.messages import AIMessage
 from semora import Agent, AgentRuntime, MemorySteps
+from semora.orchestrator import Orchestrator
 from semora_fork import read_event_checkpoint
 from semora_store import MemoryTranscript
 
@@ -18,6 +19,19 @@ from console.fork_demo import (
 )
 from console.scenarios import SYSTEM_PROMPT
 from console.tools import DemoTools
+
+
+def session_on(steps, run_id: str = "session:fork"):
+    """The session whose steps a fork's effects are, as the console wires it.
+
+    A fork runs under a new run id, so the runtime's per-run record does not span
+    it; the session's does. Without one these tools would charge twice.
+    """
+
+    async def run(step, fn):
+        return await Orchestrator(run_id, steps).run(step, fn)
+
+    return run
 from console.units import compose_controls
 
 
@@ -88,7 +102,7 @@ async def test_fork_restores_original_and_preserves_masked_source():
         BoundFakeListChatModel(
             responses=["hello", "masked response", "original response"]
         ),
-        DemoTools(),
+        DemoTools(session=session_on(steps)),
         SYSTEM_PROMPT,
     )
 
@@ -220,7 +234,7 @@ async def test_an_early_event_replays_the_real_prompt_after_the_source_completes
         "fork-demo",
         "fork demo",
         BoundFakeListChatModel(responses=["source response", "fork response"]),
-        DemoTools(),
+        DemoTools(session=session_on(steps)),
         SYSTEM_PROMPT,
     )
     projector = EventCheckpointProjector(
@@ -264,7 +278,7 @@ async def test_event_fork_applies_the_new_controls_to_the_replayed_input():
         "fork-demo",
         "fork demo",
         BoundFakeListChatModel(responses=["source response", "masked response"]),
-        DemoTools(),
+        DemoTools(session=session_on(steps)),
         SYSTEM_PROMPT,
     )
     projector = EventCheckpointProjector(
@@ -310,7 +324,7 @@ async def test_a_fork_event_can_be_versioned_again_from_the_child_run():
         "fork-demo",
         "fork demo",
         BoundFakeListChatModel(responses=["v1 response", "v2 response", "v3 response"]),
-        DemoTools(),
+        DemoTools(session=session_on(steps)),
         SYSTEM_PROMPT,
     )
     v1_projector = EventCheckpointProjector(
@@ -403,7 +417,7 @@ def test_recovered_blocked_tool_result_uses_its_top_level_call_id():
 async def test_pre_tool_event_fork_reuses_the_pending_call_result_in_the_child_run():
     steps = MemorySteps()
     transcript = MemoryTranscript()
-    tools = DemoTools()
+    tools = DemoTools(session=session_on(steps))
     agent = tool_calling_agent(
         tools,
         read_customer_call(),
@@ -458,7 +472,7 @@ async def test_pre_tool_event_fork_reuses_the_pending_call_result_in_the_child_r
 async def test_post_tool_event_fork_reuses_the_result_without_reexecuting_the_effect():
     steps = MemorySteps()
     transcript = MemoryTranscript()
-    tools = DemoTools()
+    tools = DemoTools(session=session_on(steps))
     agent = tool_calling_agent(
         tools,
         read_customer_call(),
@@ -513,7 +527,7 @@ async def test_post_tool_event_fork_reuses_the_result_without_reexecuting_the_ef
 async def test_parallel_tool_checkpoints_are_stabilized_by_call_id():
     steps = MemorySteps()
     transcript = MemoryTranscript()
-    tools = DemoTools()
+    tools = DemoTools(session=session_on(steps))
     calls = AIMessage(
         content="",
         tool_calls=[

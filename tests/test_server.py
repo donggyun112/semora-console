@@ -19,7 +19,7 @@ from semora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 from console import server
 from console.provider import model_name
 from console.server import (
-    _payment_batch,
+    _session_id,
     _crash_point,
     _is_aborted,
     _project_event,
@@ -341,7 +341,6 @@ def test_run_uses_agent_definition(monkeypatch):
         assert agent.description
         assert agent.model is model
         assert isinstance(agent.tools, server.DemoTools)
-        assert agent.tools.payment_batch_id == "note"
         assert agent.system_prompt == server.SYSTEM_PROMPT
         command = captured["command"]
         assert isinstance(command, Prompt)
@@ -414,11 +413,11 @@ def test_rerun_reuses_the_scenario_payment_ledger(monkeypatch):
     first_results = _charge_result_frames(first.text)
     second_results = _charge_result_frames(second.text)
     assert first_results[0]["event"]["result"]["idempotency"] == {
-        "key": "parallel:c-001",
+        "key": "charge:c-001",
         "replayed": False,
     }
     assert second_results[0]["event"]["result"]["idempotency"] == {
-        "key": "parallel:c-001",
+        "key": "charge:c-001",
         "replayed": True,
     }
     assert second_results[0]["event"]["result"]["execution"]["replayed"] is False
@@ -1483,35 +1482,38 @@ def test_steering_a_parked_run_adds_a_note_without_taking_the_decision(monkeypat
 
 
 def test_two_visitors_do_not_replay_each_others_charges():
-    """The payment ledger is shared by batch, and the batch used to be the scenario.
+    """Effects are steps of a session, and the session is whoever is driving.
 
-    On a link two people can open at once that puts everyone in one ledger: the first
-    charges and the rest watch a replay of it. Scoping the batch to whoever is driving
-    keeps the rerun-reuses-the-record behaviour without handing it to strangers.
+    On a link two people can open at once, one session would mean the first visitor
+    charges and the rest watch a replay of it.
     """
-    assert _payment_batch("donggyun", "charge") == "donggyun:charge"
-    assert _payment_batch("Dong Gyun!", "charge") == "donggyun:charge", "sanitised"
-    assert _payment_batch("", "charge") == "charge", "unnamed shares, as before"
-    assert _payment_batch("   ", "charge") == "charge"
-    assert _payment_batch("a" * 80, "charge") == f"{'a' * 24}:charge", "bounded"
-    assert _payment_batch("alice", "charge") != _payment_batch("bob", "charge")
+    assert _session_id("donggyun", "charge") == "session:donggyun:charge"
+    assert _session_id("Dong Gyun!", "charge") == "session:donggyun:charge", "sanitised"
+    assert _session_id("", "charge") == "session:charge", "unnamed share one session"
+    assert _session_id("   ", "charge") == "session:charge"
+    assert _session_id("a" * 80, "charge") == f"session:{'a' * 24}:charge", "bounded"
+    assert _session_id("alice", "charge") != _session_id("bob", "charge")
 
 
 @pytest.mark.asyncio
 async def test_a_named_run_keeps_its_ledger_across_a_restart():
-    """A resumed run has to land in the ledger it started in, or the charge it already
-    made is invisible to it and goes out twice."""
+    """A resumed run has to rejoin the session its effects are steps of, or the charge
+    it already made is invisible to it and goes out twice."""
     from console.store import make_store
 
     server._store, server._transcript, _ = await make_store()
     server._sessions["run-named"] = {
-        "units": [], "scenario_id": "charge", "payment_batch": "alice:charge",
+        "units": [], "scenario_id": "charge", "session_id": "session:alice:charge",
         "conversation_id": "conv-x", "aborted": False, "terminal": False,
     }
     try:
         await server._remember_session("run-named", server._sessions["run-named"])
         server._sessions.clear()
         rehydrated = await server._session("run-named")
-        assert rehydrated["agent"].tools.payment_batch_id == "alice:charge"
+        # The rebuilt tools rejoin the session their effects are steps of.
+        recorded = await rehydrated["agent"].tools.execute(
+            "charge_card", "after-restart", {"customer_id": "c-001", "amount": "49"}
+        )
+        assert recorded["idempotency"]["key"] == "charge:c-001"
     finally:
         server._sessions.pop("run-named", None)
