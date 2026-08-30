@@ -15,8 +15,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from nexora import Continue, MemorySteps
-from nexora_store import MemoryTranscript
+from semora import Continue, MemorySteps
+from semora_store import MemoryTranscript
 
 
 class SimulatedWorkerCrash(RuntimeError):
@@ -117,7 +117,7 @@ async def make_store() -> tuple[Any, Any, Any]:
     if not url:
         return FaultInjectingSteps(MemorySteps()), MemoryTranscript(), None
 
-    from nexora_store_pg import (
+    from semora_store_pg import (
         SCHEMA,
         TRANSCRIPT_SCHEMA,
         PostgresSteps,

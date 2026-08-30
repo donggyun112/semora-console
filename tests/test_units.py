@@ -2,8 +2,8 @@ import json
 
 import pytest
 from langchain_core.messages import HumanMessage
-from nexora import Continue, Deny, Halt, PendingInput, Proceed, Suspend
-from nexora.controls import Ctx
+from semora import Continue, Deny, Halt, PendingInput, Proceed, Suspend
+from semora.controls import Ctx
 
 from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval
 from console.units import compose_controls
@@ -82,7 +82,7 @@ async def test_injection_guard_wraps_prose_without_dropping_it():
 @pytest.mark.asyncio
 async def test_gate_crash_runs_before_approval_can_park():
     """Worker death at pre_tool_use is not a Suspend — nothing is parked yet."""
-    from nexora import MemorySteps
+    from semora import MemorySteps
 
     store = FaultInjectingSteps(MemorySteps())
     store.arm("r1", at="gate")

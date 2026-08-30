@@ -1,8 +1,8 @@
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
-from nexora import AgentRuntime, MemorySteps
-from nexora.orchestrator import AgentSuspended, Orchestrator
-from nexora_store import MemoryTranscript
+from semora import AgentRuntime, MemorySteps
+from semora.orchestrator import AgentSuspended, Orchestrator
+from semora_store import MemoryTranscript
 
 from console.provider import DEFAULT_MODEL, openrouter_model
 from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval, make_store
@@ -69,7 +69,7 @@ async def test_gate_arm_does_not_crash_on_commit():
 @pytest.mark.asyncio
 async def test_gate_hook_fires_once_then_continues():
     """consume_gate is one-shot so recover can re-run pre_tool_use."""
-    from nexora import Continue
+    from semora import Continue
 
     store = FaultInjectingSteps(MemorySteps())
     store.arm("r1", at="gate")

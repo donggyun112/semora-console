@@ -30,7 +30,7 @@ services:
       context: .
       dockerfile: Dockerfile
       additional_contexts:
-        nexora: ../nexora-python
+        semora: ../semora
     environment: &console-env
       DATABASE_URL: postgresql://console:console@db:5432/console
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}

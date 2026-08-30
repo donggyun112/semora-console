@@ -1,8 +1,8 @@
-# The console resolves nexora by path from the neighbouring checkout, so that checkout
+# The console resolves semora by path from the neighbouring checkout, so that checkout
 # arrives as a named build context rather than by widening this one to the parent
 # directory. compose.yaml wires it; by hand it is:
 #
-#     docker build --build-context nexora=../nexora-python -t nexora-console .
+#     docker build --build-context semora=../semora -t nexora-console .
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -12,9 +12,9 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /workspace
 
 # The path dependencies have to be on disk before uv reads the lock file. Their layout
-# has to match `[tool.uv.sources]` in the console's pyproject: ../nexora-python/packages.
-COPY --from=nexora pyproject.toml uv.lock ./nexora-python/
-COPY --from=nexora packages ./nexora-python/packages
+# has to match `[tool.uv.sources]` in the console's pyproject: ../semora/packages.
+COPY --from=semora pyproject.toml uv.lock ./semora/
+COPY --from=semora packages ./semora/packages
 
 WORKDIR /workspace/nexora-console
 

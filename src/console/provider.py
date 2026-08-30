@@ -1,6 +1,6 @@
 """OpenRouter chat model.
 
-The DSML repair this file used to carry now lives in ``nexora_llm``, where the provider
+The DSML repair this file used to carry now lives in ``semora_llm``, where the provider
 client belongs. One implementation, and the console stops shipping its own.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from nexora_llm import ChatModel, openrouter
+from semora_llm import ChatModel, openrouter
 
 DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest"
 

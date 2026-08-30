@@ -10,7 +10,7 @@ help:  ## List the targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
 		| awk -F':.*?## ' '{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-install:  ## Sync the venv, nexora included, from the lock file
+install:  ## Sync the venv, semora included, from the lock file
 	uv sync
 
 test: test-py test-js  ## Everything that runs without a server

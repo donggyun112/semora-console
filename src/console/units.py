@@ -1,6 +1,6 @@
 """Control-plane units you compose at runtime — the substance of this demo.
 
-nexora's control plane is seven lifecycle hooks, and every hook composes the same way:
+semora's control plane is seven lifecycle hooks, and every hook composes the same way:
 a variadic wrapper (Permissions, Journal, FinishPolicy, …) folds many stages into one.
 A unit here declares which hook it attaches to and brings one function with that hook's
 signature. ``compose_controls`` groups the selected units by hook and wraps each group
@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage
-from nexora import (
+from semora import (
     Continue,
     ControlPlane,
     Deny,
@@ -33,8 +33,8 @@ from nexora import (
     ResumeInput,
     Suspend,
 )
-from nexora.contracts import ToolCall
-from nexora.controls import (
+from semora.contracts import ToolCall
+from semora.controls import (
     Ctx,
     FinishPolicy,
     Ingress,

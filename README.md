@@ -1,7 +1,7 @@
 # Nexora Control Plane Console
 
 **You are the operator.** An AI agent holds real, effectful tools — it can charge a card,
-send an email, write to a store. Compose [nexora](../nexora-python)'s control plane from
+send an email, write to a store. Compose [semora](../semora)'s control plane from
 **units across different lifecycle hooks**, and watch the *same task* behave differently by
 policy alone.
 
@@ -12,7 +12,7 @@ on_inputs → Ingress   pre_tool_use → Permissions   after_tool_call → Journ
 before_model → Steering   before_finish → FinishPolicy   on_suspend → Suspending
 ```
 
-nexora's control plane is seven hooks, and every one composes variadically. A **unit** here
+semora's control plane is seven hooks, and every one composes variadically. A **unit** here
 declares the hook it attaches to and one function with that hook's signature;
 `compose_controls` groups the selected units by hook and assembles a single `ControlPlane`.
 Each run stores one `Agent` definition that owns its model, tools, and system prompt.
@@ -101,7 +101,7 @@ uv run pytest                    # composition + streaming-assembly tests
 interrupt도 마찬가지. 노드를 통째로 다시 타니 승인 앞에 있던 코드가 또 돌고, 과거로
 되감으면 사람에게 같은 질문을 다시 묻는다.
 
-nexora는 툴을 부르기 전에 "부르겠다"를 쓰고, 부른 뒤에 "이렇게 됐다"를 쓴다. 키는 툴 콜
+semora는 툴을 부르기 전에 "부르겠다"를 쓰고, 부른 뒤에 "이렇게 됐다"를 쓴다. 키는 툴 콜
 id다. 그래서 스텝 상태가 둘이 아니라 셋이 된다.
 
 | | |
@@ -134,8 +134,8 @@ make up          # → http://localhost:8850
 make             # every other target
 ```
 
-`nexora` is resolved by path from the neighbouring checkout, so it arrives as a named
-build context (`additional_contexts: nexora: ../nexora-python`) rather than by widening
+`semora` is resolved by path from the neighbouring checkout, so it arrives as a named
+build context (`additional_contexts: semora: ../semora`) rather than by widening
 the build context to the parent directory. The ledger lives in a named volume, which is
 why `restart` and even `down` keep a parked run and `down -v` is the one that throws it
 away.
@@ -148,7 +148,7 @@ make two-workers      # worker-a :8850, worker-b :8851
 
 They take separate lease owners on purpose. Workers sharing a name renew each other's
 lease instead of contending, which would make the run look free while somebody else is
-executing it. While one is mid-round, `select run_id, owner, token from nexora_run_lease`
+executing it. While one is mid-round, `select run_id, owner, token from semora_run_lease`
 names the holder, and the other answers a request for that run with **contended** rather
 than running it a second time.
 

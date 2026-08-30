@@ -11,10 +11,10 @@ from langchain_core.language_models.fake_chat_models import (
 )
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
-from nexora import Agent
-from nexora.contracts.events import EventType
-from nexora.dispatch import Answer, Prompt, Recover
-from nexora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
+from semora import Agent
+from semora.contracts.events import EventType
+from semora.dispatch import Answer, Prompt, Recover
+from semora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 
 from console import server
 from console.provider import model_name

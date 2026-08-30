@@ -30,12 +30,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
-from nexora import Agent, AgentRuntime, new_run_id
-from nexora.contracts.types import PendingInput
-from nexora.dispatch import Answer, Prompt, Recover
-from nexora.orchestrator import AgentSuspended, Orchestrator
-from nexora_store import Contended, Fenced, Indeterminate
-from nexora_fork import read_event_checkpoint
+from semora import Agent, AgentRuntime, new_run_id
+from semora.contracts.types import PendingInput
+from semora.dispatch import Answer, Prompt, Recover
+from semora.orchestrator import AgentSuspended, Orchestrator
+from semora_store import Contended, Fenced, Indeterminate
+from semora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
 from .dormancy import dormant_reason
@@ -265,7 +265,7 @@ def _project_event(
 
     Holding the request until the result made the UI look frozen after ``inject user_prompt``:
     the model was already emitting a tool_call, but the console swallowed it until execution
-    finished. nexora-ui shows REQUESTED at once; this matches that.
+    finished. semora-ui shows REQUESTED at once; this matches that.
     """
     kind = event.get("type")
     if kind == "tool_call":

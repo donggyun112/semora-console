@@ -22,9 +22,9 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_suspend_survives_restart_and_runs_once():
-    from nexora import Agent, AgentRuntime
-    from nexora.dispatch import Answer, Prompt
-    from nexora.orchestrator import AgentSuspended
+    from semora import Agent, AgentRuntime
+    from semora.dispatch import Answer, Prompt
+    from semora.orchestrator import AgentSuspended
 
     from console.provider import openrouter_model
     from console.scenarios import SYSTEM_PROMPT

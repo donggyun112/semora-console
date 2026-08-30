@@ -6,9 +6,9 @@ from langchain_core.language_models.fake_chat_models import (
     FakeMessagesListChatModel,
 )
 from langchain_core.messages import AIMessage
-from nexora import Agent, AgentRuntime, MemorySteps
-from nexora_fork import read_event_checkpoint
-from nexora_store import MemoryTranscript
+from semora import Agent, AgentRuntime, MemorySteps
+from semora_fork import read_event_checkpoint
+from semora_store import MemoryTranscript
 
 from console.fork_demo import (
     EventCheckpointProjector,

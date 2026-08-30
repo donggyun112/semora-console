@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from nexora.transcript import active_branch
-from nexora_fork import (
+from semora.transcript import active_branch
+from semora_fork import (
     EventCheckpoint,
     ForkCoordinate,
     fork_event,
