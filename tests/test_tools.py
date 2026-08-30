@@ -121,6 +121,27 @@ async def test_the_same_customer_at_a_different_amount_is_refused():
 
 
 @pytest.mark.asyncio
+async def test_the_model_dressing_the_amount_differently_is_the_same_charge():
+    """The amount comes from an LLM, which writes 49, "49.00" and "$49" for one charge.
+
+    Comparing what it typed rather than what it meant let a single formatting change
+    lock a customer out of ever being charged again in that session.
+    """
+    log = MemorySteps()
+    tools = DemoTools(session=session_on(log, "session:money"))
+    await tools.execute("charge_card", "c1", {"customer_id": "c-001", "amount": "$49"})
+
+    for written in ("49", "49.00", "USD 49"):
+        again = await tools.execute(
+            "charge_card", f"c-{written}", {"customer_id": "c-001", "amount": written}
+        )
+        assert again["idempotency"]["replayed"] is True, written
+
+    changed = await tools.execute("charge_card", "c9", {"customer_id": "c-001", "amount": "51"})
+    assert changed["code"] == "payment_record_conflict", "a real difference still refuses"
+
+
+@pytest.mark.asyncio
 async def test_a_worker_that_died_mid_charge_leaves_the_step_undecided():
     """The ledger holds an effect it cannot vouch for, and says so instead of repeating it."""
     log = MemorySteps()

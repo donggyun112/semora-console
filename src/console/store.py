@@ -3,11 +3,18 @@
 Suspension, recovery, and exactly-once effects survive a process restart only when both
 the step ledger and transcript are persistent, so durable deployments set DATABASE_URL.
 
-``FaultInjectingSteps`` wraps whichever ledger is in use so crash scenarios can kill
-the worker at one of three seams: after ``finish_effect`` (the effect committed), at the
-first ``pre_tool_use`` (before the park), or after the tool ran and before its result was
-recorded. Only the last leaves a step ``running`` with the effect already out in the
-world, which is the state nobody can decide from the ledger alone.
+``FaultInjectingSteps`` wraps whichever ledger is in use so a scenario can kill the
+worker at one of three named seams:
+
+``gate``    at the first ``pre_tool_use``, before a suspension is parked. Nothing ran.
+``commit``  after a tool result is recorded. The effect happened and is known to have.
+``effect``  after a charge left and before its record lands, so the step stays running
+            with the money already gone — the one state the ledger cannot settle.
+
+``effect`` watches the session that owns the charge rather than the agent run that asked
+for it. Aiming it at the agent's call step used to leave the charge safely recorded in
+the session while the console announced nobody could tell, which was a demo lying about
+its own ledger.
 """
 
 from __future__ import annotations
@@ -16,11 +23,17 @@ import os
 from typing import Any
 
 from semora import Continue, MemorySteps
+from semora.contracts.types import ControlSignal
 from semora_store import MemoryTranscript
 
 
-class SimulatedWorkerCrash(RuntimeError):
-    """The worker vanished; the ledger is left as the last committed write."""
+class SimulatedWorkerCrash(ControlSignal):
+    """The worker vanished; the ledger is left as the last committed write.
+
+    A ``ControlSignal``, so the tool boundary lets it through. A worker dying is not the
+    tool reporting failure — treated as one, the round would carry on with an error
+    result and the run would never look interrupted at all.
+    """
 
     def __init__(self, run_id: str, step: str) -> None:
         super().__init__(f"워커 장애 {step}")
@@ -28,36 +41,36 @@ class SimulatedWorkerCrash(RuntimeError):
         self.step = step
 
 
+# Keys the runtime writes for its own bookkeeping. A crash on one of these would be a
+# crash in the machinery rather than in an effect, which is not what any scenario means.
+_BOOKKEEPING = ("agent:", "signal:", "suspend:", "after:")
+
+
 class FaultInjectingSteps:
-    """Delegate every ledger call; optionally crash after the next tool commit."""
+    """Delegate every ledger call, and fire one armed seam once."""
 
     def __init__(self, inner: Any) -> None:
         self._inner = inner
-        self._armed: set[str] = set()
-        self._gate: set[str] = set()
-        self._effect: set[str] = set()
+        self._armed: dict[str, str] = {}
+        """run id → the seam armed for it. One entry, one crash, then disarmed."""
 
-    def arm(self, run_id: str, *, at: str = "commit") -> None:
-        self._armed.add(run_id)
-        self._gate.discard(run_id)
-        self._effect.discard(run_id)
-        if at == "gate":
-            self._gate.add(run_id)
-        elif at == "effect":
-            self._effect.add(run_id)
+    def arm(self, watched_id: str, *, at: str = "commit") -> None:
+        """Arm one seam. ``effect`` watches a session id, the others an agent run."""
+        self._armed[watched_id] = at
 
-    def disarm(self, run_id: str) -> None:
-        self._armed.discard(run_id)
-        self._gate.discard(run_id)
-        self._effect.discard(run_id)
+    def disarm(self, watched_id: str) -> None:
+        self._armed.pop(watched_id, None)
+
+    def _fires(self, watched_id: str, seam: str) -> bool:
+        """True once, then never again for that id."""
+        if self._armed.get(watched_id) != seam:
+            return False
+        del self._armed[watched_id]
+        return True
 
     def consume_gate(self, run_id: str) -> bool:
         """True once: crash at ``pre_tool_use`` before any park is written."""
-        if run_id not in self._gate or run_id not in self._armed:
-            return False
-        self._armed.discard(run_id)
-        self._gate.discard(run_id)
-        return True
+        return self._fires(run_id, "gate")
 
     def for_execution(self, context: Any) -> FaultInjectingSteps:
         """Keep the crash hook when the runtime scopes the ledger.
@@ -70,31 +83,20 @@ class FaultInjectingSteps:
             return self
         child = FaultInjectingSteps(inner)
         child._armed = self._armed
-        child._gate = self._gate
-        child._effect = self._effect
         return child
 
     async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
-        if (
-            run_id in self._armed
-            and run_id in self._effect
-            and not str(key).startswith(("agent:", "signal:", "suspend:", "after:"))
-        ):
-            # Before delegating, so the tool has run and its result never lands. The step
-            # stays running with the effect already out — the one case the ledger cannot
-            # settle, and the caller has to.
-            self._armed.discard(run_id)
-            self._effect.discard(run_id)
-            raise SimulatedWorkerCrash(run_id, str(key))
+        step = str(key)
+        if step.startswith(_BOOKKEEPING):
+            await self._inner.finish_effect(run_id, key, value, token)
+            return
+        # Before delegating: the charge left and its record never lands.
+        if step.startswith("charge:") and self._fires(run_id, "effect"):
+            raise SimulatedWorkerCrash(run_id, step)
         await self._inner.finish_effect(run_id, key, value, token)
-        if (
-            run_id in self._armed
-            and run_id not in self._gate
-            and run_id not in self._effect
-            and not str(key).startswith(("agent:", "signal:", "suspend:"))
-        ):
-            self._armed.discard(run_id)
-            raise SimulatedWorkerCrash(run_id, str(key))
+        # After delegating: the effect is recorded, and recovery has nothing to decide.
+        if self._fires(run_id, "commit"):
+            raise SimulatedWorkerCrash(run_id, step)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

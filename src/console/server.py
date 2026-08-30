@@ -616,7 +616,9 @@ async def run(request: RunRequest) -> StreamingResponse:
     }
     await _remember_session(run_id, _sessions[run_id])
     if crash_at is not None:
-        _store.arm(run_id, at=crash_at)
+        # The effect seam watches the session, because that is where a charge is a step.
+        # The others watch the agent run they interrupt.
+        _store.arm(session_id if crash_at == "effect" else run_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         outcome = await runtime.dispatch(
