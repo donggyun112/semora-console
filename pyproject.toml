@@ -1,5 +1,5 @@
 [project]
-name = "nexora-console"
+name = "semora-console"
 version = "0.1.0"
 description = "Operator console showcasing semora's composable control plane — compose policy units across lifecycle hooks and watch the same task transform."
 readme = "README.md"

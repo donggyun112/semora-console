@@ -6,7 +6,7 @@
 #     open http://localhost:8850
 #
 # OPENROUTER_API_KEY comes from .env beside this file, the same one uv run uses.
-name: nexora-console
+name: semora-console
 
 services:
   db:

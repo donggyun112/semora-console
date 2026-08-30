@@ -19,6 +19,7 @@ from semora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 from console import server
 from console.provider import model_name
 from console.server import (
+    _payment_batch,
     _crash_point,
     _is_aborted,
     _project_event,
@@ -1479,3 +1480,38 @@ def test_steering_a_parked_run_adds_a_note_without_taking_the_decision(monkeypat
     assert charged, "the steer must not have cancelled the call that was waiting"
     admitted = [f for f in after if f["kind"] == "steer"]
     assert [(f["source"], f["phase"]) for f in admitted] == [("user_steer", "admitted")]
+
+
+def test_two_visitors_do_not_replay_each_others_charges():
+    """The payment ledger is shared by batch, and the batch used to be the scenario.
+
+    On a link two people can open at once that puts everyone in one ledger: the first
+    charges and the rest watch a replay of it. Scoping the batch to whoever is driving
+    keeps the rerun-reuses-the-record behaviour without handing it to strangers.
+    """
+    assert _payment_batch("donggyun", "charge") == "donggyun:charge"
+    assert _payment_batch("Dong Gyun!", "charge") == "donggyun:charge", "sanitised"
+    assert _payment_batch("", "charge") == "charge", "unnamed shares, as before"
+    assert _payment_batch("   ", "charge") == "charge"
+    assert _payment_batch("a" * 80, "charge") == f"{'a' * 24}:charge", "bounded"
+    assert _payment_batch("alice", "charge") != _payment_batch("bob", "charge")
+
+
+@pytest.mark.asyncio
+async def test_a_named_run_keeps_its_ledger_across_a_restart():
+    """A resumed run has to land in the ledger it started in, or the charge it already
+    made is invisible to it and goes out twice."""
+    from console.store import make_store
+
+    server._store, server._transcript, _ = await make_store()
+    server._sessions["run-named"] = {
+        "units": [], "scenario_id": "charge", "payment_batch": "alice:charge",
+        "conversation_id": "conv-x", "aborted": False, "terminal": False,
+    }
+    try:
+        await server._remember_session("run-named", server._sessions["run-named"])
+        server._sessions.clear()
+        rehydrated = await server._session("run-named")
+        assert rehydrated["agent"].tools.payment_batch_id == "alice:charge"
+    finally:
+        server._sessions.pop("run-named", None)

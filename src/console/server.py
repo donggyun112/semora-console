@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import socket
 import uuid
 from collections.abc import AsyncIterator
@@ -85,7 +86,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await _closer()
 
 
-app = FastAPI(title="Nexora Control Plane Console", lifespan=lifespan)
+app = FastAPI(title="Semora Control Plane Console", lifespan=lifespan)
 
 
 def _new_agent(payment_batch_id: str) -> Agent:
@@ -113,6 +114,9 @@ class RunRequest(BaseModel):
 
     scenario_id: str
     units: list[str] = []
+    operator: str = ""
+    """Who is driving, so their payment records are their own. Anything outside
+    [a-z0-9_-] is dropped; empty means the ledger is shared, as it was."""
 
 
 class ResumeRequest(BaseModel):
@@ -139,6 +143,21 @@ class SteerRequest(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
 
+_OPERATOR = re.compile(r"[^a-z0-9_-]")
+
+
+def _payment_batch(operator: str, scenario_id: str) -> str:
+    """Scope the payment ledger to whoever is driving.
+
+    Payment records are shared by batch so a rerun can reuse them, and the batch used to
+    be the scenario alone. On a link two people can open at once that put every visitor
+    in the same ledger: the first one charges, and everyone after watches a replay of it
+    instead of their own run.
+    """
+    who = _OPERATOR.sub("", operator.strip().lower())[:24]
+    return f"{who}:{scenario_id}" if who else scenario_id
+
+
 class RecoverRequest(BaseModel):
     """Continue a run after the worker died mid-round."""
 
@@ -159,7 +178,7 @@ _SESSION_KEY = "console:session"
 # What a later process needs to continue a run. `agent` is rebuilt from `scenario_id`,
 # and the projector's event bookkeeping is per-process, so neither is stored.
 _DURABLE_SESSION = (
-    "units", "scenario_id", "conversation_id", "origin_id", "source_run_id",
+    "units", "scenario_id", "payment_batch", "conversation_id", "origin_id", "source_run_id",
     "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
     "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
 )
@@ -188,7 +207,11 @@ async def _session(run_id: str) -> dict[str, Any]:
     stored = dict(record.value)
     session = {
         **stored,
-        "agent": _new_agent(str(stored.get("scenario_id") or "local")),
+        # The batch, not the scenario: a resumed run must land in the same ledger it
+        # started in, or the charge it already made is invisible to it.
+        "agent": _new_agent(
+            str(stored.get("payment_batch") or stored.get("scenario_id") or "local")
+        ),
         "aborted": False,
         "event_ids": set(),
         "forkable_events": {},
@@ -555,11 +578,13 @@ async def run(request: RunRequest) -> StreamingResponse:
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
-    agent = _new_agent(request.scenario_id)
+    batch = _payment_batch(request.operator, request.scenario_id)
+    agent = _new_agent(batch)
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     origin_runs = {prompt_id: run_id}
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
+        "payment_batch": batch,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_run_id": run_id,

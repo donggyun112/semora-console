@@ -1402,7 +1402,7 @@ button.primary:hover:not(:disabled) {
    screen already is, so it reads as a position rather than a separate control. */
 .guide {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   margin: 18px 0 0;
   padding: 0;
@@ -1434,6 +1434,13 @@ button.primary:hover:not(:disabled) {
   line-height: 1.45;
 }
 
+.guide-step .guide-then {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--amber);
+}
+
 .guide-step.is-current button {
   border-color: var(--blue);
   box-shadow: inset 2px 0 0 var(--blue);
@@ -1444,4 +1451,96 @@ button.primary:hover:not(:disabled) {
   .guide {
     grid-template-columns: 1fr;
   }
+}
+
+/* The argument the demo is making, in the two numbers that make it. Folded away by
+   default: someone who already believes it does not need to read it again. */
+.why {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: left;
+}
+
+.why summary {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.why p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.why table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.why th,
+.why td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+.why thead th {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.why tbody th {
+  color: var(--text);
+  font-weight: 560;
+}
+
+.why tbody tr:first-child td:last-child code {
+  color: var(--red);
+}
+
+.why tbody tr:last-child td:last-child code {
+  color: var(--green);
+}
+
+.why-source {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Who is driving. Not a login — it only decides whose payment records are whose, so
+   two people on the same link stop replaying each other's charges. */
+.operator {
+  display: grid;
+  gap: 6px;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.operator span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.operator input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.operator input:disabled {
+  opacity: 0.55;
 }

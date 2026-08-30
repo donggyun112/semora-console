@@ -90,9 +90,10 @@ function lastPendingTool(tools) {
   return [...tools].reverse().find((tool) => tool.status === "running");
 }
 
-// The demo offers eighty combinations and no order to read them in. These three are
-// the order: what the agent does unguarded, what one gate changes, and what survives
-// the worker dying. Everything else is worth exploring only after those.
+// The demo offers eighty combinations and no order to read them in. These are the
+// order, and each one only makes sense after the one before it: what the agent does
+// unguarded, what one gate changes, what a person deciding costs, what survives the
+// worker dying, what nobody can decide at all, and what the record keeps regardless.
 export const GUIDE = Object.freeze([
   Object.freeze({
     scenarioId: "charge", unitNames: Object.freeze([]),
@@ -103,10 +104,25 @@ export const GUIDE = Object.freeze([
     label: "승인 게이트", teaches: "루프가 멈추고 사람을 기다린다",
   }),
   Object.freeze({
+    scenarioId: "leak", unitNames: Object.freeze(["approval"]),
+    label: "승인 후 재검증", teaches: "멈춘 채 dlp_block 을 켜고 승인하면 거부된다",
+    then: "정책에서 dlp_block 을 켠 다음 승인을 누르세요.",
+  }),
+  Object.freeze({
     scenarioId: "crash", unitNames: Object.freeze(["approval"]),
     label: "대기 중 장애", teaches: "복구해도 청구는 한 번",
   }),
+  Object.freeze({
+    scenarioId: "unknown_effect", unitNames: Object.freeze([]),
+    label: "청구 도중 장애", teaches: "나갔는지 아무도 모른다",
+  }),
+  Object.freeze({
+    scenarioId: "fork_masking", unitNames: Object.freeze(["pii_mask"]),
+    label: "마스킹 후 분기", teaches: "정책을 끄고 되감으면 원본이 돌아온다",
+    then: "끝난 뒤 pii_mask 를 끄고 입력에서 분기해 보세요.",
+  }),
 ]);
+
 
 // Both gates are durable tool boundaries you can branch from: the one before the call
 // and the one after a person answered. They carry different labels so the trace does not
@@ -531,6 +547,7 @@ export function createConsole({
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
+    "operator",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
@@ -554,6 +571,26 @@ export function createConsole({
     selectedVersionRunId: null,
     chatToolNodes: new Map(),
   };
+
+  const OPERATOR_KEY = "semora-console:operator";
+
+  function readOperator() {
+    // localStorage is per browser, which is exactly the scope wanted: two people on the
+    // same link get their own payment records without anyone signing in.
+    try {
+      return globalThis.localStorage?.getItem(OPERATOR_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  function writeOperator(value) {
+    try {
+      globalThis.localStorage?.setItem(OPERATOR_KEY, value);
+    } catch {
+      // A browser that refuses storage still runs; the ledger is just shared again.
+    }
+  }
 
   const scenarioById = (id) => state.scenarios.find((item) => item.id === id);
   const visibleConfig = () =>
@@ -618,6 +655,14 @@ export function createConsole({
       const teaches = documentRef.createElement("small");
       teaches.textContent = scene.teaches;
       button.append(label, teaches);
+      if (scene.then && index === at) {
+        // Some scenes only land if the operator does something once the run parks, and
+        // a scene nobody knows how to finish teaches nothing.
+        const then = documentRef.createElement("small");
+        then.className = "guide-then";
+        then.textContent = scene.then;
+        button.append(then);
+      }
       button.addEventListener("click", () => {
         if (!canEditDraft(state.run)) return;
         state.run = updateDraft(state.run, {
@@ -639,6 +684,7 @@ export function createConsole({
     setText(dom["launch-title"], copy.title);
     setText(dom["launch-prompt"], copy.prompt);
     renderChips(dom["launch-policies"], state.run.draft.unitNames);
+    dom.operator.disabled = !canStartRun(state.run);
     dom.run.disabled = !canStartRun(state.run);
     renderGuide();
     renderScenarioMenu();
@@ -1076,6 +1122,7 @@ export function createConsole({
     await stream("/api/run", {
       scenario_id: state.run.active.scenarioId,
       units: [...state.run.active.unitNames],
+      operator: dom.operator.value,
     });
   }
 
@@ -1197,6 +1244,8 @@ export function createConsole({
       setHidden(dom["scenario-menu"], !willOpen);
       dom["scenario-trigger"].setAttribute("aria-expanded", String(willOpen));
     });
+    dom.operator.value = readOperator();
+    dom.operator.addEventListener("input", () => writeOperator(dom.operator.value));
     dom.run.addEventListener("click", () => void runActive());
     dom.abort.addEventListener("click", () => void abort());
     dom.approve.addEventListener("click", () => void decide(true));
@@ -1249,6 +1298,6 @@ export function createConsole({
 
 if (typeof document !== "undefined" && typeof fetch !== "undefined") {
   const consoleApp = createConsole({ document, fetch: globalThis.fetch.bind(globalThis) });
-  globalThis.__NEXORA_CONSOLE__ = consoleApp;
+  globalThis.__SEMORA_CONSOLE__ = consoleApp;
   void consoleApp.boot();
 }

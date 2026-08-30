@@ -2,7 +2,7 @@
 # arrives as a named build context rather than by widening this one to the parent
 # directory. compose.yaml wires it; by hand it is:
 #
-#     docker build --build-context semora=../semora -t nexora-console .
+#     docker build --build-context semora=../semora -t semora-console .
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ENV UV_COMPILE_BYTECODE=1 \

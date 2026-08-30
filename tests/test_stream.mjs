@@ -1464,11 +1464,14 @@ assert.equal(isResumeGate({ type: "pre_tool_use", payload: {} }), false);
 
 // The three scenes are an order to read the demo in: unguarded, gated, and gated
 // through a worker death.
-assert.deepEqual(GUIDE.map((scene) => [scene.scenarioId, [...scene.unitNames]]), [
-  ["charge", []],
-  ["charge", ["approval"]],
-  ["crash", ["approval"]],
+assert.deepEqual(GUIDE.map((scene) => scene.scenarioId), [
+  "charge", "charge", "leak", "crash", "unknown_effect", "fork_masking",
 ]);
+assert.deepEqual(
+  GUIDE.filter((scene) => scene.then).map((scene) => scene.scenarioId),
+  ["leak", "fork_masking"],
+  "a scene that needs the operator to act after the run parks says so",
+);
 assert.equal(guideMatch({ scenarioId: "charge", unitNames: [] }), 0);
 assert.equal(guideMatch({ scenarioId: "charge", unitNames: ["approval"] }), 1);
 assert.equal(
@@ -1482,7 +1485,12 @@ assert.equal(
   0,
   "an abandoned run does not march the operator past a scene they never saw",
 );
-assert.equal(nextGuideStep({ scenarioId: "crash", unitNames: ["approval"] }, "completed"), 2);
+assert.equal(nextGuideStep({ scenarioId: "crash", unitNames: ["approval"] }, "completed"), 4);
+assert.equal(
+  nextGuideStep({ scenarioId: "fork_masking", unitNames: ["pii_mask"] }, "completed"),
+  GUIDE.length - 1,
+  "the last scene stays put rather than running off the end",
+);
 assert.equal(nextGuideStep({ scenarioId: "leak", unitNames: [] }, "completed"), -1);
 
 // A step that started and never reported is its own outcome, not a failure row.

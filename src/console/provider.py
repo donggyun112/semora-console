@@ -32,7 +32,7 @@ def openrouter_model(name: str | None = None) -> ChatModel:
     return openrouter(
         name or model_name(),
         api_key=key,
-        title="Nexora Control Plane Console",
+        title="Semora Control Plane Console",
         # A public link should not let one hung request hold a worker for the SDK's
         # ten-minute default.
         timeout=60,

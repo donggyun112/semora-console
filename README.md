@@ -1,4 +1,4 @@
-# Nexora Control Plane Console
+# Semora Control Plane Console
 
 **You are the operator.** An AI agent holds real, effectful tools — it can charge a card,
 send an email, write to a store. Compose [semora](../semora)'s control plane from
@@ -67,7 +67,7 @@ calls `fork_run` without that masker: the conversation head moves from the share
 and the original becomes durable in the fork ledger, transcript, and `CONTEXT_INJECTED` event.
 
 **Stop is a button, not a unit.** While a run is in flight the operator can hit **중단**;
-that trips Nexora's `aborted()` hook (`POST /api/abort`) and cancels the attempt, on any
+that trips Semora's `aborted()` hook (`POST /api/abort`) and cancels the attempt, on any
 scenario and any assembled plane. There is no locked "stop" task.
 
 **The headline beat** — leak scenario, `approval` + `dlp_block` on, no ingest unit:

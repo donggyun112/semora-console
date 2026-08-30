@@ -525,41 +525,6 @@ wheels = [
 ]
 
 [[package]]
-name = "nexora-console"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "fastapi" },
-    { name = "python-dotenv" },
-    { name = "semora", extra = ["fork", "openrouter"] },
-    { name = "semora-llm" },
-    { name = "semora-store-pg" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "python-dotenv", specifier = ">=1" },
-    { name = "semora", extras = ["fork", "openrouter"], editable = "../semora/packages/semora" },
-    { name = "semora-llm", editable = "../semora/packages/semora-llm" },
-    { name = "semora-store-pg", editable = "../semora/packages/semora-store-pg" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-]
-
-[[package]]
 name = "openai"
 version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1053,6 +1018,41 @@ requires-dist = [
     { name = "semora-ui", marker = "extra == 'ui'", editable = "../semora/packages/semora-ui" },
 ]
 provides-extras = ["postgres", "permissions", "ui", "fork", "openai", "anthropic", "google", "xai", "openrouter"]
+
+[[package]]
+name = "semora-console"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "fastapi" },
+    { name = "python-dotenv" },
+    { name = "semora", extra = ["fork", "openrouter"] },
+    { name = "semora-llm" },
+    { name = "semora-store-pg" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "python-dotenv", specifier = ">=1" },
+    { name = "semora", extras = ["fork", "openrouter"], editable = "../semora/packages/semora" },
+    { name = "semora-llm", editable = "../semora/packages/semora-llm" },
+    { name = "semora-store-pg", editable = "../semora/packages/semora-store-pg" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+]
 
 [[package]]
 name = "semora-fork"
