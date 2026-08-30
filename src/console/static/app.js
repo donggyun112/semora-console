@@ -441,7 +441,12 @@ function forkSeam(rows, index) {
   for (let at = 0; at < rows.length; at += 1) {
     const other = rows[at];
     if (!other.forkable) continue;
-    if (other.seam != null ? other.seam === row.seam : other === row) members.push(at);
+    // Seam and name together: a replayed call adds no transcript entry, so its before
+    // and after boundaries restore to one leaf while staying two places to branch from.
+    const same = other.seam != null
+      ? other.seam === row.seam && other.boundary === row.boundary
+      : other === row;
+    if (same) members.push(at);
   }
   return members.length ? members : [index];
 }

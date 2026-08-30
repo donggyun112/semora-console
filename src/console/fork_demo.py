@@ -86,7 +86,7 @@ class EventCheckpointProjector:
             update: dict[str, Any] = {
                 "event_id": event_id,
                 "restore_edge": edge,
-                "seam": leaf_uuid,
+                "seam": f"{self._run_id}:{leaf_uuid}",
                 # What kind of boundary this is, said by the one that decided it. The
                 # console prints a name for each and had been reading row labels to
                 # pick one, which made renaming an event a UI change.
@@ -100,6 +100,21 @@ class EventCheckpointProjector:
                 update["rebuild"] = rebuild
             updates.append(update)
         return updates
+
+    async def _settle_tool(
+        self, call_id: str, leaf_uuid: str | None
+    ) -> list[dict[str, Any]]:
+        """Close the boundary before a call, once, whenever the call actually ends."""
+        before_tool = self._before_tool_events.pop(call_id, [])
+        if not before_tool:
+            return []
+        # The last gate rather than the first: an approved call is gated twice, and
+        # rewinding past the approval discards the operator's decision.
+        gate_event, gate_edge = before_tool[-1]
+        self._rebuild[call_id] = {"event_id": gate_event, "edge": gate_edge}
+        return await self._stabilize(
+            before_tool, leaf_uuid=leaf_uuid, boundary="tool"
+        )
 
     @staticmethod
     def _input_origin(frame: dict[str, Any]) -> str | None:
@@ -126,14 +141,14 @@ class EventCheckpointProjector:
             or payload.get("kind") not in {"tool_result", "resume_result"}
         ):
             return None
-        if payload.get("kind") == "tool_result":
-            value = payload.get("origin_id")
-            return str(value) if value else None
+        # The message names the call it answers. The frame's own origin id agrees on a
+        # fresh call and does not on a replayed one, where it reads
+        # "tool:<call>:result" — enough to lose the boundary the console was building.
         message = payload.get("message") or {}
         data = message.get("data") if isinstance(message, dict) else {}
         if not isinstance(data, dict):
             data = message if isinstance(message, dict) else {}
-        value = data.get("tool_call_id")
+        value = data.get("tool_call_id") or payload.get("origin_id")
         return str(value) if value else None
 
     async def stamp(self, frame: dict[str, Any]) -> dict[str, Any]:
@@ -181,17 +196,7 @@ class EventCheckpointProjector:
             agent_type == "tool_result" or checkpoint_phase == "tool_result"
         )
         if call_id and is_tool_result:
-            before_tool = self._before_tool_events.pop(call_id, [])
-            restore_updates.extend(
-                await self._stabilize(
-                    before_tool, leaf_uuid=current_leaf, boundary="tool"
-                )
-            )
-            if before_tool:
-                # The last gate rather than the first: an approved call is gated twice,
-                # and rewinding past the approval discards the operator's decision.
-                gate_event, gate_edge = before_tool[-1]
-                self._rebuild[call_id] = {"event_id": gate_event, "edge": gate_edge}
+            restore_updates.extend(await self._settle_tool(call_id, current_leaf))
             self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
 
         if call_id and frame_kind == "lifecycle" and frame_type.endswith(
@@ -205,8 +210,16 @@ class EventCheckpointProjector:
             frame_type,
             payload if isinstance(payload, dict) else {},
         )
-        rebuild = self._rebuild.get(tool_result_origin) if tool_result_origin else None
+        rebuild = None
         if tool_result_origin:
+            # A replayed call never emits an agent tool_result, so its boundary is still
+            # open here. The coordinate is the leaf as it stood one frame ago, before
+            # this result joined the transcript — the same leaf a fresh call settles on,
+            # and the one that still holds the model's tool call to run again.
+            restore_updates.extend(
+                await self._settle_tool(tool_result_origin, self._last_leaf)
+            )
+            rebuild = self._rebuild.get(tool_result_origin)
             restore_updates.extend(
                 await self._stabilize(
                     self._after_tool_events.pop(tool_result_origin, []),
@@ -235,9 +248,9 @@ class EventCheckpointProjector:
         restore_edge = "before" if input_fork else "after" if tool_result_fork else None
         seam = None
         if input_fork:
-            seam = f"input:{candidate}"
+            seam = f"{self._run_id}:input:{candidate}"
         elif tool_result_fork:
-            seam = current_leaf
+            seam = f"{self._run_id}:{current_leaf}"
         return {
             **frame,
             "event_id": event_id,

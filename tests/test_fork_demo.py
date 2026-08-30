@@ -651,3 +651,53 @@ async def test_a_saved_result_carries_the_coordinate_that_makes_it_again():
     masked = [item for item in history if "***" in str(getattr(item, "content", ""))]
     assert masked, "the tool boundary ran again, so the new journal had its say"
     assert tools.execution_counts["read-1"] == 1, "and the effect still happened once"
+
+
+def test_a_replayed_result_still_names_the_call_it_answers():
+    """A fork replays the call, and the frame's origin id changes shape when it does.
+
+    Fresh, it is the call id; replayed, it reads "tool:<call>:result". Reading only that
+    left a forked run with no coordinate before its own tool: the boundary the console
+    was assembling never closed, and the trace offered nothing to branch from.
+    """
+    call = EventCheckpointProjector._tool_result_call_id
+    fresh = {"kind": "tool_result", "origin_id": "call-1"}
+    replayed = {
+        "kind": "tool_result",
+        "origin_id": "tool:call-1:result",
+        "message": {"data": {"tool_call_id": "call-1"}},
+    }
+    assert call("lifecycle", "context_injected", fresh) == "call-1"
+    assert call("lifecycle", "context_injected", replayed) == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_a_seam_belongs_to_one_run():
+    """Replaying a call writes no transcript entry, so a child's leaf is its parent's.
+
+    The console groups a boundary's coordinates by seam. Left as the bare leaf, a child
+    row and an inherited parent row grouped together and the branch buttons collapsed
+    onto the wrong one.
+    """
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools(session=session_on(steps))
+    agent = tool_calling_agent(
+        tools, read_customer_call(), AIMessage(content="source finished")
+    )
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+    seams = {
+        update["seam"]
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    } | {frame["seam"] for frame in frames if frame.get("seam")}
+
+    assert seams, "the run has boundaries at all"
+    assert all(seam.startswith("run-source:") for seam in seams)

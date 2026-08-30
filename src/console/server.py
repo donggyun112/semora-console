@@ -303,6 +303,7 @@ def _project_event(
     event: dict[str, Any],
     pending: dict[str, dict[str, Any]],
     projected_denials: set[str] | None = None,
+    announced_rewrites: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Pass tool requests through immediately. A later deny upgrades the same call to blocked.
 
@@ -351,7 +352,11 @@ def _project_event(
                 return [blocked_frame]
             return [unit_frame, blocked_frame]
         frames: list[dict[str, Any]] = []
-        if isinstance(res, dict) and res.get("redacted_by"):
+        rewritten = isinstance(res, dict) and res.get("redacted_by")
+        if rewritten and announced_rewrites is not None and call_id in announced_rewrites:
+            announced_rewrites.discard(call_id)
+            rewritten = False
+        if rewritten:
             unit = res["redacted_by"]
             frames.append(
                 {
@@ -399,6 +404,7 @@ async def _stream(
     fired: dict[str, int] = {}
     pending_calls: dict[str, dict[str, Any]] = {}
     projected_denials: set[str] = set()
+    announced_rewrites: set[str] = set()
     session = _sessions.get(run_id)
     projector = None
     if session is not None and {
@@ -426,7 +432,9 @@ async def _stream(
     def mark(unit: str) -> None:
         fired[unit] = fired.get(unit, 0) + 1
     async def on_event(event: dict[str, Any]) -> None:
-        for frame in _project_event(event, pending_calls, projected_denials):
+        for frame in _project_event(
+            event, pending_calls, projected_denials, announced_rewrites
+        ):
             if frame.get("kind") == "unit":
                 mark(str(frame.get("unit") or "control"))
             await put(frame)
@@ -445,6 +453,28 @@ async def _stream(
                     )
                 await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
+                )
+        if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
+            # A replayed call never re-emits an agent tool_result, so the rewrite that
+            # a journal unit performed here would go unrecorded — the trace showed a
+            # masked answer and no policy that did the masking. Announced at the
+            # boundary instead, and skipped later for calls that do report one.
+            result = payload.get("result")
+            unit = result.get("redacted_by") if isinstance(result, dict) else None
+            call_id = str(payload.get("call_id") or "")
+            if unit:
+                announced_rewrites.add(call_id)
+                mark(str(unit))
+                await put(
+                    {
+                        "kind": "unit",
+                        "unit": str(unit),
+                        "verdict": "block" if unit == "context_firewall" else "rewrite",
+                        "message": result.get("control_note")
+                        or "도구 결과를 다시 썼습니다",
+                        "call_id": call_id,
+                        "name": payload.get("name"),
+                    }
                 )
         if str(event_type).endswith("permission_denied"):
             reason = payload.get("reason") or {}

@@ -1540,6 +1540,26 @@ assert.equal(forkSeamRow(seamRows, 1).eventId, "ev-gate", "the coordinate is the
 assert.equal(forkSeamRow(seamRows, 4).eventId, "ev-ctx");
 assert.equal(forkSeamRow(seamRows, 6), null, "a row that is no coordinate has no seam");
 
+// A replayed call adds no transcript entry, so the boundary before it and the one after
+// it restore to the same leaf while staying two different places to branch from. The
+// projector names both; grouping by the leaf alone merged them into one button.
+const replayedRows = [
+  { kind: "lifecycle", label: "pre_tool_use", forkable: true, forkEdge: "before",
+    seam: "run-child:leaf", boundary: "tool", eventId: "ev-pre" },
+  { kind: "lifecycle", label: "post_tool_use", forkable: true, forkEdge: "after",
+    seam: "run-child:leaf", boundary: "result", eventId: "ev-post" },
+  { kind: "lifecycle", label: "context_injected", forkable: true, forkEdge: "after",
+    seam: "run-child:leaf", boundary: "result", eventId: "ev-ctx" },
+];
+assert.deepEqual(
+  replayedRows.map((row, index) => (isForkRepresentative(replayedRows, index)
+    ? `${index}:${getForkActionLabel(row, 0)}` : null)).filter(Boolean),
+  ["0:툴 실행 전 분기 · 정책 0개", "1:툴 결과에서 분기 · 정책 0개"],
+  "one leaf, two boundaries, two buttons",
+);
+assert.equal(forkSeamRow(replayedRows, 0).eventId, "ev-pre");
+assert.equal(forkSeamRow(replayedRows, 1).eventId, "ev-ctx");
+
 // A result coordinate holds the result a journal unit already rewrote, so changing
 // that unit moves the branch back to the call. The button says so rather than naming a
 // boundary it is leaving.
