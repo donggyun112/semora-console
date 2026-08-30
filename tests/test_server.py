@@ -543,7 +543,7 @@ def test_units_endpoint_shape():
             "context_firewall", "injection_guard", "log_gate",
         }
         points = {u["point"] for u in body["units"]}
-        assert {"pre_tool_use", "after_tool_call", "before_finish"} <= points
+        assert {"pre_tool_use", "post_tool_use", "before_finish"} <= points
         assert "on_inputs" in points
         assert "before_model" not in points
 

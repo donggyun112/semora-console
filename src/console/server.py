@@ -454,28 +454,25 @@ async def _stream(
                 await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
                 )
+        rewrite: dict[str, Any] | None = None
         if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
             # A replayed call never re-emits an agent tool_result, so the rewrite that
             # a journal unit performed here would go unrecorded — the trace showed a
-            # masked answer and no policy that did the masking. Announced at the
-            # boundary instead, and skipped later for calls that do report one.
+            # masked answer and no policy that did the masking. Read off the boundary
+            # instead, and skipped later for calls that do report one.
             result = payload.get("result")
             unit = result.get("redacted_by") if isinstance(result, dict) else None
             call_id = str(payload.get("call_id") or "")
             if unit:
                 announced_rewrites.add(call_id)
-                mark(str(unit))
-                await put(
-                    {
-                        "kind": "unit",
-                        "unit": str(unit),
-                        "verdict": "block" if unit == "context_firewall" else "rewrite",
-                        "message": result.get("control_note")
-                        or "도구 결과를 다시 썼습니다",
-                        "call_id": call_id,
-                        "name": payload.get("name"),
-                    }
-                )
+                rewrite = {
+                    "kind": "unit",
+                    "unit": str(unit),
+                    "verdict": "block" if unit == "context_firewall" else "rewrite",
+                    "message": result.get("control_note") or "도구 결과를 다시 썼습니다",
+                    "call_id": call_id,
+                    "name": payload.get("name"),
+                }
         if str(event_type).endswith("permission_denied"):
             reason = payload.get("reason") or {}
             call_id = str(payload.get("call_id") or "")
@@ -494,6 +491,11 @@ async def _stream(
                     }
                 )
         await put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
+        if rewrite is not None:
+            # After the hook, because the unit runs inside it: pii_mask is an
+            # post_tool_use, so a row above post_tool_use would date it wrong.
+            mark(str(rewrite["unit"]))
+            await put(rewrite)
 
     def summary_frame() -> dict[str, Any]:
         rows = []

@@ -8,7 +8,7 @@ policy alone.
 > **Seven hooks. Every hook composes the same way.**
 
 ```
-on_inputs → Ingress   pre_tool_use → Permissions   after_tool_call → Journal
+on_inputs → Ingress   pre_tool_use → Permissions   post_tool_use → Journal
 before_model → Steering   before_finish → FinishPolicy   on_suspend → Suspending
 ```
 
@@ -27,13 +27,13 @@ ordered transition table selects start, steering, resume, or journal replay.
 | `approval` | `pre_tool_use` → Permissions | **Suspend** | Halts the whole loop for human sign-off on any effect (write/charge/send); a pure read passes. |
 | `dlp_block` | `pre_tool_use` → Permissions | **Deny** | Scans an outbound send's **payload**; denies it if the body carries confidential data (email/SSN). Real egress DLP — it inspects what is leaving, not merely that a read happened. |
 | `rate_cap` | `pre_tool_use` → Permissions | **Deny** | Denies irreversible effects (charge/send) past a per-run budget. Session logging is not counted, so `log_gate` can still record after the cap. |
-| `pii_mask` | `after_tool_call` → Journal | **Rewrite** | Anonymizes email/SSN in a tool result in place — the model keeps a usable, masked record; raw PII never crosses to the model provider. |
-| `context_firewall` | `after_tool_call` → Journal | **Block** | The strong form: replaces a confidential result **wholesale** with a policy notice, so the raw data never enters the model's context at all. |
-| `injection_guard` | `after_tool_call` → Journal | **Rewrite** | Decomposes any tool result and forwards `{신뢰할 수 없는 상태, source, structure}` — does not inspect or drop content. |
+| `pii_mask` | `post_tool_use` → Journal | **Rewrite** | Anonymizes email/SSN in a tool result in place — the model keeps a usable, masked record; raw PII never crosses to the model provider. |
+| `context_firewall` | `post_tool_use` → Journal | **Block** | The strong form: replaces a confidential result **wholesale** with a policy notice, so the raw data never enters the model's context at all. |
+| `injection_guard` | `post_tool_use` → Journal | **Rewrite** | Decomposes any tool result and forwards `{신뢰할 수 없는 상태, source, structure}` — does not inspect or drop content. |
 | `log_gate` | `before_finish` → FinishPolicy | **Steer** | Vetoes completion until the outcome is logged. The `Proceed` is not a second channel — it enqueues on the run's one steer queue. |
 
 **The two ingest units are a matched pair** (`examples/04_control_plane.py`'s lesson —
-policy lands at a seam and reaches a destination): both run at `after_tool_call` and
+policy lands at a seam and reaches a destination): both run at `post_tool_use` and
 guard **ingest** — what enters the model. `pii_mask` anonymizes and lets the model keep
 working; `context_firewall` blanks the result entirely. Both reach the model's view and
 the UI stream but **not** the durable ledger copy (recorded inside the durable step, before

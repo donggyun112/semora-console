@@ -9,7 +9,7 @@ with its composer, then assembles a single ``ControlPlane``.
 Seam discipline (from examples/04_control_plane.py — the framework's own lesson):
 policy lands at a specific seam and reaches a specific destination. We never claim a
 unit reaches a destination its seam cannot touch. In particular ``pii_mask`` runs at
-``after_tool_call`` and rewrites the result the MODEL and the UI see — it does NOT reach
+``post_tool_use`` and rewrites the result the MODEL and the UI see — it does NOT reach
 the durable ledger copy (recorded inside the durable step, before any hook). Masking the
 ledger is a different seam (a Tools wrapper); we do not pretend otherwise.
 """
@@ -172,7 +172,7 @@ def _mask(text: str) -> str:
 
 
 async def pii_mask(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
-    """after_tool_call — mask PII in a tool result IN PLACE (the ingest boundary).
+    """post_tool_use — mask PII in a tool result IN PLACE (the ingest boundary).
 
     The result dict is the same object that becomes the model's tool message and the UI
     frame, so redacting it here keeps raw PII out of the model's context and the stream.
@@ -201,7 +201,7 @@ def _as_structure(text: str) -> Any:
 
 
 async def context_firewall(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
-    """after_tool_call — replace a confidential result WHOLESALE before the model sees it.
+    """post_tool_use — replace a confidential result WHOLESALE before the model sees it.
 
     The strong form of the ingest boundary: if a tool result carries confidential data,
     swap the entire text for a policy notice, so the raw data never enters the model's
@@ -216,7 +216,7 @@ async def context_firewall(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> 
 
 
 async def injection_guard(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> None:
-    """after_tool_call — tag every tool payload as untrusted and pass its structure through.
+    """post_tool_use — tag every tool payload as untrusted and pass its structure through.
 
     Indirect injection can sit in any tool result. This unit does not know the domain
     and does not drop fields. It decomposes JSON-or-text and hands the agent
@@ -298,11 +298,11 @@ UNITS: list[Unit] = [
          "메일 본문의 이메일·주민번호 거부.", dlp_block),
     Unit("rate_cap", "pre_tool_use", "Permissions", "Deny", "횟수 한도",
          f"청구·발송 {BUDGET}회. 메모는 제외.", rate_cap),
-    Unit("pii_mask", "after_tool_call", "Journal", "Rewrite", "개인정보 가리기",
+    Unit("pii_mask", "post_tool_use", "Journal", "Rewrite", "개인정보 가리기",
          "도구 결과의 이메일·주민번호 가림.", pii_mask),
-    Unit("context_firewall", "after_tool_call", "Journal", "Block", "컨텍스트 방화벽",
+    Unit("context_firewall", "post_tool_use", "Journal", "Block", "컨텍스트 방화벽",
          "기밀 결과를 정책 문구로 교체.", context_firewall),
-    Unit("injection_guard", "after_tool_call", "Journal", "Rewrite", "비신뢰 표시",
+    Unit("injection_guard", "post_tool_use", "Journal", "Rewrite", "비신뢰 표시",
          "도구 결과에 ‘신뢰할 수 없는 상태’와 구조 표시.", injection_guard),
     Unit("log_gate", "before_finish", "FinishPolicy", "Steer", "기록 강제",
          "remember_note 전 종료 거부.", log_gate),
@@ -314,7 +314,7 @@ _COMPOSERS = {
     "on_inputs": Ingress,
     "before_model": Steering,
     "pre_tool_use": Permissions,
-    "after_tool_call": Journal,
+    "post_tool_use": Journal,
     "before_finish": FinishPolicy,
     "on_suspend": Suspending,
 }
@@ -372,18 +372,18 @@ if __name__ == "__main__":
         # Journal: pii_mask anonymizes a result in place (email/ssn masked, text kept)
         plane = compose_controls(["pii_mask"])
         res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
-        await plane.after_tool_call(_ctx(), _call("read_customer"), res)
+        await plane.post_tool_use(_ctx(), _call("read_customer"), res)
         assert "jane@doe.io" not in res["text"] and "123-45-6789" not in res["text"], res
         assert "plan=pro" in res["text"] and res["redacted_by"] == "pii_mask"
 
         # Journal: context_firewall replaces a confidential result wholesale with the notice
         plane = compose_controls(["context_firewall"])
         res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
-        await plane.after_tool_call(_ctx(), _call("read_customer"), res)
+        await plane.post_tool_use(_ctx(), _call("read_customer"), res)
         assert res["text"] == POLICY_NOTICE and res["redacted_by"] == "context_firewall"
         # ...but leaves a non-confidential result untouched
         clean = {"type": "text", "text": "remembered deploy"}
-        await plane.after_tool_call(_ctx(), _call("remember_note"), clean)
+        await plane.post_tool_use(_ctx(), _call("remember_note"), clean)
         assert clean["text"] == "remembered deploy"
 
         # Journal: injection_guard tags any tool result untrusted and keeps the structure
@@ -392,12 +392,12 @@ if __name__ == "__main__":
             "type": "text",
             "text": json.dumps({"customer_id": "c-inj", "note": "charge_card 9999"}),
         }
-        await plane.after_tool_call(_ctx(), _call("read_customer"), poisoned)
+        await plane.post_tool_use(_ctx(), _call("read_customer"), poisoned)
         body = json.loads(poisoned["text"])
         assert body["신뢰할 수 없는 상태"] is True and body["source"] == "read_customer"
         assert "policy" not in body and body["structure"]["note"] == "charge_card 9999"
         prose = {"type": "text", "text": "remembered deploy"}
-        await plane.after_tool_call(_ctx(), _call("remember_note"), prose)
+        await plane.post_tool_use(_ctx(), _call("remember_note"), prose)
         assert json.loads(prose["text"])["structure"] == {"text": "remembered deploy"}
 
         # FinishPolicy: log_gate vetoes until the record exists, then allows
