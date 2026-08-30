@@ -50,6 +50,17 @@ function lifecycleSummary(frame) {
   );
 }
 
+// The ledger takes the steer either way; what changes is when the loop next drains.
+const WHEN_ADMITTED = {
+  next_drain: "다음 도구 경계에 반영",
+  on_resume: "재개될 때 반영",
+};
+
+export function steerSummary(frame, admitted) {
+  if (admitted) return "지시 반영";
+  return WHEN_ADMITTED[frame?.admits] ?? "지시 대기";
+}
+
 function steerLabel(source) {
   if (source === "operator" || source === "user_steer") return "운영자";
   if (source === "policy" || source === "control") return "정책";
@@ -255,7 +266,7 @@ export function reduceFrames(frames) {
 
     if (frame.kind === "steer") {
       const admitted = (frame.status ?? frame.phase) === "admitted";
-      append("steer", steerLabel(frame.source), admitted ? "지시 반영" : "지시 대기", {
+      append("steer", steerLabel(frame.source), steerSummary(frame, admitted), {
         tone: admitted ? "allow" : "neutral",
         details: { text: frame.text ?? frame.message ?? "", raw: frame },
       });

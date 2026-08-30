@@ -14,6 +14,7 @@ const ENDABLE = new Set(["suspended", "recoverable", "terminal", "error"]);
 // truth, not a client bug — throwing here flipped the run to "error" while the
 // frame log still read "suspended", leaving the approve button rendered but dead.
 const PARKABLE = new Set(["streaming", "suspended", "recoverable"]);
+const ACTIVE_PHASES = new Set(["streaming", "suspended", "recoverable"]);
 
 const copyConfig = (config) => ({
   scenarioId: config.scenarioId,
@@ -36,8 +37,10 @@ export function createRunState() {
 export const canStartRun = (state) => STARTABLE.has(state.phase);
 export const canEditDraft = (state) => EDITABLE.has(state.phase);
 export const canEditPolicy = (state) => POLICY_EDITABLE.has(state.phase);
+// The queue is durable, so a steer is worth taking whenever the run can still drain —
+// a parked run admits it on resume. Only a finished run has nothing left to drain.
 export const canSteer = (state) =>
-  state.phase === "streaming" && Boolean(state.runId);
+  ACTIVE_PHASES.has(state.phase) && Boolean(state.runId);
 export const acceptsStreamEnd = (state) => ENDABLE.has(state.phase);
 
 export function updateDraft(state, patch) {

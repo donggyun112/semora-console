@@ -45,6 +45,7 @@ import {
   isResumeGate,
   reduceFrames,
   resultBadges,
+  steerSummary,
   unitSummary,
   summarizeOutcome,
 } from "../src/console/static/reducer.mjs";
@@ -511,7 +512,9 @@ assert.equal(canSteer(streaming), true);
 const suspended = suspendRun(streaming, "pending-1");
 assert.equal(suspended.phase, "suspended");
 assert.equal(canStartRun(suspended), false);
-assert.equal(canSteer(suspended), false);
+// A parked run still takes a steer: the queue is the ledger, and the loop drains on
+// resume. Only a run with no drain left ahead of it refuses.
+assert.equal(canSteer(suspended), true);
 assert.equal(acceptsStreamEnd(suspended), true);
 
 const resuming = beginContinuation(suspended);
@@ -1507,5 +1510,14 @@ const fenced = reduceFrames([
 ]);
 assert.deepEqual([fenced[0].kind, fenced[0].tone], ["fenced", "deny"]);
 assert.deepEqual([fenced[0].details.presented, fenced[0].details.issued], [1, 2]);
+
+assert.equal(canSteer(terminal), false, "a finished run has nothing left to drain");
+assert.equal(canSteer(recoverable), true);
+
+// The operator cannot tell from the browser when the loop next drains; the server can.
+assert.equal(steerSummary({ admits: "next_drain" }, false), "다음 도구 경계에 반영");
+assert.equal(steerSummary({ admits: "on_resume" }, false), "재개될 때 반영");
+assert.equal(steerSummary({}, false), "지시 대기");
+assert.equal(steerSummary({ admits: "next_drain" }, true), "지시 반영");
 
 console.log("run inspector state ok");

@@ -1,6 +1,7 @@
 import asyncio
 import json
 from html.parser import HTMLParser
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -331,6 +332,7 @@ def test_run_uses_agent_definition(monkeypatch):
     frames = [json.loads(line) for line in response.text.splitlines()]
     run_id = next(frame["run_id"] for frame in frames if frame["kind"] == "meta")
     try:
+        assert UUID(run_id.removeprefix("run-")).version == 7
         assert [frame for frame in frames if frame["kind"] == "error"] == []
         agent = captured["agent"]
         assert isinstance(agent, Agent)
@@ -825,13 +827,24 @@ def test_steer_unknown_run_is_404():
         assert r.status_code == 404
 
 
-def test_steer_without_inflight_is_409():
-    """A complete agent has one queue, but nothing is admitted once the attempt has ended."""
-    server._sessions["run-steer"] = {"units": [], "aborted": False, "scenario_id": "note"}
+def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
+    """The queue is the ledger, so the worker holding the run does not have to be this one.
+
+    A parked or handed-off run still takes a steer; it lands on the next drain. Only a
+    finished run refuses, because nothing will drain again.
+    """
+    server._sessions["run-steer"] = {
+        "units": [], "aborted": False, "scenario_id": "note", "terminal": False,
+    }
     try:
         with TestClient(app) as c:
-            r = c.post("/api/steer", json={"run_id": "run-steer", "text": "기록하라"})
-        assert r.status_code == 409
+            waiting = c.post("/api/steer", json={"run_id": "run-steer", "text": "기록하라"})
+            assert waiting.status_code == 200, waiting.text
+            assert waiting.json()["admits"] == "on_resume"
+
+            server._sessions["run-steer"]["terminal"] = True
+            done = c.post("/api/steer", json={"run_id": "run-steer", "text": "기록하라"})
+            assert done.status_code == 409
     finally:
         server._sessions.pop("run-steer", None)
 
@@ -1186,7 +1199,7 @@ def test_abort_flags_existing_session():
     try:
         with TestClient(app) as c:
             r = c.post("/api/abort", json={"run_id": "run-test"})
-        assert r.status_code == 200 and r.json() == {"ok": True}
+        assert r.status_code == 200 and r.json()["ok"] is True
         assert _is_aborted("run-test") is True
     finally:
         server._sessions.pop("run-test", None)
@@ -1393,3 +1406,78 @@ def test_an_effect_that_started_and_never_reported_is_not_guessed(monkeypatch):
         and f["event"].get("type") == "tool_result"
         and "charged" in str((f["event"].get("result") or {}).get("text", ""))
     ], "reporting must not repeat the effect it cannot vouch for"
+
+
+@pytest.mark.asyncio
+async def test_aborting_drops_what_is_still_queued_before_it_stops():
+    """A steer queued for a killed run must not be waiting for whoever recovers next.
+
+    The loop is stopped after the queue is emptied, not before, so nothing admitted on
+    the way down is an instruction aimed at a run the operator already ended.
+    """
+    server._sessions["run-drop"] = {
+        "units": [], "aborted": False, "scenario_id": "note", "terminal": False,
+    }
+    try:
+        with TestClient(app) as c:
+            c.post("/api/steer", json={"run_id": "run-drop", "text": "이건 버려져야 한다"})
+            queued = await server._store.list_inputs("run-drop")
+            assert [record.status for record in queued] == ["pending"]
+
+            stopped = c.post("/api/abort", json={"run_id": "run-drop"})
+            assert stopped.json()["dropped"] == 1
+
+        after = await server._store.list_inputs("run-drop")
+        assert [record.status for record in after] == ["discarded"]
+        assert after[0].value, "a discarded input keeps its idempotency key"
+    finally:
+        server._sessions.pop("run-drop", None)
+
+
+def test_steering_a_parked_run_adds_a_note_without_taking_the_decision(monkeypatch):
+    """A steer joins the queue; it does not answer the approval that is waiting.
+
+    submit() in interactive mode treats operator input as a replacement and cancels a
+    parked request to switch the run to it. That is right for a new prompt and wrong for
+    a steer, which is why this goes in headless. The synthetic sessions elsewhere in this
+    file cannot reach any of it — a real suspension has to exist first.
+    """
+    model = StreamingFakeChatModel(
+        messages=iter([
+            AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "charge-steered-1", "name": "charge_card",
+                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
+                }],
+            ),
+            AIMessage(content="청구했습니다."),
+        ])
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        started = client.post("/api/run", json={"scenario_id": "charge", "units": ["approval"]})
+        frames = [json.loads(line) for line in started.text.splitlines()]
+        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
+        pending = next(f["pending_id"] for f in frames if f["kind"] == "suspended")
+
+        steered = client.post(
+            "/api/steer", json={"run_id": run_id, "text": "금액을 다시 확인해줘"}
+        )
+        assert steered.status_code == 200, steered.text
+        assert steered.json()["admits"] == "on_resume"
+
+        resumed = client.post("/api/resume", json={
+            "run_id": run_id, "pending_id": pending, "approved": True, "units": ["approval"],
+        })
+        after = [json.loads(line) for line in resumed.text.splitlines()]
+
+    charged = [
+        f for f in after
+        if f.get("kind") == "agent"
+        and f["event"].get("type") == "tool_result"
+        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
+    ]
+    assert charged, "the steer must not have cancelled the call that was waiting"
+    admitted = [f for f in after if f["kind"] == "steer"]
+    assert [(f["source"], f["phase"]) for f in admitted] == [("user_steer", "admitted")]

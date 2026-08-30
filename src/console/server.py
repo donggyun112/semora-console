@@ -760,34 +760,64 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
     )
 
 
+async def _drop_queued_inputs(run_id: str) -> int:
+    """Make anything still waiting terminal, and report how much was dropped.
+
+    Order matters: an input admitted while the loop is winding down is an instruction
+    aimed at a run the operator has already killed, and it would be waiting there for
+    whoever recovers next. Empty the queue first, then stop.
+    """
+    waiting = [
+        record.input_id
+        for record in await _store.list_inputs(run_id)
+        if record.status in {"pending", "claimed"}
+    ]
+    if waiting:
+        await _store.discard_inputs(run_id, waiting)
+    return len(waiting)
+
+
 @app.post("/api/abort")
-async def abort(request: AbortRequest) -> dict[str, bool]:
-    """Trip aborted() and cancel the live attempt. Works for any scenario, any units."""
-    session = _sessions.get(request.run_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="unknown run_id")
+async def abort(request: AbortRequest) -> dict[str, Any]:
+    """Drop what is queued, then trip aborted() and cancel the live attempt."""
+    session = await _session(request.run_id)
+    dropped = await _drop_queued_inputs(request.run_id)
     session["aborted"] = True
     task = session.get("task")
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
-    return {"ok": True}
+    return {"ok": True, "dropped": dropped}
 
 
 @app.post("/api/steer")
-async def steer(request: SteerRequest) -> dict[str, bool]:
-    """Enqueue a user_steer on the in-flight run. One queue; next drain admits it."""
-    session = _sessions.get(request.run_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="unknown run_id")
-    task = session.get("task")
-    if not isinstance(task, asyncio.Task) or task.done():
-        raise HTTPException(status_code=409, detail="no in-flight run")
+async def steer(request: SteerRequest) -> dict[str, Any]:
+    """Enqueue a user_steer. One queue; the next drain admits it.
+
+    The queue is the ledger, not this process, so a worker that is not the one executing
+    can still take the steer — which is the point once there is more than one of them.
+    Whether a live attempt happens to be here only decides how soon it lands.
+    """
+    session = await _session(request.run_id)
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty steer")
-    runtime = AgentRuntime(store=_store)
-    await runtime.submit(request.run_id, PendingInput("user_steer", HumanMessage(text)))
-    return {"ok": True}
+    if session.get("terminal"):
+        raise HTTPException(status_code=409, detail="run already finished")
+    runtime = AgentRuntime(
+        store=_store, transcript=_transcript, owner=WORKER, lease_ttl=LEASE_TTL
+    )
+    # headless, not interactive. Interactive submit treats operator input as a
+    # replacement: on a parked run it cancels the approval that is waiting and switches
+    # the run to the new prompt. A steer is a note added to the queue, never a decision
+    # taken on the operator's behalf about the call in front of them.
+    await runtime.submit(
+        request.run_id,
+        PendingInput("user_steer", HumanMessage(text)),
+        input_mode="headless",
+    )
+    task = session.get("task")
+    live = isinstance(task, asyncio.Task) and not task.done()
+    return {"ok": True, "admits": "next_drain" if live else "on_resume"}
 
 
 if STATIC.is_dir():

@@ -1125,16 +1125,21 @@ export function createConsole({
     const text = dom["steer-text"].value.trim();
     if (!text || !canSteer(state.run)) return;
     dom["steer-text"].value = "";
-    state.frames.push({
+    const queued = {
       kind: "steer",
       run_id: state.run.runId,
       status: "queued",
       source: "operator",
       text,
-    });
+    };
+    state.frames.push(queued);
     render();
     try {
-      await post("/api/steer", { run_id: state.run.runId, text });
+      const response = await post("/api/steer", { run_id: state.run.runId, text });
+      // The server says when the loop will next drain, which is the only thing the
+      // operator cannot tell from here.
+      queued.admits = (await response.json())?.admits ?? null;
+      render();
     } catch (error) {
       failCurrent(error);
     }
