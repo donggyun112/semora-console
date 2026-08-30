@@ -262,6 +262,19 @@ export function reduceFrames(frames) {
       continue;
     }
 
+    if (frame.kind === "fenced") {
+      append("fenced", "fenced", frame.message ?? "이 워커의 차례는 지났습니다", {
+        tone: "deny",
+        details: {
+          worker: frame.worker ?? null,
+          presented: frame.presented ?? null,
+          issued: frame.issued ?? null,
+          raw: frame,
+        },
+      });
+      continue;
+    }
+
     if (frame.kind === "contended") {
       append("contended", "contended", frame.message ?? "다른 워커가 잡고 있습니다", {
         tone: "halt",

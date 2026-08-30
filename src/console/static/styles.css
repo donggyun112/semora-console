@@ -843,6 +843,15 @@ button.primary:hover:not(:disabled) {
   letter-spacing: 0.04em;
 }
 
+.trace-entry[data-kind="fenced"] .trace-label {
+  color: var(--red);
+}
+
+.trace-entry[data-kind="fenced"] {
+  box-shadow: inset 2px 0 0 var(--red);
+  background: rgba(255, 93, 104, 0.07);
+}
+
 .trace-entry[data-kind="contended"] .trace-label {
   color: var(--violet);
 }

@@ -30,12 +30,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
-from langchain_core.utils.uuid import uuid7
-from nexora import Agent, AgentRuntime
+from nexora import Agent, AgentRuntime, new_run_id
 from nexora.contracts.types import PendingInput
 from nexora.dispatch import Answer, Prompt, Recover
 from nexora.orchestrator import AgentSuspended
-from nexora_store import Contended, Indeterminate
+from nexora_store import Contended, Fenced, Indeterminate
 from nexora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
@@ -61,6 +60,11 @@ if (_dotenv_model := dotenv_values().get("MODEL")):
 # Two workers sharing a ledger must not share an owner name, or each renews the other's
 # lease and the contention this demo is meant to show never happens.
 WORKER = os.getenv("CONSOLE_WORKER") or socket.gethostname()
+
+# How long a worker's claim on a run outlives the worker. Sixty seconds is right for a
+# deployment and useless for a demo, where nobody watches a paused container for a
+# minute, so the seam is a knob rather than a constant.
+LEASE_TTL = float(os.getenv("CONSOLE_LEASE_TTL") or 60.0)
 
 STATIC = Path(__file__).parent / "static"
 _SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
@@ -434,7 +438,11 @@ async def _stream(
 
     async def run_attempt() -> None:
         runtime = AgentRuntime(
-            store=_store, transcript=_transcript, emit=publish, owner=WORKER
+            store=_store,
+            transcript=_transcript,
+            emit=publish,
+            owner=WORKER,
+            lease_ttl=LEASE_TTL,
         )
         meta = {"kind": "meta", "run_id": run_id, "units": selected}
         if session is not None and session.get("fork_parent"):
@@ -462,6 +470,16 @@ async def _stream(
                 await put(summary_frame())
         except AgentSuspended as stopped:
             await put({"kind": "suspended", "pending_id": stopped.pending_id, "tool_call_id": stopped.tool_call_id})
+        except Fenced as stale:
+            await put(
+                {
+                    "kind": "fenced",
+                    "worker": WORKER,
+                    "message": "이 워커의 차례는 지났습니다 — 실행은 다른 워커에게 넘어갔습니다",
+                    "presented": getattr(stale, "presented", None),
+                    "issued": getattr(stale, "issued", None),
+                }
+            )
         except Contended:
             await put(
                 {
@@ -537,7 +555,7 @@ async def run(request: RunRequest) -> StreamingResponse:
     if scenario is None:
         raise HTTPException(status_code=404, detail="unknown scenario_id")
     # Time-ordered, so a ledger row sorts by when the run started rather than by chance.
-    run_id = f"run-{uuid7()}"
+    run_id = new_run_id()
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
@@ -608,7 +626,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
     coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
-    fork_run_id = f"run-{uuid7()}"
+    fork_run_id = new_run_id()
     fork_units = [name for name in request.units if name in UNITS_BY_NAME]
     fork_mode = "input" if coordinate.origin_id is not None else "leaf"
     child_origin_runs = dict(source["origin_runs"])

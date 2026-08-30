@@ -151,6 +151,21 @@ executing it. While one is mid-round, `select run_id, owner, token from nexora_r
 names the holder, and the other answers a request for that run with **contended** rather
 than running it a second time.
 
+A worker that comes back from the dead is refused. Sixty seconds is the right claim
+length for a deployment and useless to watch, so shorten it for the demo:
+
+```bash
+CONSOLE_LEASE_TTL=3 docker compose --profile two-workers up -d
+docker compose pause console     # worker-a freezes mid-round, still holding its claim
+# wait out the lease, then send that run to worker-b on :8851
+docker compose unpause console   # worker-a wakes up and tries to finish
+```
+
+Both halves fire in one scene. worker-b finds a step worker-a started and never
+reported, and answers **indeterminate** rather than charging again; worker-a comes back
+holding a token the run has moved past, and its writes are **fenced**. Nothing it does
+after waking reaches the ledger.
+
 Prove that a parked run survives the worker that parked it:
 
 ```bash

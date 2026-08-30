@@ -1500,4 +1500,12 @@ const contended = reduceFrames([
 assert.deepEqual([contended[0].kind, contended[0].label], ["contended", "contended"]);
 assert.equal(contended[0].details.worker, "worker-b");
 
+// A worker back from the dead presents a token the run has already moved past.
+const fenced = reduceFrames([
+  { kind: "fenced", worker: "worker-a", presented: 1, issued: 2,
+    message: "이 워커의 차례는 지났습니다" },
+]);
+assert.deepEqual([fenced[0].kind, fenced[0].tone], ["fenced", "deny"]);
+assert.deepEqual([fenced[0].details.presented, fenced[0].details.issued], [1, 2]);
+
 console.log("run inspector state ok");

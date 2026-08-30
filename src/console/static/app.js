@@ -972,6 +972,10 @@ export function createConsole({
           unitNames: [...GUIDE[next].unitNames],
         });
       }
+    } else if (frame.kind === "fenced") {
+      // The run moved on while this worker was away. Its writes are refused, which is
+      // the whole point: a worker back from the dead does not get to finish.
+      state.run = failRun(state.run, frame.message ?? "이 워커의 차례는 지났습니다");
     } else if (frame.kind === "contended") {
       // Not this worker's run to finish. The lease is the answer, not a retry loop.
       state.run = failRun(state.run, frame.message ?? "다른 워커가 잡고 있습니다");

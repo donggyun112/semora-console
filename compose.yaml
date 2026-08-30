@@ -36,6 +36,8 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       MODEL: ${MODEL:-~deepseek/deepseek-v4-flash-latest}
       CONSOLE_WORKER: worker-a
+      # Short enough that a paused worker loses its claim while somebody is watching.
+      CONSOLE_LEASE_TTL: ${CONSOLE_LEASE_TTL:-60}
     ports:
       - "8850:8850"
     depends_on:
