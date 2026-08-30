@@ -29,4 +29,11 @@ def openrouter_model(name: str | None = None) -> ChatModel:
     )
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
-    return openrouter(name or model_name(), api_key=key, title="Nexora Control Plane Console")
+    return openrouter(
+        name or model_name(),
+        api_key=key,
+        title="Nexora Control Plane Console",
+        # A public link should not let one hung request hold a worker for the SDK's
+        # ten-minute default.
+        timeout=60,
+    )

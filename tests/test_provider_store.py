@@ -24,6 +24,7 @@ def test_provider_builds_with_key(monkeypatch):
     assert m.model == DEFAULT_MODEL
     # The gateway that leaks DeepSeek's markup is the one this preset points at.
     assert m.recover_dsml is True
+    assert m.timeout == 60
     monkeypatch.setenv("MODEL", "vendor/other")
     assert openrouter_model().model == "vendor/other"
 
