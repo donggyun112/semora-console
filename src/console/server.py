@@ -442,6 +442,7 @@ async def _stream(
     pending_calls: dict[str, dict[str, Any]] = {}
     projected_denials: set[str] = set()
     announced_rewrites: set[str] = set()
+    replayed_calls: set[str] = set()
     session = _sessions.get(run_id)
     projector = None
     if session is not None and {
@@ -498,6 +499,24 @@ async def _stream(
                 await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
                 )
+        if str(event_type).endswith("pre_tool_use"):
+            # A replayed call is executed from the record, so the loop emits its hooks and
+            # no agent events at all — the trace showed a gate and a boundary with nothing
+            # between them, and the chat had no card for a tool that ran. The hook payload
+            # names the call, so the console can say what happened rather than leaving the
+            # operator to infer it from two lifecycle rows.
+            call_id = str(payload.get("call_id") or "")
+            if call_id and call_id not in pending_calls:
+                replayed_calls.add(call_id)
+                call = {
+                    "type": "tool_call",
+                    "id": call_id,
+                    "name": payload.get("name"),
+                    "input": payload.get("input") or {},
+                }
+                pending_calls[call_id] = call
+                await put({"kind": "agent", "event": {**call, "pending": True}})
+
         rewrite: dict[str, Any] | None = None
         if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
             # A replayed call never re-emits an agent tool_result, so the rewrite that
@@ -535,11 +554,29 @@ async def _stream(
                     }
                 )
         await put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
+        replayed_result = None
+        if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
+            call_id = str(payload.get("call_id") or "")
+            if call_id in replayed_calls:
+                replayed_calls.discard(call_id)
+                pending_calls.pop(call_id, None)
+                replayed_result = {
+                    "kind": "agent",
+                    "event": {
+                        "type": "tool_result",
+                        "id": call_id,
+                        "name": payload.get("name"),
+                        "executed": not str(event_type).endswith("post_tool_use_failure"),
+                        "result": payload.get("result"),
+                    },
+                }
         if rewrite is not None:
             # After the hook, because the unit runs inside it: pii_mask is an
             # post_tool_use, so a row above post_tool_use would date it wrong.
             mark(str(rewrite["unit"]))
             await put(rewrite)
+        if replayed_result is not None:
+            await put(replayed_result)
 
     def summary_frame() -> dict[str, Any]:
         rows = []

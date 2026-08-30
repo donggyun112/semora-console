@@ -1579,3 +1579,47 @@ def test_a_run_nobody_kept_is_not_offered_back():
     """A wiped ledger has to say so, or the console restores a run that does not exist."""
     with TestClient(app) as client:
         assert client.get("/api/runs/run-nothing-here/frames").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_call_still_shows_as_a_call_and_a_result():
+    """A fork executes its tool from the record, so the loop emits hooks and no agent events.
+
+    The trace then held a gate and a boundary with nothing named between them, and the chat
+    had no card for a tool that had run. The hook payloads carry the call and its result, so
+    the console says what happened instead of leaving it to be inferred from two rows.
+    """
+    run_id = "run-replayed"
+    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "customer"}
+    result = {
+        "type": "text",
+        "text": '{"customer_id": "c-001"}',
+        "execution": {"call_id": "call-1", "replayed": True},
+    }
+
+    async def attempt(runtime, _on_event):
+        call = {"turn": 0, "call_id": "call-1", "name": "read_customer",
+                "input": {"customer_id": "c-001"}}
+        await runtime._emit(EventType.PRE_TOOL_USE, dict(call))
+        await runtime._emit(EventType.POST_TOOL_USE, {**call, "result": result})
+        return {"stop_reason": "completed"}
+
+    frames: list[dict] = []
+    try:
+        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="customer"):
+            frames.append(json.loads(chunk))
+    finally:
+        server._sessions.pop(run_id, None)
+
+    named = {"tool_call", "pre_tool_use", "post_tool_use", "tool_result"}
+    shape = [
+        kind
+        for f in frames
+        if (kind := f.get("type") or (f.get("event") or {}).get("type")) in named
+    ]
+    assert shape == ["tool_call", "pre_tool_use", "post_tool_use", "tool_result"], (
+        "the call is named at its gate and answered after its boundary"
+    )
+    answered = next(f for f in frames if (f.get("event") or {}).get("type") == "tool_result")
+    assert answered["event"]["result"] == result, "the result the hook actually carried"
+    assert answered["event"]["executed"] is True
