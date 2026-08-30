@@ -1,0 +1,45 @@
+# The durable proof needs a ledger that outlives the worker, which is what this file is
+# for. Without DATABASE_URL the console keeps everything in memory and a restart loses
+# the run — correctly, because the runtime loses it too.
+#
+#     docker compose up --build
+#     open http://localhost:8850
+#
+# OPENROUTER_API_KEY comes from .env beside this file, the same one uv run uses.
+name: nexora-console
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: console
+      POSTGRES_PASSWORD: console
+      POSTGRES_DB: console
+    volumes:
+      # Named, so `docker compose restart console` and even `down` keep the ledger.
+      # `down -v` is the one that throws the proof away.
+      - console-ledger:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U console -d console"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        nexora: ../nexora-python
+    environment:
+      DATABASE_URL: postgresql://console:console@db:5432/console
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
+      MODEL: ${MODEL:-~deepseek/deepseek-v4-flash-latest}
+    ports:
+      - "8850:8850"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  console-ledger:

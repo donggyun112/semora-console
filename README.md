@@ -124,18 +124,42 @@ except로 감싸는 순간 아래에서 일부러 흘려보낸 것만 골라 삼
 `parallel_crash`에 `approval`을 얹고 승인 대기 중에 워커를 죽여 보면 위 내용이 화면에서
 그대로 돈다.
 
+## Docker
+
+The durable proof needs a ledger that outlives the worker, so the compose stack is the
+honest way to run this. `.env` beside `compose.yaml` supplies `OPENROUTER_API_KEY`.
+
+```bash
+docker compose up --build      # → http://localhost:8850
+```
+
+`nexora` is resolved by path from the neighbouring checkout, so it arrives as a named
+build context (`additional_contexts: nexora: ../nexora-python`) rather than by widening
+the build context to the parent directory. The ledger lives in a named volume, which is
+why `restart` and even `down` keep a parked run and `down -v` is the one that throws it
+away.
+
+Prove that a parked run survives the worker that parked it:
+
+```bash
+curl -sN localhost:8850/api/run -H 'content-type: application/json' \
+     -d '{"scenario_id":"charge","units":["approval"]}' | grep suspended
+docker compose restart console          # the process that took the approval is gone
+curl -sN localhost:8850/api/resume -H 'content-type: application/json' \
+     -d '{"run_id":"<run_id>","pending_id":"<pending_id>","approved":true}'
+```
+
+The charge runs once, in a process that never saw the suspension. `_sessions` is a cache
+of a record the ledger holds, so a worker rebuilds what it needs from `run_id` alone.
+Without `DATABASE_URL` the ledger is memory too, and the restart loses the run exactly
+as the runtime does.
+
 ## Durable exactly-once
 
 `approval` suspends a call and persists both the continuation and conversation transcript;
-resuming runs the effect **exactly once** (`exec ×1` in the UI). Within one process these
-use in-memory stores. To prove it **survives a restart**, set `DATABASE_URL` so both use
-Postgres, then run on one long-lived machine:
-
-```
-POST /api/run (approval + charge) → suspended
-# kill and restart the process
-POST /api/resume by run_id → the charge runs once (exec ×1), across the restart
-```
+resuming runs the effect **exactly once** (`exec ×1` in the UI). Run without
+`DATABASE_URL` and both stores are memory, which is enough to watch the gate work but not
+to watch it survive anything — [Docker](#docker) has the restart proof.
 
 **청구 중 장애** and **동시 청구 중 장애** arm a worker crash after the first tool
 `finish_effect`. In the parallel case the committed result is replayed and the absent
@@ -151,4 +175,5 @@ runtime selects journal replay from durable state. Process restart still needs `
 | `dormancy.py` | Why a toggled-on unit stayed dormant in a scenario. |
 | `tools.py` | Demo effects (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
 | `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set. |
+| `Dockerfile` · `compose.yaml` | The stack with a Postgres ledger, where a parked run outlives its worker. |
 | `server.py` | FastAPI: `/api/run`, `/api/fork`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |
