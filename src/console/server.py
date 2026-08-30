@@ -181,6 +181,10 @@ _DURABLE_SESSION = (
     "units", "scenario_id", "payment_batch", "conversation_id", "origin_id", "source_run_id",
     "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
     "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
+    # Which coordinates a fork may start from. Rebuilt only by watching a run stream, so
+    # a worker that never saw the run had an empty map and refused every branch — the
+    # transcript still held the events it was refusing to reach.
+    "forkable_events",
 )
 
 
@@ -205,16 +209,18 @@ async def _session(run_id: str) -> dict[str, Any]:
     if record.status != "done" or not isinstance(record.value, dict):
         raise HTTPException(status_code=404, detail="unknown run_id")
     stored = dict(record.value)
+    forkable = stored.get("forkable_events") or {}
     session = {
         **stored,
+        # event_ids is the same set of keys; it is a membership check, not a second fact.
+        "event_ids": set(forkable),
+        "forkable_events": dict(forkable),
         # The batch, not the scenario: a resumed run must land in the same ledger it
         # started in, or the charge it already made is invisible to it.
         "agent": _new_agent(
             str(stored.get("payment_batch") or stored.get("scenario_id") or "local")
         ),
         "aborted": False,
-        "event_ids": set(),
-        "forkable_events": {},
     }
     _sessions[run_id] = session
     return session

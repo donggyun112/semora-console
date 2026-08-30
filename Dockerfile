@@ -16,7 +16,7 @@ WORKDIR /workspace
 COPY --from=semora pyproject.toml uv.lock ./semora/
 COPY --from=semora packages ./semora/packages
 
-WORKDIR /workspace/nexora-console
+WORKDIR /workspace/semora-console
 
 # Dependencies first, so editing console source does not reinstall the world.
 COPY pyproject.toml uv.lock ./
