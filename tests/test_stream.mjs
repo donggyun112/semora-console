@@ -7,7 +7,10 @@ import {
   deriveVersionPhase,
   deriveVersionRows,
   getForkActionLabel,
+  GUIDE,
   getEventForkRequest,
+  guideMatch,
+  nextGuideStep,
   pickInlineActionHost,
   getLaunchCopy,
   makeResultBadges,
@@ -39,6 +42,7 @@ import {
   CALL_REPLAY_BADGE,
   PAYMENT_DEDUPE_BADGE,
   RESULT_MASK_BADGE,
+  isResumeGate,
   reduceFrames,
   resultBadges,
   unitSummary,
@@ -1360,7 +1364,7 @@ assert.deepEqual(
 // forking from the gate rewinds past the approval and drops the operator's decision.
 const resumedPreToolRow = {
   eventId: "event-pre-resumed",
-  label: "pre_tool_use",
+  label: "on_resume",
   kind: "lifecycle",
   forkable: true,
   forkEdge: "before",
@@ -1439,5 +1443,41 @@ assert.equal(
 );
 assert.equal(pickInlineActionHost(chatNodes, null, "recoverable"), null);
 assert.equal(pickInlineActionHost(new Map(), "call-b", "approval"), null);
+
+// The gate and the post-approval revalidation are two decisions, not one row twice.
+const twoGates = reduceFrames([
+  { kind: "lifecycle", type: "pre_tool_use", payload: { call_id: "c1", name: "send_email" } },
+  { kind: "lifecycle", type: "pre_tool_use",
+    payload: { call_id: "c1", name: "send_email", source: "on_resume" } },
+]);
+assert.deepEqual(
+  twoGates.map((row) => [row.label, row.summary]),
+  [["pre_tool_use", "send_email"], ["on_resume", "승인 후 재검증 · send_email"]],
+);
+assert.equal(isResumeGate({ type: "pre_tool_use", payload: { source: "on_resume" } }), true);
+assert.equal(isResumeGate({ type: "pre_tool_use", payload: {} }), false);
+
+// The three scenes are an order to read the demo in: unguarded, gated, and gated
+// through a worker death.
+assert.deepEqual(GUIDE.map((scene) => [scene.scenarioId, [...scene.unitNames]]), [
+  ["charge", []],
+  ["charge", ["approval"]],
+  ["crash", ["approval"]],
+]);
+assert.equal(guideMatch({ scenarioId: "charge", unitNames: [] }), 0);
+assert.equal(guideMatch({ scenarioId: "charge", unitNames: ["approval"] }), 1);
+assert.equal(
+  guideMatch({ scenarioId: "leak", unitNames: ["dlp_block"] }),
+  -1,
+  "wandering off the path leaves the guide behind rather than mislabelling a scene",
+);
+assert.equal(nextGuideStep({ scenarioId: "charge", unitNames: [] }, "completed"), 1);
+assert.equal(
+  nextGuideStep({ scenarioId: "charge", unitNames: [] }, "aborted"),
+  0,
+  "an abandoned run does not march the operator past a scene they never saw",
+);
+assert.equal(nextGuideStep({ scenarioId: "crash", unitNames: ["approval"] }, "completed"), 2);
+assert.equal(nextGuideStep({ scenarioId: "leak", unitNames: [] }, "completed"), -1);
 
 console.log("run inspector state ok");

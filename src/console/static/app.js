@@ -90,6 +90,48 @@ function lastPendingTool(tools) {
   return [...tools].reverse().find((tool) => tool.status === "running");
 }
 
+// The demo offers eighty combinations and no order to read them in. These three are
+// the order: what the agent does unguarded, what one gate changes, and what survives
+// the worker dying. Everything else is worth exploring only after those.
+export const GUIDE = Object.freeze([
+  Object.freeze({
+    scenarioId: "charge", unitNames: Object.freeze([]),
+    label: "정책 없이", teaches: "청구가 그대로 나간다",
+  }),
+  Object.freeze({
+    scenarioId: "charge", unitNames: Object.freeze(["approval"]),
+    label: "승인 게이트", teaches: "루프가 멈추고 사람을 기다린다",
+  }),
+  Object.freeze({
+    scenarioId: "crash", unitNames: Object.freeze(["approval"]),
+    label: "대기 중 장애", teaches: "복구해도 청구는 한 번",
+  }),
+]);
+
+// Both gates are durable tool boundaries you can branch from: the one before the call
+// and the one after a person answered. They carry different labels so the trace does not
+// read as the same row twice, so anything matching on the label has to accept both.
+const TOOL_GATES = new Set(["pre_tool_use", "on_resume"]);
+const isToolGate = (row) => TOOL_GATES.has(row?.label);
+
+export function guideMatch(config) {
+  // Which scene the current draft is sitting on, or -1 once the operator has wandered
+  // off the path. Compared by value: the composer is free the moment it stops matching.
+  const wanted = [...(config?.unitNames ?? [])].sort().join(",");
+  return GUIDE.findIndex((scene) => (
+    scene.scenarioId === config?.scenarioId
+    && [...scene.unitNames].sort().join(",") === wanted
+  ));
+}
+
+export function nextGuideStep(config, stopReason) {
+  // A scene counts as taught once its run ends well. A failed or aborted attempt leaves
+  // the operator where they were rather than marching them past something they did not see.
+  const at = guideMatch(config);
+  if (at < 0 || stopReason === "aborted" || stopReason === null) return at;
+  return Math.min(at + 1, GUIDE.length - 1);
+}
+
 const JOURNAL_UNITS = new Set(["pii_mask", "context_firewall", "injection_guard"]);
 
 function journalUnitsChanged(runState) {
@@ -375,7 +417,7 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
 }
 
 export function getForkActionLabel(row, policyCount) {
-  if (row?.kind === "tool" || row?.label === "pre_tool_use") {
+  if (row?.kind === "tool" || isToolGate(row)) {
     return `툴 실행 전 분기 · 정책 ${policyCount}개`;
   }
   if (row?.forkEdge === "after") {
@@ -388,7 +430,7 @@ function getForkActionDescription(row, request) {
   if (request && row?.eventId && request.event_id !== row.eventId) {
     return "선택한 마스킹 정책으로 툴 결과를 다시 만듭니다.";
   }
-  if (row?.kind === "tool" || row?.label === "pre_tool_use") {
+  if (row?.kind === "tool" || isToolGate(row)) {
     return "선택한 정책으로 툴 결과를 다시 만듭니다.";
   }
   if (row?.forkEdge === "after") {
@@ -433,7 +475,7 @@ export function getEventForkRequest(runState, row, rows = []) {
     // decision without saying so.
     const pre = (target >= 0 ? rows.slice(0, target) : rows).findLast((item) => (
       item.forkable
-      && item.label === "pre_tool_use"
+      && isToolGate(item)
       && rowCallId(item) === callId
       && item.eventId
     ));
@@ -461,7 +503,7 @@ export function createConsole({
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
     "version-switcher",
     "event-count", "outcome-strip",
-    "rerun", "retry-run", "return-draft", "trace",
+    "rerun", "retry-run", "return-draft", "trace", "guide",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
@@ -538,6 +580,33 @@ export function createConsole({
     }
   }
 
+  function renderGuide() {
+    const at = guideMatch(state.run.draft);
+    dom.guide.replaceChildren();
+    GUIDE.forEach((scene, index) => {
+      const item = documentRef.createElement("li");
+      item.className = `guide-step${index === at ? " is-current" : ""}`;
+      const button = documentRef.createElement("button");
+      button.type = "button";
+      button.disabled = !canEditDraft(state.run);
+      const label = documentRef.createElement("strong");
+      label.textContent = `${index + 1}. ${scene.label}`;
+      const teaches = documentRef.createElement("small");
+      teaches.textContent = scene.teaches;
+      button.append(label, teaches);
+      button.addEventListener("click", () => {
+        if (!canEditDraft(state.run)) return;
+        state.run = updateDraft(state.run, {
+          scenarioId: scene.scenarioId,
+          unitNames: [...scene.unitNames],
+        });
+        render();
+      });
+      item.append(button);
+      dom.guide.append(item);
+    });
+  }
+
   function renderLaunch() {
     const scenario = scenarioById(state.run.draft.scenarioId);
     if (!scenario) return;
@@ -547,6 +616,7 @@ export function createConsole({
     setText(dom["launch-prompt"], copy.prompt);
     renderChips(dom["launch-policies"], state.run.draft.unitNames);
     dom.run.disabled = !canStartRun(state.run);
+    renderGuide();
     renderScenarioMenu();
   }
 
@@ -893,6 +963,15 @@ export function createConsole({
         state.run,
         frame.outcome?.stop_reason ?? frame.stop_reason ?? "completed",
       );
+      // A finished scene loads the next one, so returning to the launch screen offers
+      // the thing that follows rather than the thing just watched.
+      const next = nextGuideStep(state.run.active, state.run.stopReason);
+      if (next >= 0) {
+        state.run = updateDraft(state.run, {
+          scenarioId: GUIDE[next].scenarioId,
+          unitNames: [...GUIDE[next].unitNames],
+        });
+      }
     } else if (frame.kind === "error") {
       state.run = failRun(state.run, frame.message ?? "실행에 실패했습니다.");
     } else if (frame.kind === "policy_summary") {

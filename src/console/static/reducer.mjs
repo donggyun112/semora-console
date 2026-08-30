@@ -24,12 +24,19 @@ function updateCoordinate(row, frame) {
   if (frame?.fork_origin_id) row.forkOriginId = frame.fork_origin_id;
 }
 
+export function isResumeGate(frame) {
+  // The runtime asks twice: pre_tool_use before the call, on_resume after a person
+  // answers. Both arrive as pre_tool_use events, and labelling them alike made one
+  // decision look like the same row printed twice.
+  return frame?.type === "pre_tool_use" && (frame.payload ?? {}).source === "on_resume";
+}
+
 function lifecycleSummary(frame) {
   const payload = frame.payload ?? {};
   if (frame.type === "branch_snapshot") {
     return `${payload.branch ?? "unknown"} branch`;
   }
-  if (frame.type === "pre_tool_use" && payload.source === "on_resume") {
+  if (isResumeGate(frame)) {
     return `승인 후 재검증 · ${payload.name ?? "tool"}`;
   }
   return (
@@ -159,7 +166,8 @@ export function reduceFrames(frames) {
 
     if (frame.kind === "lifecycle") {
       const payload = frame.payload ?? {};
-      append("lifecycle", frame.type ?? "lifecycle", lifecycleSummary(frame), {
+      const label = isResumeGate(frame) ? "on_resume" : frame.type ?? "lifecycle";
+      append("lifecycle", label, lifecycleSummary(frame), {
         callId: payload.call_id ?? null,
         details: { raw: frame, output: payload.result ?? null },
       });

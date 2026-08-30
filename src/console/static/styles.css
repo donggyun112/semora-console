@@ -1367,3 +1367,51 @@ button.primary:hover:not(:disabled) {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The three scenes, in the order they teach. The current one is where the launch
+   screen already is, so it reads as a position rather than a separate control. */
+.guide {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-step button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  background: var(--surface);
+  text-align: left;
+}
+
+.guide-step strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.guide-step small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.guide-step.is-current button {
+  border-color: var(--blue);
+  box-shadow: inset 2px 0 0 var(--blue);
+  background: rgba(111, 156, 255, 0.06);
+}
+
+@media (max-width: 720px) {
+  .guide {
+    grid-template-columns: 1fr;
+  }
+}
