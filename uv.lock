@@ -568,6 +568,7 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "nexora", extra = ["fork", "openrouter"] },
+    { name = "nexora-llm" },
     { name = "nexora-store-pg" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
@@ -583,6 +584,7 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "nexora", extras = ["fork", "openrouter"], editable = "../nexora-python/packages/nexora" },
+    { name = "nexora-llm", editable = "../nexora-python/packages/nexora-llm" },
     { name = "nexora-store-pg", editable = "../nexora-python/packages/nexora-store-pg" },
     { name = "python-dotenv", specifier = ">=1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },

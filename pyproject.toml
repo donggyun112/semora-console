@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "nexora[fork,openrouter]",
+  # Imported directly for the OpenRouter preset, so not left to a transitive edge.
+  "nexora-llm",
   "nexora-store-pg",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
