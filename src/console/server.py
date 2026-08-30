@@ -110,6 +110,9 @@ class ResumeRequest(BaseModel):
     run_id: str
     pending_id: str
     approved: bool
+    units: list[str] | None = None
+    """The policy in force at the moment of the decision. A suspension's window is open
+    ended, so the operator may have changed it since the call parked."""
 
 
 class AbortRequest(BaseModel):
@@ -138,6 +141,49 @@ class ForkRequest(BaseModel):
     event_id: str
     edge: Literal["before", "after"] = "before"
     units: list[str]
+
+
+_SESSION_KEY = "console:session"
+
+# What a later process needs to continue a run. `agent` is rebuilt from `scenario_id`,
+# and the projector's event bookkeeping is per-process, so neither is stored.
+_DURABLE_SESSION = (
+    "units", "scenario_id", "conversation_id", "origin_id", "source_run_id",
+    "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
+    "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
+)
+
+
+async def _remember_session(run_id: str, session: dict[str, Any]) -> None:
+    """Write the run's console state to the ledger beside the runtime's own.
+
+    ``_sessions`` is a cache of this, not the record. Without ``DATABASE_URL`` the ledger
+    is memory too and a restart loses the run exactly as the runtime does; with it, a
+    process that never saw the run can still resume it.
+    """
+    await _store.write_control(
+        run_id, _SESSION_KEY, {k: session[k] for k in _DURABLE_SESSION if k in session}
+    )
+
+
+async def _session(run_id: str) -> dict[str, Any]:
+    """The live session, rehydrated from the ledger when this process never saw the run."""
+    session = _sessions.get(run_id)
+    if session is not None:
+        return session
+    record = await _store.read(run_id, _SESSION_KEY)
+    if record.status != "done" or not isinstance(record.value, dict):
+        raise HTTPException(status_code=404, detail="unknown run_id")
+    stored = dict(record.value)
+    session = {
+        **stored,
+        "agent": _new_agent(str(stored.get("scenario_id") or "local")),
+        "aborted": False,
+        "event_ids": set(),
+        "forkable_events": {},
+    }
+    _sessions[run_id] = session
+    return session
 
 
 def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
@@ -223,7 +269,7 @@ def _project_event(
                 "kind": "unit",
                 "unit": unit,
                 "verdict": "suspend" if is_suspend else "deny",
-                "message": (res.get("message") or res.get("reason") or "denied") if isinstance(res, dict) else "denied",
+                "message": _verdict_message(res),
                 # Which call this verdict gates. Without it a parallel batch shows N
                 # identical SUSPEND rows and the operator cannot tell them apart.
                 "call_id": call_id,
@@ -262,6 +308,14 @@ def _project_event(
     if kind in {"text", "thinking"}:
         return [{"kind": "agent", "event": event}]
     return [{"kind": "agent", "event": event}]
+
+
+def _verdict_message(res: Any) -> str:
+    """The gate's own words, marked when the refusal came after an approval."""
+    if not isinstance(res, dict):
+        return "denied"
+    message = res.get("message") or res.get("reason") or "denied"
+    return f"승인 후 재검증 — {message}" if res.get("revalidated") else str(message)
 
 
 def _register_frame(session: dict[str, Any], frame: dict[str, Any]) -> None:
@@ -339,15 +393,17 @@ async def _stream(
             call_id = str(payload.get("call_id") or "")
             if call_id and call_id not in projected_denials:
                 unit = reason.get("unit", "control") if isinstance(reason, dict) else "control"
-                message = (
-                    reason.get("message") or reason.get("reason") or "denied"
-                    if isinstance(reason, dict)
-                    else "denied"
-                )
                 projected_denials.add(call_id)
                 mark(str(unit))
                 await put(
-                    {"kind": "unit", "unit": unit, "verdict": "deny", "message": message}
+                    {
+                        "kind": "unit",
+                        "unit": unit,
+                        "verdict": "deny",
+                        "message": _verdict_message(reason),
+                        "call_id": call_id,
+                        "name": payload.get("name"),
+                    }
                 )
         await put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
 
@@ -383,6 +439,7 @@ async def _stream(
             completed = _sessions.get(run_id)
             if completed is not None:
                 completed["terminal"] = True
+                await _remember_session(run_id, completed)
             await put({"kind": "outcome", "outcome": outcome})
             if selected:
                 await put(summary_frame())
@@ -464,6 +521,7 @@ async def run(request: RunRequest) -> StreamingResponse:
         "forkable_events": {},
         "terminal": False,
     }
+    await _remember_session(run_id, _sessions[run_id])
     if crash_at is not None:
         _store.arm(run_id, at=crash_at)
 
@@ -495,9 +553,7 @@ async def run(request: RunRequest) -> StreamingResponse:
 @app.post("/api/fork")
 async def fork(request: ForkRequest) -> StreamingResponse:
     """Re-run a completed scenario from the selected durable event coordinate."""
-    source = _sessions.get(request.run_id)
-    if source is None:
-        raise HTTPException(status_code=404, detail="unknown run_id")
+    source = await _session(request.run_id)
     if not source.get("terminal"):
         raise HTTPException(status_code=409, detail="run is not forkable")
     if request.event_id not in source.get("event_ids", set()):
@@ -547,6 +603,8 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "terminal": False,
     }
 
+    await _remember_session(fork_run_id, _sessions[fork_run_id])
+
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await run_from_event(
             runtime,
@@ -578,9 +636,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
 @app.post("/api/resume")
 async def resume(request: ResumeRequest) -> StreamingResponse:
     """Approve or deny a suspended call and continue the run."""
-    session = _sessions.get(request.run_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="unknown run_id")
+    session = await _session(request.run_id)
     answer = (
         {"type": "text", "text": "approved by the human"}
         if request.approved
@@ -588,6 +644,9 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
     )
 
     session["aborted"] = False
+    if request.units is not None:
+        session["units"] = [name for name in request.units if name in UNITS_BY_NAME]
+        await _remember_session(request.run_id, session)
     if session.get("crash") and session.get("crash_at") != "gate":
         _store.arm(request.run_id, at="commit")
 
@@ -612,9 +671,7 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
 @app.post("/api/recover")
 async def recover(request: RecoverRequest) -> StreamingResponse:
     """Finish a run whose worker died after a tool_call, before or after the effect."""
-    session = _sessions.get(request.run_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="unknown run_id")
+    session = await _session(request.run_id)
     session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:

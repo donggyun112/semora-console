@@ -1273,3 +1273,57 @@ async def test_denial_projects_policy_before_permission_lifecycle_once():
         and (frame.get("unit") == "dlp_block" or frame.get("type") == "permission_denied")
     ]
     assert visible == [("unit", "dlp_block"), ("lifecycle", "permission_denied")]
+
+
+def test_a_parked_run_resumes_in_a_process_that_never_saw_it(monkeypatch):
+    """The README proves exactly-once across a restart, and that proof went through
+    /api/resume — which used to 404 because the console's session dict is memory. The
+    run record lives in the ledger now, so a worker that never saw the run can finish it.
+    """
+    model = BoundFakeMessagesListChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "charge-restart-1", "name": "charge_card",
+                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
+                }],
+            ),
+            AIMessage(content="청구가 완료됐습니다."),
+        ]
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        started = client.post("/api/run", json={"scenario_id": "charge", "units": ["approval"]})
+        frames = [json.loads(line) for line in started.text.splitlines()]
+        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
+        pending = next(f["pending_id"] for f in frames if f["kind"] == "suspended")
+
+        # The worker goes away. Only the ledger survives.
+        server._sessions.clear()
+
+        resumed = client.post("/api/resume", json={
+            "run_id": run_id, "pending_id": pending, "approved": True,
+        })
+        assert resumed.status_code == 200, resumed.text
+        after = [json.loads(line) for line in resumed.text.splitlines()]
+
+    charged = [
+        f["event"]["result"] for f in after
+        if f.get("kind") == "agent"
+        and f["event"].get("type") == "tool_result"
+        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
+    ]
+    assert charged, after
+    assert charged[0]["execution_count"] == 1
+    assert server._sessions[run_id]["units"] == ["approval"]
+    assert server._sessions[run_id]["scenario_id"] == "charge"
+
+
+def test_an_unknown_run_id_is_still_a_404(monkeypatch):
+    """Rehydration must not turn a bad id into a run."""
+    with TestClient(app) as client:
+        refused = client.post("/api/resume", json={
+            "run_id": "run-does-not-exist", "pending_id": "x", "approved": True,
+        })
+    assert refused.status_code == 404

@@ -5,6 +5,9 @@ export const DEFAULT_DRAFT = Object.freeze({
 
 const STARTABLE = new Set(["idle", "terminal", "error"]);
 const EDITABLE = new Set(["idle", "terminal", "error"]);
+// A parked run can still have its policy changed. The window a suspension holds open is
+// unbounded, and the whole point of on_resume is that the rules may have moved inside it.
+const POLICY_EDITABLE = new Set(["idle", "terminal", "error", "suspended"]);
 const ENDABLE = new Set(["suspended", "recoverable", "terminal", "error"]);
 // A stream can park more than once (a parallel batch suspends per call, and a
 // recovered run parks again). Re-parking an already parked run is the server's
@@ -32,12 +35,14 @@ export function createRunState() {
 
 export const canStartRun = (state) => STARTABLE.has(state.phase);
 export const canEditDraft = (state) => EDITABLE.has(state.phase);
+export const canEditPolicy = (state) => POLICY_EDITABLE.has(state.phase);
 export const canSteer = (state) =>
   state.phase === "streaming" && Boolean(state.runId);
 export const acceptsStreamEnd = (state) => ENDABLE.has(state.phase);
 
 export function updateDraft(state, patch) {
-  if (!canEditDraft(state)) throw new Error("draft locked");
+  if (patch.scenarioId !== undefined && !canEditDraft(state)) throw new Error("draft locked");
+  if (patch.unitNames !== undefined && !canEditPolicy(state)) throw new Error("policy locked");
   return {
     ...state,
     draft: {

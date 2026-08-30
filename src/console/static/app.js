@@ -11,6 +11,7 @@ import {
   beginContinuation,
   beginFork,
   canEditDraft,
+  canEditPolicy,
   canStartRun,
   canSteer,
   createRunState,
@@ -490,7 +491,7 @@ export function createConsole({
 
   const scenarioById = (id) => state.scenarios.find((item) => item.id === id);
   const visibleConfig = () =>
-    ACTIVE_PHASES.has(state.run.phase) ? state.run.active : state.run.draft;
+    canEditPolicy(state.run) ? state.run.draft : state.run.active;
 
   function renderChips(container, names) {
     container.replaceChildren();
@@ -802,6 +803,7 @@ export function createConsole({
   function renderPolicyComposer() {
     const config = visibleConfig();
     const readOnly = ACTIVE_PHASES.has(state.run.phase);
+    const policyReadOnly = !canEditPolicy(state.run);
     dom.scenarios.replaceChildren();
     for (const scenario of state.scenarios) {
       const label = documentRef.createElement("label");
@@ -839,9 +841,9 @@ export function createConsole({
         input.type = "checkbox";
         input.value = unit.name;
         input.checked = config?.unitNames.includes(unit.name) ?? false;
-        input.disabled = readOnly;
+        input.disabled = policyReadOnly;
         input.addEventListener("change", () => {
-          if (!canEditDraft(state.run)) return;
+          if (!canEditPolicy(state.run)) return;
           state.run = updateDraft(state.run, { unitNames: checkedNames(dom.units) });
           render();
         });
@@ -980,6 +982,8 @@ export function createConsole({
       run_id: state.run.runId,
       pending_id: state.run.pendingId,
       approved,
+      // Whatever is selected right now, not what was selected when the call parked.
+      units: [...state.run.draft.unitNames],
     };
     await continueRun("/api/resume", body);
   }

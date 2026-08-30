@@ -23,7 +23,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage
-from nexora import Continue, ControlPlane, Deny, Halt, PendingInput, Proceed, Suspend
+from nexora import (
+    Continue,
+    ControlPlane,
+    Deny,
+    Halt,
+    PendingInput,
+    Proceed,
+    ResumeInput,
+    Suspend,
+)
 from nexora.contracts import ToolCall
 from nexora.controls import (
     Ctx,
@@ -244,6 +253,27 @@ async def log_gate(ctx: Ctx, reason: Any) -> Any:
     return Proceed([HumanMessage(LOG_HINT)])
 
 
+def revalidate(stages: list[Callable[..., Awaitable[Any]]]) -> Any:
+    """on_resume — the person answered; the gates in force *now* get the last word.
+
+    A suspension's window is open-ended and rules move inside it, so the stored answer is
+    an input to this decision rather than the decision itself. A gate that would suspend
+    again counts as satisfied — the answer it was waiting for has arrived. A gate that
+    denies outranks the approval, and the effect never runs.
+    """
+    permissions = Permissions(*stages)
+
+    async def stage(ctx: Ctx, call: ToolCall, resume: ResumeInput) -> Any:
+        decision = await permissions(ctx, call)
+        if isinstance(decision, Deny):
+            refused = dict(decision.result)
+            refused["revalidated"] = True
+            return Deny(refused)
+        return Continue()
+
+    return stage
+
+
 # ── registry ───────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -307,7 +337,11 @@ def compose_controls(
     for point, composer in _COMPOSERS.items():
         fns = [u.fn for u in chosen if u.point == point]
         if point == "pre_tool_use":
+            # The crash injector is not a policy, so it is not asked again on resume.
+            gates = list(fns)
             fns = extras + fns
+            if gates:
+                kwargs["on_resume"] = revalidate(gates)
         if fns:
             kwargs[point] = composer(*fns)
     return ControlPlane(**kwargs) if kwargs else None
