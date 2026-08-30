@@ -478,10 +478,16 @@ function getForkActionDescription(row, request) {
     ?? "선택한 정책으로 이 지점부터 다시 실행합니다.";
 }
 
+// A run the ledger stopped: it will not claim an effect it cannot vouch for, it is not
+// this worker's turn, or someone else holds the lease. `apply` parks all three the same
+// way, and this has to agree — read off the frames instead, they showed as 실행 중 with no
+// action, which is the one thing that is certainly untrue.
+const LEDGER_STOPS = new Set(["indeterminate", "fenced", "contended"]);
+
 export function deriveVersionPhase(frames, fallback = "idle") {
   for (const frame of [...frames].reverse()) {
     if (frame?.kind === "outcome") return "terminal";
-    if (frame?.kind === "error") return "error";
+    if (frame?.kind === "error" || LEDGER_STOPS.has(frame?.kind)) return "error";
     if (frame?.kind === "suspended") return "suspended";
     if (frame?.kind === "recoverable") return "recoverable";
     if (frame?.kind === "meta") return "streaming";
@@ -550,6 +556,9 @@ export function createConsole({
     steers: [],
     policyActivity: new Map(),
     booted: false,
+    // True only while a reload is replaying a run the server kept, so the frame handler
+    // can tell a restored run from one that is happening now.
+    restoring: false,
     policyOpener: null,
     forkEventIds: new Set(),
     selectedVersionRunId: null,
@@ -557,6 +566,27 @@ export function createConsole({
   };
 
   const OPERATOR_KEY = "semora-console:operator";
+  const RUN_KEY = "semora-console:run";
+
+  function rememberRun(runId) {
+    // The run id is the whole of what a reload loses: the ledger holds the run, the
+    // conversation holds its frames, and the server rebuilds a session it never saw from
+    // either. Only which run this browser was watching lives nowhere else.
+    try {
+      if (runId) globalThis.localStorage?.setItem(RUN_KEY, runId);
+      else globalThis.localStorage?.removeItem(RUN_KEY);
+    } catch {
+      // Storage refused: the run simply is not offered back after a reload.
+    }
+  }
+
+  function rememberedRun() {
+    try {
+      return globalThis.localStorage?.getItem(RUN_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  }
 
   function readOperator() {
     // localStorage is per browser, which is exactly the scope wanted: two people on the
@@ -1008,6 +1038,7 @@ export function createConsole({
     if (frame.kind === "meta") {
       state.run = attachRunId(state.run, frame.run_id);
       state.selectedVersionRunId = frame.run_id;
+      if (!state.restoring) rememberRun(frame.run_id);
     } else if (frame.kind === "suspended") {
       state.run = suspendRun(state.run, frame.pending_id);
     } else if (frame.kind === "recoverable") {
@@ -1199,6 +1230,7 @@ export function createConsole({
 
   function returnDraft() {
     if (!canStartRun(state.run)) return;
+    rememberRun(null);
     state.run = returnToDraft(state.run, { source: "active" });
     state.frames = [];
     state.selectedRowId = null;
@@ -1255,6 +1287,40 @@ export function createConsole({
     dom["boot-retry"].addEventListener("click", () => void boot());
   }
 
+  async function restoreRun() {
+    // Everything the run was is on the server; the browser only asks for it back. Frames
+    // are replayed through the same handler the stream uses, so a restored approval, a
+    // parked recovery and a branch point are the live ones rather than a second rendering
+    // of them.
+    const runId = rememberedRun();
+    if (!runId || !canStartRun(state.run)) return;
+    let kept = null;
+    try {
+      const response = await fetchRef(`/api/runs/${encodeURIComponent(runId)}/frames`);
+      if (!response.ok) throw new Error(String(response.status));
+      kept = await response.json();
+    } catch {
+      // The ledger no longer knows this run — a wiped volume, or a demo restarted clean.
+      rememberRun(null);
+      return;
+    }
+    if (!kept.frames?.length) {
+      rememberRun(null);
+      return;
+    }
+    state.restoring = true;
+    try {
+      state.run = updateDraft(state.run, {
+        scenarioId: kept.scenario_id ?? state.run.draft.scenarioId,
+        unitNames: [...(kept.units ?? [])],
+      });
+      state.run = startRun(state.run);
+      for (const frame of kept.frames) handleFrame(frame);
+    } finally {
+      state.restoring = false;
+    }
+  }
+
   async function boot() {
     setHidden(dom["boot-error"], true);
     try {
@@ -1268,6 +1334,7 @@ export function createConsole({
       state.unitsMeta = new Map(unitPayload.units.map((unit) => [unit.name, unit]));
       if (!state.booted) bind();
       state.booted = true;
+      await restoreRun();
       render();
     } catch {
       setHidden(dom["boot-error"], false);

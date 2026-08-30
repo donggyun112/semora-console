@@ -1524,3 +1524,58 @@ async def test_a_named_run_keeps_its_ledger_across_a_restart():
         assert recorded["idempotency"]["key"] == "charge:c-001"
     finally:
         server._sessions.pop("run-named", None)
+
+
+def test_a_reload_gets_the_run_back_frame_for_frame(monkeypatch):
+    """The browser holds a run id; everything else it was showing comes from the server.
+
+    Frames were built while streaming and kept nowhere, so a reload dropped an operator out
+    of a run the ledger still held — a parked approval became unreachable from the page that
+    parked it. They are kept beside the conversation now and read back in order.
+    """
+    model = BoundFakeMessagesListChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "id": "charge-reload-1",
+                        "name": "charge_card",
+                        "args": {"customer_id": "c-001", "amount": 49},
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="청구가 완료됐습니다."),
+        ]
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        streamed = [
+            json.loads(line)
+            for line in client.post(
+                "/api/run", json={"scenario_id": "charge", "units": ["approval"]}
+            ).text.splitlines()
+        ]
+        run_id = next(f["run_id"] for f in streamed if f["kind"] == "meta")
+        try:
+            payload = client.get(f"/api/runs/{run_id}/frames").json()
+
+            assert payload["scenario_id"] == "charge"
+            assert payload["units"] == ["approval"]
+            assert [f["kind"] for f in payload["frames"]] == [
+                f["kind"] for f in streamed
+            ], "the same frames in the same order"
+            assert any(f["kind"] == "suspended" for f in payload["frames"]), (
+                "including the one that says a person has to decide"
+            )
+            parked = next(f for f in payload["frames"] if f["kind"] == "suspended")
+            assert parked["pending_id"], "and what to answer it with"
+        finally:
+            server._sessions.pop(run_id, None)
+
+
+def test_a_run_nobody_kept_is_not_offered_back():
+    """A wiped ledger has to say so, or the console restores a run that does not exist."""
+    with TestClient(app) as client:
+        assert client.get("/api/runs/run-nothing-here/frames").status_code == 404

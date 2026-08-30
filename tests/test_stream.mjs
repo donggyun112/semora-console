@@ -1031,6 +1031,19 @@ assert.equal(
   "a selected completed version keeps its own status while another version streams",
 );
 
+// A run the ledger stopped is stopped. Missing these kinds left the header on 실행 중
+// with no way out — the console claiming a run was in flight after it had ended.
+for (const kind of ["indeterminate", "fenced", "contended"]) {
+  assert.equal(
+    deriveVersionPhase([
+      { kind: "meta", run_id: "run-x" },
+      { kind, run_id: "run-x", message: "..." },
+    ]),
+    "error",
+    `${kind} ends the run`,
+  );
+}
+
 const versionedTraceFrames = [
   { kind: "meta", run_id: "run-v1", units: ["dlp_block"] },
   {

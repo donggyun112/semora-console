@@ -16,6 +16,7 @@ Scenario prompts are locked. Mid-run steer is the operator's one queue (capped),
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import json
 import os
 import re
@@ -36,6 +37,7 @@ from semora.contracts.types import PendingInput
 from semora.dispatch import Answer, Prompt, Recover
 from semora.orchestrator import AgentSuspended, Orchestrator
 from semora_store import Contended, Fenced, Indeterminate
+from semora.transcript import SCHEMA_VERSION, entry_id
 from semora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
@@ -396,6 +398,41 @@ def _register_frame(session: dict[str, Any], frame: dict[str, Any]) -> None:
         session.setdefault("forkable_events", {})[restored_id] = update["restore_edge"]
 
 
+CONSOLE_FRAME = "console_frame"
+"""A frame kept beside the conversation it describes.
+
+The transcript already carries entries that are not messages — a fork checkpoint is one —
+and its readers skip a kind they do not know, by contract. Frames go here rather than into
+a table of their own because a fork continues its parent's conversation: one read returns
+every version's trace in the order it happened, which is exactly what the console had been
+holding in browser memory and losing on reload.
+"""
+
+
+async def _keep_frame(conversation_id: str, run_id: str, sequence: int, frame: dict[str, Any]) -> None:
+    """Persist one rendered frame. Unchained, so it never joins the model's branch."""
+    body = {"type": CONSOLE_FRAME, "sequence": sequence, "frame": frame}
+    await _transcript.append(
+        {
+            "uuid": entry_id(f"{run_id}:{sequence}", body),
+            "conversation_id": conversation_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "schema_version": SCHEMA_VERSION,
+            "metadata": {"run_id": run_id},
+            **body,
+        }
+    )
+
+
+def _kept_frames(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every frame this conversation kept, in the order they were rendered."""
+    return [
+        entry["frame"]
+        for entry in entries
+        if entry.get("type") == CONSOLE_FRAME and isinstance(entry.get("frame"), dict)
+    ]
+
+
 async def _stream(
     run_id: str, attempt: Any, *, selected: list[str], scenario_id: str, open_session: bool = False,
 ) -> AsyncIterator[str]:
@@ -421,12 +458,19 @@ async def _stream(
             )
             session["event_projector"] = projector
 
+    kept = 0
+
     async def put(frame: dict[str, Any]) -> None:
+        nonlocal kept
         frame = {**frame, "run_id": run_id}
         if projector is not None:
             frame = await projector.stamp(frame)
         if session is not None:
             _register_frame(session, frame)
+            conversation_id = session.get("conversation_id")
+            if conversation_id:
+                await _keep_frame(str(conversation_id), run_id, kept, frame)
+                kept += 1
         await queue.put(frame)
 
     def mark(unit: str) -> None:
@@ -838,6 +882,24 @@ async def _drop_queued_inputs(run_id: str) -> int:
     if waiting:
         await _store.discard_inputs(run_id, waiting)
     return len(waiting)
+
+
+@app.get("/api/runs/{run_id}/frames")
+async def kept_frames(run_id: str) -> dict[str, Any]:
+    """Every frame of the conversation this run belongs to, oldest first.
+
+    A fork continues its parent's conversation, so this returns the whole version chain —
+    the same sequence the browser accumulates while streaming. Reloading the page replays
+    it instead of starting from nothing.
+    """
+    session = await _session(run_id)
+    entries = await _transcript.read(str(session["conversation_id"]))
+    return {
+        "run_id": run_id,
+        "scenario_id": session.get("scenario_id"),
+        "units": session.get("units") or [],
+        "frames": _kept_frames(entries),
+    }
 
 
 @app.post("/api/abort")
