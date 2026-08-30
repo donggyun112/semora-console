@@ -417,21 +417,12 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
 }
 
 export function isForkRepresentative(rows, index) {
-  // One button per boundary, on the row that names it. The projector decided which
-  // coordinates are one boundary and stamped them with a shared seam, so grouping is a
-  // lookup rather than a guess about what a label means. Of the rows in a seam a person
-  // points at the ones carrying a tool's name, so those win over the plumbing.
+  // One button per boundary, on the event it actually branches from. A boundary spans
+  // several rows and only its last one carries the coordinate: a tool boundary is the
+  // gate, not the call the model made. Putting the button on the tool's name read
+  // better and said something untrue about where the run resumes.
   const members = forkSeam(rows, index);
-  if (members === null) return false;
-  const named = members.find((at) => ["tool", "result"].includes(rows[at].kind));
-  return index === (named ?? members[0]);
-}
-
-export function forkSeamRow(rows, index) {
-  // The coordinate the button uses, which is not the row it sits on: a transcript leaf
-  // exists at the end of a boundary rather than at its start.
-  const members = forkSeam(rows, index);
-  return members === null ? null : rows[members[members.length - 1]];
+  return members !== null && index === members[members.length - 1];
 }
 
 function forkSeam(rows, index) {
@@ -759,11 +750,8 @@ export function createConsole({
       entry.className = `trace-entry version-${row.versionOrigin ?? "current"}`;
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
-      const seam = isForkRepresentative(state.rows, index)
-        ? forkSeamRow(state.rows, index)
-        : null;
-      const request = seam
-        ? getEventForkRequest(state.run, seam)
+      const request = isForkRepresentative(state.rows, index)
+        ? getEventForkRequest(state.run, row)
         : null;
       if (request) {
         const action = documentRef.createElement("div");
@@ -771,9 +759,9 @@ export function createConsole({
         const button = documentRef.createElement("button");
         button.type = "button";
         button.textContent = getForkActionLabel(
-          row, request.units.length, isRetargetedFork(seam, request),
+          row, request.units.length, isRetargetedFork(row, request),
         );
-        const forkDescription = getForkActionDescription(seam, request);
+        const forkDescription = getForkActionDescription(row, request);
         button.title = [
           `적용 정책: ${request.units.join(", ") || "없음"}`,
           forkDescription,

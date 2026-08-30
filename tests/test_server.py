@@ -92,7 +92,13 @@ def _approved_charge_frames(monkeypatch):
     return run_id, initial, resumed
 
 
-def test_resume_stabilizes_the_original_tool_request_and_gate(monkeypatch):
+def test_resume_stabilizes_the_gate_and_only_the_gate(monkeypatch):
+    """A boundary has one coordinate, and for a tool call it is the gate.
+
+    The model asking for the tool restores to the same place, so marking it too gave the
+    trace two rows claiming one branch point — and the console then had to decide which
+    of them the operator meant.
+    """
     run_id, initial, resumed = _approved_charge_frames(monkeypatch)
     try:
         request = next(
@@ -112,8 +118,9 @@ def test_resume_stabilizes_the_original_tool_request_and_gate(monkeypatch):
             for update in frame.get("restore_updates", [])
         }
 
-        assert restored[request["event_id"]] == "after"
         assert restored[original_pre["event_id"]] == "before"
+        assert request["event_id"] not in restored
+        assert not request.get("forkable")
     finally:
         server._sessions.pop(run_id, None)
 

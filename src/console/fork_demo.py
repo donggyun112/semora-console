@@ -182,13 +182,9 @@ class EventCheckpointProjector:
         checkpoint_phase = str(frame.get("checkpoint_phase") or "")
         restore_updates: list[dict[str, Any]] = []
 
-        if (
-            call_id
-            and frame_kind == "agent"
-            and agent_type == "tool_call"
-            and checkpoint_phase != "tool_result"
-        ):
-            self._before_tool_events.setdefault(call_id, []).append((event_id, "after"))
+        # One boundary, one coordinate: the gate. The model asking for a tool is an
+        # observation, not a place to resume — it restores to where the gate does, and
+        # marking it too left the console with two rows claiming one branch point.
         if call_id and frame_kind == "lifecycle" and frame_type.endswith("pre_tool_use"):
             self._before_tool_events.setdefault(call_id, []).append((event_id, "before"))
 

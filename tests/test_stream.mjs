@@ -9,7 +9,6 @@ import {
   getForkActionLabel,
   GUIDE,
   getEventForkRequest,
-  forkSeamRow,
   guideMatch,
   isRetargetedFork,
   isForkRepresentative,
@@ -1533,12 +1532,11 @@ const seamRows = [
 assert.deepEqual(
   seamRows.map((row, index) => (isForkRepresentative(seamRows, index)
     ? `${index}:${row.label}` : null)).filter(Boolean),
-  ["0:context_injected", "1:read_customer 호출", "4:read_customer 결과"],
-  "the button sits on the row a person points at, one per boundary",
+  ["0:context_injected", "2:pre_tool_use", "5:context_injected"],
+  "one button per boundary, on the event it branches from",
 );
-assert.equal(forkSeamRow(seamRows, 1).eventId, "ev-gate", "the coordinate is the seam's last");
-assert.equal(forkSeamRow(seamRows, 4).eventId, "ev-ctx");
-assert.equal(forkSeamRow(seamRows, 6), null, "a row that is no coordinate has no seam");
+assert.equal(isForkRepresentative(seamRows, 1), false, "a tool's name is not its gate");
+assert.equal(isForkRepresentative(seamRows, 6), false, "a row that is no coordinate");
 
 // A replayed call adds no transcript entry, so the boundary before it and the one after
 // it restore to the same leaf while staying two different places to branch from. The
@@ -1554,11 +1552,9 @@ const replayedRows = [
 assert.deepEqual(
   replayedRows.map((row, index) => (isForkRepresentative(replayedRows, index)
     ? `${index}:${getForkActionLabel(row, 0)}` : null)).filter(Boolean),
-  ["0:툴 실행 전 분기 · 정책 0개", "1:툴 결과에서 분기 · 정책 0개"],
+  ["0:툴 실행 전 분기 · 정책 0개", "2:툴 결과에서 분기 · 정책 0개"],
   "one leaf, two boundaries, two buttons",
 );
-assert.equal(forkSeamRow(replayedRows, 0).eventId, "ev-pre");
-assert.equal(forkSeamRow(replayedRows, 1).eventId, "ev-ctx");
 
 // A result coordinate holds the result a journal unit already rewrote, so changing
 // that unit moves the branch back to the call. The button says so rather than naming a
