@@ -416,6 +416,28 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
   return [...inherited, ...current];
 }
 
+export function forkClassOf(row) {
+  // Three places a branch can start, and every forkable row is one of them: before the
+  // input entered context, before a tool ran, or after its result was recorded.
+  if (!row?.forkable) return null;
+  if (row.kind === "tool" || isToolGate(row)) return "gate";
+  if (row.forkEdge === "after") return "result";
+  return "input";
+}
+
+export function isForkRepresentative(rows, index) {
+  // One button per outcome, not per coordinate. A single boundary shows up as several
+  // rows — the call, its gate, the result, the result entering context — and they all
+  // branch to the same place. The last row of each run is the one that names the seam.
+  const here = forkClassOf(rows?.[index]);
+  if (here === null) return false;
+  for (let next = index + 1; next < rows.length; next += 1) {
+    const other = forkClassOf(rows[next]);
+    if (other !== null) return other !== here;
+  }
+  return true;
+}
+
 export function getForkActionLabel(row, policyCount) {
   if (row?.kind === "tool" || isToolGate(row)) {
     return `툴 실행 전 분기 · 정책 ${policyCount}개`;
@@ -465,7 +487,9 @@ export function getEventForkRequest(runState, row, rows = []) {
   if (
     journalUnitsChanged(runState) &&
     row.forkEdge === "after" &&
-    (row.label === "post_tool_use" || row.kind === "result")
+    (row.label === "post_tool_use"
+      || row.kind === "result"
+      || row.label === "context_injected")
   ) {
     const callId = rowCallId(row);
     const target = rows.indexOf(row);
@@ -698,7 +722,9 @@ export function createConsole({
       entry.className = `trace-entry version-${row.versionOrigin ?? "current"}`;
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
-      const request = getEventForkRequest(state.run, row, state.rows);
+      const request = isForkRepresentative(state.rows, index)
+        ? getEventForkRequest(state.run, row, state.rows)
+        : null;
       if (request) {
         const action = documentRef.createElement("div");
         action.className = "trace-fork";

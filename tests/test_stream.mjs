@@ -8,8 +8,10 @@ import {
   deriveVersionRows,
   getForkActionLabel,
   GUIDE,
+  forkClassOf,
   getEventForkRequest,
   guideMatch,
+  isForkRepresentative,
   nextGuideStep,
   pickInlineActionHost,
   getLaunchCopy,
@@ -1519,5 +1521,32 @@ assert.equal(steerSummary({ admits: "next_drain" }, false), "다음 도구 경�
 assert.equal(steerSummary({ admits: "on_resume" }, false), "재개될 때 반영");
 assert.equal(steerSummary({}, false), "지시 대기");
 assert.equal(steerSummary({ admits: "next_drain" }, true), "지시 반영");
+
+// A boundary shows up as several rows and they all branch to the same place. One
+// button per outcome; the last row of each run names the seam.
+const traceRows = [
+  { label: "context_injected", forkable: true, forkEdge: "before" },
+  { kind: "tool", label: "read_customer 호출", forkable: true, forkEdge: "after" },
+  { label: "pre_tool_use", forkable: true, forkEdge: "before" },
+  { label: "post_tool_use", forkable: true, forkEdge: "after" },
+  { kind: "result", label: "read_customer 결과", forkable: true, forkEdge: "after" },
+  { label: "context_injected", forkable: true, forkEdge: "after" },
+  { kind: "tool", label: "send_email 호출", forkable: true, forkEdge: "after" },
+  { label: "pre_tool_use", forkable: true, forkEdge: "before" },
+  { kind: "policy", label: "dlp_block", forkable: false },
+  { label: "permission_denied", forkable: false },
+  { label: "context_injected", forkable: true, forkEdge: "after" },
+];
+assert.deepEqual(
+  traceRows.map((row, index) => (isForkRepresentative(traceRows, index)
+    ? `${index}:${forkClassOf(row)}` : null)).filter(Boolean),
+  ["0:input", "2:gate", "5:result", "7:gate", "10:result"],
+);
+assert.equal(
+  traceRows.filter((row) => row.forkable).length, 9,
+  "nine coordinates stay forkable; only the buttons collapse",
+);
+assert.equal(forkClassOf({ forkable: false }), null);
+assert.equal(forkClassOf({ label: "on_resume", forkable: true }), "gate");
 
 console.log("run inspector state ok");
