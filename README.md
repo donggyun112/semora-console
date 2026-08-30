@@ -139,6 +139,18 @@ the build context to the parent directory. The ledger lives in a named volume, w
 why `restart` and even `down` keep a parked run and `down -v` is the one that throws it
 away.
 
+A second worker on the same ledger, for the contention a single process cannot show:
+
+```bash
+docker compose --profile two-workers up -d      # worker-a :8850, worker-b :8851
+```
+
+They take separate lease owners on purpose. Workers sharing a name renew each other's
+lease instead of contending, which would make the run look free while somebody else is
+executing it. While one is mid-round, `select run_id, owner, token from nexora_run_lease`
+names the holder, and the other answers a request for that run with **contended** rather
+than running it a second time.
+
 Prove that a parked run survives the worker that parked it:
 
 ```bash

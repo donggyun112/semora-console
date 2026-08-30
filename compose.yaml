@@ -26,17 +26,34 @@ services:
       retries: 30
 
   console:
-    build:
+    build: &console-build
       context: .
       dockerfile: Dockerfile
       additional_contexts:
         nexora: ../nexora-python
-    environment:
+    environment: &console-env
       DATABASE_URL: postgresql://console:console@db:5432/console
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
       MODEL: ${MODEL:-~deepseek/deepseek-v4-flash-latest}
+      CONSOLE_WORKER: worker-a
     ports:
       - "8850:8850"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # A second worker on the same ledger, off unless asked for:
+  #     docker compose --profile two-workers up -d
+  # Its own lease owner, because a worker that shares a name renews the other's lease
+  # instead of contending with it.
+  console-b:
+    profiles: ["two-workers"]
+    build: *console-build
+    environment:
+      <<: *console-env
+      CONSOLE_WORKER: worker-b
+    ports:
+      - "8851:8850"
     depends_on:
       db:
         condition: service_healthy

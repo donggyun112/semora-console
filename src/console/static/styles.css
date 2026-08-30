@@ -843,6 +843,15 @@ button.primary:hover:not(:disabled) {
   letter-spacing: 0.04em;
 }
 
+.trace-entry[data-kind="contended"] .trace-label {
+  color: var(--violet);
+}
+
+.trace-entry[data-kind="contended"] {
+  box-shadow: inset 2px 0 0 var(--violet);
+  background: rgba(167, 139, 250, 0.06);
+}
+
 .trace-entry[data-kind="indeterminate"] {
   box-shadow: inset 2px 0 0 var(--amber);
   background: rgba(244, 185, 66, 0.09);

@@ -262,6 +262,14 @@ export function reduceFrames(frames) {
       continue;
     }
 
+    if (frame.kind === "contended") {
+      append("contended", "contended", frame.message ?? "다른 워커가 잡고 있습니다", {
+        tone: "halt",
+        details: { worker: frame.worker ?? null, raw: frame },
+      });
+      continue;
+    }
+
     if (frame.kind === "indeterminate") {
       append("indeterminate", "indeterminate", frame.message ?? "이 효과는 알 수 없습니다", {
         tone: "halt",

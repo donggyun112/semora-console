@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import HumanMessage
+from langchain_core.utils.uuid import uuid7
 from nexora import Agent, AgentRuntime
 from nexora.contracts.types import PendingInput
 from nexora.dispatch import Answer, Prompt, Recover
@@ -535,7 +536,8 @@ async def run(request: RunRequest) -> StreamingResponse:
     scenario = _SCENARIO_BY_ID.get(request.scenario_id)
     if scenario is None:
         raise HTTPException(status_code=404, detail="unknown scenario_id")
-    run_id = f"run-{uuid.uuid4().hex[:12]}"
+    # Time-ordered, so a ledger row sorts by when the run started rather than by chance.
+    run_id = f"run-{uuid7()}"
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
@@ -606,7 +608,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
     coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
-    fork_run_id = f"run-{uuid.uuid4().hex[:12]}"
+    fork_run_id = f"run-{uuid7()}"
     fork_units = [name for name in request.units if name in UNITS_BY_NAME]
     fork_mode = "input" if coordinate.origin_id is not None else "leaf"
     child_origin_runs = dict(source["origin_runs"])

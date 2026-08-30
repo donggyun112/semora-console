@@ -1493,4 +1493,11 @@ assert.deepEqual(unknown.map((row) => [row.kind, row.label]), [
 assert.equal(unknown[1].details.step, "call-a");
 assert.equal(unknown[1].tone, "halt");
 
+// A run another worker holds is not this one's to finish, and not a failure either.
+const contended = reduceFrames([
+  { kind: "contended", worker: "worker-b", message: "다른 워커가 이 실행을 잡고 있습니다" },
+]);
+assert.deepEqual([contended[0].kind, contended[0].label], ["contended", "contended"]);
+assert.equal(contended[0].details.worker, "worker-b");
+
 console.log("run inspector state ok");

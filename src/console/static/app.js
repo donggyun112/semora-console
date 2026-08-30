@@ -972,6 +972,9 @@ export function createConsole({
           unitNames: [...GUIDE[next].unitNames],
         });
       }
+    } else if (frame.kind === "contended") {
+      // Not this worker's run to finish. The lease is the answer, not a retry loop.
+      state.run = failRun(state.run, frame.message ?? "다른 워커가 잡고 있습니다");
     } else if (frame.kind === "indeterminate") {
       // Not a failure. The run stopped because the ledger will not claim an effect it
       // cannot vouch for, and the next move is a person's.
