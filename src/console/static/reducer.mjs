@@ -262,6 +262,14 @@ export function reduceFrames(frames) {
       continue;
     }
 
+    if (frame.kind === "indeterminate") {
+      append("indeterminate", "indeterminate", frame.message ?? "이 효과는 알 수 없습니다", {
+        tone: "halt",
+        details: { step: frame.step ?? null, raw: frame },
+      });
+      continue;
+    }
+
     if (frame.kind === "recoverable") {
       // The approval-gate crash fires before the park is written, so the pre_tool_use
       // row it left behind records work that never committed. Drop that orphan or the

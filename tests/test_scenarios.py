@@ -5,7 +5,7 @@ from console.scenarios import SCENARIOS
 def test_scenarios_well_formed():
     ids = [s["id"] for s in SCENARIOS]
     assert ids == [
-        "note", "customer", "leak", "inject", "charge", "crash", "batch", "parallel",
+        "note", "customer", "leak", "inject", "charge", "crash", "unknown_effect", "batch", "parallel",
         "parallel_crash", "fork_masking",
     ]
     for s in SCENARIOS:

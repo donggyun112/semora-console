@@ -503,7 +503,7 @@ export function createConsole({
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
     "version-switcher",
     "event-count", "outcome-strip",
-    "rerun", "retry-run", "return-draft", "trace", "guide",
+    "rerun", "retry-run", "return-draft", "trace", "guide", "recover-safe",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
@@ -972,6 +972,10 @@ export function createConsole({
           unitNames: [...GUIDE[next].unitNames],
         });
       }
+    } else if (frame.kind === "indeterminate") {
+      // Not a failure. The run stopped because the ledger will not claim an effect it
+      // cannot vouch for, and the next move is a person's.
+      state.run = failRun(state.run, frame.message ?? "이 효과는 알 수 없습니다");
     } else if (frame.kind === "error") {
       state.run = failRun(state.run, frame.message ?? "실행에 실패했습니다.");
     } else if (frame.kind === "policy_summary") {
@@ -1067,9 +1071,12 @@ export function createConsole({
     await continueRun("/api/resume", body);
   }
 
-  async function recover() {
+  async function recover(retryRunning = true) {
     if (state.run.phase !== "recoverable") return;
-    await continueRun("/api/recover", { run_id: state.run.runId });
+    await continueRun("/api/recover", {
+      run_id: state.run.runId,
+      retry_running: retryRunning,
+    });
   }
 
   async function forkSource(row) {
@@ -1159,7 +1166,8 @@ export function createConsole({
     dom.abort.addEventListener("click", () => void abort());
     dom.approve.addEventListener("click", () => void decide(true));
     dom.deny.addEventListener("click", () => void decide(false));
-    dom.recover.addEventListener("click", () => void recover());
+    dom.recover.addEventListener("click", () => void recover(true));
+    dom["recover-safe"].addEventListener("click", () => void recover(false));
     dom["steer-form"].addEventListener("submit", sendSteer);
     dom["details-close"].addEventListener("click", () => {
       state.selectedRowId = null;

@@ -54,6 +54,13 @@ SCENARIOS = [
         "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
     },
     {
+        "id": "unknown_effect",
+        "title": "청구 도중 장애",
+        "risk": "나갔는지 알 수 없음",
+        "forkable": True,
+        "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
+    },
+    {
         "id": "batch",
         "title": "일괄 청구",
         "risk": "멈추지 않으면 청구가 이어짐",

@@ -4,8 +4,12 @@ from html.parser import HTMLParser
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.language_models.fake_chat_models import (
+    FakeMessagesListChatModel,
+    GenericFakeChatModel,
+)
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 from nexora import Agent
 from nexora.contracts.events import EventType
 from nexora.dispatch import Answer, Prompt, Recover
@@ -26,6 +30,26 @@ from console.server import (
 class BoundFakeMessagesListChatModel(FakeMessagesListChatModel):
     def bind_tools(self, _tools, **_kwargs):
         return self
+
+
+class StreamingFakeChatModel(GenericFakeChatModel):
+    """A fake that streams chunks, which the journal needs to be replayable.
+
+    ``FakeMessagesListChatModel`` yields whole messages, so a durable model step recorded
+    from it cannot be replayed — a shape only the recovery path ever reads.
+    """
+
+    def bind_tools(self, _tools, **_kwargs):
+        return self
+
+    def _stream(self, messages, *args, **kwargs):
+        reply = next(self.messages)
+        if reply.tool_calls:
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content=reply.content, tool_calls=reply.tool_calls)
+            )
+            return
+        yield ChatGenerationChunk(message=AIMessageChunk(content=str(reply.content)))
 
 
 def _approved_charge_frames(monkeypatch):
@@ -284,7 +308,7 @@ def test_scenarios_endpoint():
         r = c.get("/api/scenarios")
         assert r.status_code == 200
         assert [s["id"] for s in r.json()] == [
-            "note", "customer", "leak", "inject", "charge", "crash", "batch", "parallel",
+            "note", "customer", "leak", "inject", "charge", "crash", "unknown_effect", "batch", "parallel",
             "parallel_crash", "fork_masking",
         ]
 
@@ -1327,3 +1351,45 @@ def test_an_unknown_run_id_is_still_a_404(monkeypatch):
             "run_id": "run-does-not-exist", "pending_id": "x", "approved": True,
         })
     assert refused.status_code == 404
+
+
+def test_an_effect_that_started_and_never_reported_is_not_guessed(monkeypatch):
+    """The crash seam that leaves a step running is the only one recovery cannot decide.
+
+    Retrying repeats a charge that may already have gone out; reporting it stops and
+    hands the call to a person. The runtime asks rather than picking, so the console has
+    to ask too.
+    """
+    model = StreamingFakeChatModel(
+        messages=iter([
+            AIMessage(
+                content="",
+                tool_calls=[{
+                    "id": "charge-unknown-1", "name": "charge_card",
+                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
+                }],
+            ),
+            AIMessage(content="청구했습니다."),
+        ])
+    )
+    monkeypatch.setattr(server, "openrouter_model", lambda: model)
+    with TestClient(app) as client:
+        started = client.post("/api/run", json={"scenario_id": "unknown_effect", "units": []})
+        frames = [json.loads(line) for line in started.text.splitlines()]
+        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
+        assert any(f["kind"] == "recoverable" for f in frames), frames
+
+        reported = client.post(
+            "/api/recover", json={"run_id": run_id, "retry_running": False}
+        )
+        after = [json.loads(line) for line in reported.text.splitlines()]
+
+    unknown = [f for f in after if f["kind"] == "indeterminate"]
+    assert unknown, after
+    assert unknown[0]["step"]
+    assert not [
+        f for f in after
+        if f.get("kind") == "agent"
+        and f["event"].get("type") == "tool_result"
+        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
+    ], "reporting must not repeat the effect it cannot vouch for"

@@ -836,6 +836,18 @@ button.primary:hover:not(:disabled) {
   color: var(--amber);
 }
 
+/* The one row that reports a thing nobody knows. It is not a failure, so it does not
+   borrow the failure colour, and it should be the row a reader stops on. */
+.trace-entry[data-kind="indeterminate"] .trace-label {
+  color: var(--amber);
+  letter-spacing: 0.04em;
+}
+
+.trace-entry[data-kind="indeterminate"] {
+  box-shadow: inset 2px 0 0 var(--amber);
+  background: rgba(244, 185, 66, 0.09);
+}
+
 .trace-entry[data-kind="error"] .trace-label {
   color: var(--red);
 }

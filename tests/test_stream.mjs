@@ -1480,4 +1480,17 @@ assert.equal(
 assert.equal(nextGuideStep({ scenarioId: "crash", unitNames: ["approval"] }, "completed"), 2);
 assert.equal(nextGuideStep({ scenarioId: "leak", unitNames: [] }, "completed"), -1);
 
+// A step that started and never reported is its own outcome, not a failure row.
+const unknown = reduceFrames([
+  { kind: "recoverable", step: "call-a", message: "워커 장애" },
+  { kind: "indeterminate", step: "call-a",
+    message: "이 효과는 나갔을 수도, 안 나갔을 수도 있습니다" },
+]);
+assert.deepEqual(unknown.map((row) => [row.kind, row.label]), [
+  ["recovery", "recover"],
+  ["indeterminate", "indeterminate"],
+]);
+assert.equal(unknown[1].details.step, "call-a");
+assert.equal(unknown[1].tone, "halt");
+
 console.log("run inspector state ok");

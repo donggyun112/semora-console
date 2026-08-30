@@ -4,8 +4,10 @@ Suspension, recovery, and exactly-once effects survive a process restart only wh
 the step ledger and transcript are persistent, so durable deployments set DATABASE_URL.
 
 ``FaultInjectingSteps`` wraps whichever ledger is in use so crash scenarios can kill
-the worker at one of two seams: after ``finish_effect`` (no approval unit) or at the
-first ``pre_tool_use`` (approval unit on — before the park).
+the worker at one of three seams: after ``finish_effect`` (the effect committed), at the
+first ``pre_tool_use`` (before the park), or between ``start`` and ``finish_effect`` —
+the only one that leaves a step ``running``, which is to say an effect nobody can say
+happened or did not.
 """
 
 from __future__ import annotations
@@ -33,17 +35,21 @@ class FaultInjectingSteps:
         self._inner = inner
         self._armed: set[str] = set()
         self._gate: set[str] = set()
+        self._effect: set[str] = set()
 
     def arm(self, run_id: str, *, at: str = "commit") -> None:
         self._armed.add(run_id)
+        self._gate.discard(run_id)
+        self._effect.discard(run_id)
         if at == "gate":
             self._gate.add(run_id)
-        else:
-            self._gate.discard(run_id)
+        elif at == "effect":
+            self._effect.add(run_id)
 
     def disarm(self, run_id: str) -> None:
         self._armed.discard(run_id)
         self._gate.discard(run_id)
+        self._effect.discard(run_id)
 
     def consume_gate(self, run_id: str) -> bool:
         """True once: crash at ``pre_tool_use`` before any park is written."""
@@ -65,13 +71,34 @@ class FaultInjectingSteps:
         child = FaultInjectingSteps(inner)
         child._armed = self._armed
         child._gate = self._gate
+        child._effect = self._effect
         return child
+
+    async def start(self, run_id: str, key: str, token: int = 0) -> bool:
+        """Record intent, then die before the effect can report. The step stays ``running``.
+
+        This is the seam the other two cannot reach. A crash before the park leaves nothing
+        started; a crash after ``finish_effect`` leaves a committed result. Only here does
+        the ledger end up holding a step that may or may not have reached the world, which
+        is the state ``Indeterminate`` names.
+        """
+        started = await self._inner.start(run_id, key, token)
+        if (
+            run_id in self._armed
+            and run_id in self._effect
+            and not str(key).startswith(("agent:", "signal:", "suspend:", "after:"))
+        ):
+            self._armed.discard(run_id)
+            self._effect.discard(run_id)
+            raise SimulatedWorkerCrash(run_id, str(key))
+        return started
 
     async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
         await self._inner.finish_effect(run_id, key, value, token)
         if (
             run_id in self._armed
             and run_id not in self._gate
+            and run_id not in self._effect
             and not str(key).startswith(("agent:", "signal:", "suspend:"))
         ):
             self._armed.discard(run_id)

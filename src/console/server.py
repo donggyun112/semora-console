@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -33,6 +34,7 @@ from nexora import Agent, AgentRuntime
 from nexora.contracts.types import PendingInput
 from nexora.dispatch import Answer, Prompt, Recover
 from nexora.orchestrator import AgentSuspended
+from nexora_store import Contended, Indeterminate
 from nexora_fork import read_event_checkpoint
 from pydantic import BaseModel, Field
 
@@ -54,6 +56,10 @@ load_dotenv()
 # those let a leftover .env silently replace the key or the durable-proof DSN.
 if (_dotenv_model := dotenv_values().get("MODEL")):
     os.environ["MODEL"] = _dotenv_model
+
+# Two workers sharing a ledger must not share an owner name, or each renews the other's
+# lease and the contention this demo is meant to show never happens.
+WORKER = os.getenv("CONSOLE_WORKER") or socket.gethostname()
 
 STATIC = Path(__file__).parent / "static"
 _SCENARIO_BY_ID = {s["id"]: s for s in SCENARIOS}
@@ -132,6 +138,10 @@ class RecoverRequest(BaseModel):
     """Continue a run after the worker died mid-round."""
 
     run_id: str
+    retry_running: bool = True
+    """Whether to repeat a step that started and never reported. Only the operator knows
+    whether repeating that particular effect is safe, so the runtime asks instead of
+    guessing; False surfaces ``Indeterminate`` and stops."""
 
 
 class ForkRequest(BaseModel):
@@ -190,8 +200,12 @@ def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
     """Where a crash-enabled scenario kills the worker.
 
     approval on → first ``pre_tool_use`` (tool_call already emitted, park not written).
+    unknown_effect → between ``start`` and ``finish_effect``, the only seam that leaves a
+    step running, so recovery has something it genuinely cannot decide.
     otherwise → first ``finish_effect`` (the effect is already committed).
     """
+    if scenario_id == "unknown_effect":
+        return "effect"
     if scenario_id not in {"crash", "parallel_crash"}:
         return None
     return "gate" if "approval" in selected else "commit"
@@ -418,7 +432,9 @@ async def _stream(
         return {"kind": "policy_summary", "units": rows}
 
     async def run_attempt() -> None:
-        runtime = AgentRuntime(store=_store, transcript=_transcript, emit=publish)
+        runtime = AgentRuntime(
+            store=_store, transcript=_transcript, emit=publish, owner=WORKER
+        )
         meta = {"kind": "meta", "run_id": run_id, "units": selected}
         if session is not None and session.get("fork_parent"):
             meta.update(
@@ -445,6 +461,22 @@ async def _stream(
                 await put(summary_frame())
         except AgentSuspended as stopped:
             await put({"kind": "suspended", "pending_id": stopped.pending_id, "tool_call_id": stopped.tool_call_id})
+        except Contended:
+            await put(
+                {
+                    "kind": "contended",
+                    "worker": WORKER,
+                    "message": "다른 워커가 이 실행을 잡고 있습니다",
+                }
+            )
+        except Indeterminate as unknown:
+            await put(
+                {
+                    "kind": "indeterminate",
+                    "step": unknown.step,
+                    "message": "이 효과는 나갔을 수도, 안 나갔을 수도 있습니다",
+                }
+            )
         except SimulatedWorkerCrash as crashed:
             await put(
                 {
@@ -675,13 +707,29 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
     session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        return await runtime.dispatch(
+        if request.retry_running:
+            return await runtime.dispatch(
+                request.run_id,
+                session["agent"],
+                Recover(),
+                conversation_id=session["conversation_id"],
+                controls=compose_controls(session["units"]),
+                on_event=on_event,
+                should_stop_after_turn=_capped,
+                aborted=lambda: _is_aborted(request.run_id),
+            )
+        # dispatch has no say over an ambiguous step; recover() is where that choice lives.
+        history = await runtime.committed_history(
+            request.run_id, session["conversation_id"]
+        )
+        return await runtime.recover(
             request.run_id,
+            history,
             session["agent"],
-            Recover(),
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
+            retry_running=False,
             should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(request.run_id),
         )
