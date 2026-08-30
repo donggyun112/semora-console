@@ -432,29 +432,44 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
   return [...inherited, ...current];
 }
 
-export function forkClassOf(row) {
-  // Three places a branch can start, and every forkable row is one of them: before the
-  // input entered context, before a tool ran, or after its result was recorded.
-  if (!row?.forkable) return null;
-  if (row.kind === "tool" || isToolGate(row)) return "gate";
-  if (row.forkEdge === "after") return "result";
-  return "input";
-}
-
 export function isForkRepresentative(rows, index) {
-  // One button per outcome, not per coordinate. A single boundary shows up as several
-  // rows — the call, its gate, the result, the result entering context — and they all
-  // branch to the same place. The last row of each run is the one that names the seam.
-  const here = forkClassOf(rows?.[index]);
-  if (here === null) return false;
-  for (let next = index + 1; next < rows.length; next += 1) {
-    const other = forkClassOf(rows[next]);
-    if (other !== null) return other !== here;
-  }
-  return true;
+  // One button per boundary, on the row that names it. The projector decided which
+  // coordinates are one boundary and stamped them with a shared seam, so grouping is a
+  // lookup rather than a guess about what a label means. Of the rows in a seam a person
+  // points at the ones carrying a tool's name, so those win over the plumbing.
+  const members = forkSeam(rows, index);
+  if (members === null) return false;
+  const named = members.find((at) => ["tool", "result"].includes(rows[at].kind));
+  return index === (named ?? members[0]);
 }
 
-export function getForkActionLabel(row, policyCount) {
+export function forkSeamRow(rows, index) {
+  // The coordinate the button uses, which is not the row it sits on: a transcript leaf
+  // exists at the end of a boundary rather than at its start.
+  const members = forkSeam(rows, index);
+  return members === null ? null : rows[members[members.length - 1]];
+}
+
+function forkSeam(rows, index) {
+  const row = rows?.[index];
+  if (!row?.forkable) return null;
+  const members = [];
+  for (let at = 0; at < rows.length; at += 1) {
+    const other = rows[at];
+    if (!other.forkable) continue;
+    if (other.seam != null ? other.seam === row.seam : other === row) members.push(at);
+  }
+  return members.length ? members : [index];
+}
+
+export function getForkActionLabel(row, policyCount, retargeted = false) {
+  // A result row can only branch to where the transcript has a leaf, and that leaf holds
+  // the result a journal unit already rewrote. Change one and there is nothing at this
+  // coordinate to change it on, so the branch moves back to the call — which the button
+  // has to say, because "결과에서 분기" would be describing a boundary it is leaving.
+  if (retargeted) {
+    return `저장된 결과를 버리고 툴부터 다시 · 정책 ${policyCount}개`;
+  }
   if (row?.kind === "tool" || isToolGate(row)) {
     return `툴 실행 전 분기 · 정책 ${policyCount}개`;
   }
@@ -464,9 +479,14 @@ export function getForkActionLabel(row, policyCount) {
   return `이 입력에서 분기 · 정책 ${policyCount}개`;
 }
 
+export function isRetargetedFork(row, request) {
+  // The branch starts somewhere other than the row it is offered on.
+  return Boolean(request && row?.eventId && request.event_id !== row.eventId);
+}
+
 function getForkActionDescription(row, request) {
-  if (request && row?.eventId && request.event_id !== row.eventId) {
-    return "선택한 마스킹 정책으로 툴 결과를 다시 만듭니다.";
+  if (isRetargetedFork(row, request)) {
+    return "기록된 결과는 버려집니다. 툴이 다시 실행되고 새 정책을 통과합니다.";
   }
   if (row?.kind === "tool" || isToolGate(row)) {
     return "선택한 정책으로 툴 결과를 다시 만듭니다.";
@@ -543,7 +563,7 @@ export function createConsole({
     "run-title", "run-status", "run-policies", "abort", "chat-thread",
     "version-switcher",
     "event-count", "outcome-strip",
-    "rerun", "retry-run", "return-draft", "trace", "guide",
+    "rerun", "retry-run", "return-draft", "trace", "guide", "guide-note",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
@@ -650,19 +670,11 @@ export function createConsole({
       const button = documentRef.createElement("button");
       button.type = "button";
       button.disabled = !canEditDraft(state.run);
-      const label = documentRef.createElement("strong");
-      label.textContent = `${index + 1}. ${scene.label}`;
-      const teaches = documentRef.createElement("small");
-      teaches.textContent = scene.teaches;
-      button.append(label, teaches);
-      if (scene.then && index === at) {
-        // Some scenes only land if the operator does something once the run parks, and
-        // a scene nobody knows how to finish teaches nothing.
-        const then = documentRef.createElement("small");
-        then.className = "guide-then";
-        then.textContent = scene.then;
-        button.append(then);
-      }
+      // Label only. What each scene teaches belongs to the one being read, not to six
+      // cards at once — six of those was a second row, and a second row pushed the
+      // thing you press off the screen.
+      button.textContent = `${index + 1}. ${scene.label}`;
+      button.title = scene.teaches;
       button.addEventListener("click", () => {
         if (!canEditDraft(state.run)) return;
         state.run = updateDraft(state.run, {
@@ -674,6 +686,12 @@ export function createConsole({
       item.append(button);
       dom.guide.append(item);
     });
+    const scene = GUIDE[at];
+    setText(
+      dom["guide-note"],
+      scene ? [scene.teaches, scene.then].filter(Boolean).join(" · ") : "",
+    );
+    setHidden(dom["guide-note"], !scene);
   }
 
   function renderLaunch() {
@@ -768,18 +786,21 @@ export function createConsole({
       entry.className = `trace-entry version-${row.versionOrigin ?? "current"}`;
       entry.dataset.kind = row.kind;
       entry.append(makeTraceRow(row, index));
-      const request = isForkRepresentative(state.rows, index)
-        ? getEventForkRequest(state.run, row, state.rows)
+      const seam = isForkRepresentative(state.rows, index)
+        ? forkSeamRow(state.rows, index)
+        : null;
+      const request = seam
+        ? getEventForkRequest(state.run, seam, state.rows)
         : null;
       if (request) {
         const action = documentRef.createElement("div");
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = request.event_id !== row.eventId
-          ? `마스킹 정책으로 결과 다시 실행 · 정책 ${request.units.length}개`
-          : getForkActionLabel(row, request.units.length);
-        const forkDescription = getForkActionDescription(row, request);
+        button.textContent = getForkActionLabel(
+          row, request.units.length, isRetargetedFork(seam, request),
+        );
+        const forkDescription = getForkActionDescription(seam, request);
         button.title = [
           `적용 정책: ${request.units.join(", ") || "없음"}`,
           forkDescription,

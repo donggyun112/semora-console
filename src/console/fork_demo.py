@@ -77,7 +77,12 @@ class EventCheckpointProjector:
                     coordinate,
                 ),
             )
-            updates.append({"event_id": event_id, "restore_edge": edge})
+            # Every event promoted together lands on one coordinate, which makes the
+            # leaf the boundary's identity. Sent along so the client groups by what the
+            # projector already decided instead of guessing from row labels.
+            updates.append(
+                {"event_id": event_id, "restore_edge": edge, "seam": leaf_uuid}
+            )
         return updates
 
     @staticmethod
@@ -202,12 +207,18 @@ class EventCheckpointProjector:
         )
         tool_result_fork = bool(tool_result_origin and current_leaf)
         restore_edge = "before" if input_fork else "after" if tool_result_fork else None
+        seam = None
+        if input_fork:
+            seam = f"input:{candidate}"
+        elif tool_result_fork:
+            seam = current_leaf
         return {
             **frame,
             "event_id": event_id,
             "fork_origin_id": before.origin_id,
             "forkable": bool(restore_edge),
             "restore_edge": restore_edge,
+            "seam": seam,
             "restore_updates": restore_updates,
         }
 

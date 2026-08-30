@@ -8,9 +8,10 @@ import {
   deriveVersionRows,
   getForkActionLabel,
   GUIDE,
-  forkClassOf,
   getEventForkRequest,
+  forkSeamRow,
   guideMatch,
+  isRetargetedFork,
   isForkRepresentative,
   nextGuideStep,
   pickInlineActionHost,
@@ -1530,31 +1531,50 @@ assert.equal(steerSummary({ admits: "on_resume" }, false), "재개될 때 반영
 assert.equal(steerSummary({}, false), "지시 대기");
 assert.equal(steerSummary({ admits: "next_drain" }, true), "지시 반영");
 
-// A boundary shows up as several rows and they all branch to the same place. One
-// button per outcome; the last row of each run names the seam.
-const traceRows = [
-  { label: "context_injected", forkable: true, forkEdge: "before" },
-  { kind: "tool", label: "read_customer 호출", forkable: true, forkEdge: "after" },
-  { label: "pre_tool_use", forkable: true, forkEdge: "before" },
-  { label: "post_tool_use", forkable: true, forkEdge: "after" },
-  { kind: "result", label: "read_customer 결과", forkable: true, forkEdge: "after" },
-  { label: "context_injected", forkable: true, forkEdge: "after" },
-  { kind: "tool", label: "send_email 호출", forkable: true, forkEdge: "after" },
-  { label: "pre_tool_use", forkable: true, forkEdge: "before" },
+// The projector stamps every coordinate of one boundary with a shared seam, so the
+// button lands on the row that names it and branches from the last one.
+const seamRows = [
+  { kind: "lifecycle", label: "context_injected", forkable: true, forkEdge: "before",
+    seam: "input:p1", eventId: "ev-input" },
+  { kind: "tool", label: "read_customer 호출", forkable: true, forkEdge: "after",
+    seam: "leaf-a", eventId: "ev-call" },
+  { kind: "lifecycle", label: "pre_tool_use", forkable: true, forkEdge: "before",
+    seam: "leaf-a", eventId: "ev-gate" },
+  { kind: "lifecycle", label: "post_tool_use", forkable: true, forkEdge: "after",
+    seam: "leaf-b", eventId: "ev-post" },
+  { kind: "result", label: "read_customer 결과", forkable: true, forkEdge: "after",
+    seam: "leaf-b", eventId: "ev-result" },
+  { kind: "lifecycle", label: "context_injected", forkable: true, forkEdge: "after",
+    seam: "leaf-b", eventId: "ev-ctx" },
   { kind: "policy", label: "dlp_block", forkable: false },
-  { label: "permission_denied", forkable: false },
-  { label: "context_injected", forkable: true, forkEdge: "after" },
 ];
 assert.deepEqual(
-  traceRows.map((row, index) => (isForkRepresentative(traceRows, index)
-    ? `${index}:${forkClassOf(row)}` : null)).filter(Boolean),
-  ["0:input", "2:gate", "5:result", "7:gate", "10:result"],
+  seamRows.map((row, index) => (isForkRepresentative(seamRows, index)
+    ? `${index}:${row.label}` : null)).filter(Boolean),
+  ["0:context_injected", "1:read_customer 호출", "4:read_customer 결과"],
+  "the button sits on the row a person points at, one per boundary",
 );
+assert.equal(forkSeamRow(seamRows, 1).eventId, "ev-gate", "the coordinate is the seam's last");
+assert.equal(forkSeamRow(seamRows, 4).eventId, "ev-ctx");
+assert.equal(forkSeamRow(seamRows, 6), null, "a row that is no coordinate has no seam");
+
+// A result coordinate holds the result a journal unit already rewrote, so changing
+// that unit moves the branch back to the call. The button says so rather than naming a
+// boundary it is leaving.
+const resultRow = {
+  eventId: "ev-result", label: "context_injected", forkable: true, forkEdge: "after",
+};
+assert.equal(isRetargetedFork(resultRow, { event_id: "ev-gate" }), true);
+assert.equal(isRetargetedFork(resultRow, { event_id: "ev-result" }), false);
+assert.equal(isRetargetedFork(resultRow, null), false);
 assert.equal(
-  traceRows.filter((row) => row.forkable).length, 9,
-  "nine coordinates stay forkable; only the buttons collapse",
+  getForkActionLabel(resultRow, 1, true),
+  "저장된 결과를 버리고 툴부터 다시 · 정책 1개",
 );
-assert.equal(forkClassOf({ forkable: false }), null);
-assert.equal(forkClassOf({ label: "on_resume", forkable: true }), "gate");
+assert.equal(getForkActionLabel(resultRow, 1, false), "툴 결과에서 분기 · 정책 1개");
+assert.equal(
+  getForkActionLabel({ label: "pre_tool_use", forkable: true }, 2),
+  "툴 실행 전 분기 · 정책 2개",
+);
 
 console.log("run inspector state ok");

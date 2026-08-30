@@ -14,6 +14,9 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     forkOriginId: options.forkOriginId ?? coordinateFrame?.fork_origin_id ?? null,
     forkable: options.forkable ?? Boolean(coordinateFrame?.forkable),
     forkEdge: options.forkEdge ?? coordinateFrame?.restore_edge ?? null,
+    // Which boundary this coordinate belongs to, decided by the projector that recorded
+    // it. Rows sharing one are one branch, and the client never has to work that out.
+    seam: options.seam ?? coordinateFrame?.seam ?? null,
     runId: options.runId ?? null,
     callId: options.callId ?? coordinateFrame?.call_id ?? coordinateFrame?.payload?.call_id ?? null,
   };
@@ -150,7 +153,10 @@ export function reduceFrames(frames) {
   for (const frame of frames) {
     if (!frame || typeof frame !== "object") continue;
     for (const update of frame.restore_updates ?? []) {
-      restored.set(update.event_id, update.restore_edge);
+      restored.set(update.event_id, {
+        edge: update.restore_edge,
+        seam: update.seam ?? null,
+      });
     }
 
     if (frame.kind === "meta") {
@@ -338,10 +344,11 @@ export function reduceFrames(frames) {
   }
 
   for (const row of rows) {
-    const edge = restored.get(row.eventId);
-    if (!edge) continue;
+    const update = restored.get(row.eventId);
+    if (!update) continue;
     row.forkable = true;
-    row.forkEdge = edge;
+    row.forkEdge = update.edge;
+    row.seam = update.seam ?? row.seam;
   }
 
   return rows;
