@@ -349,10 +349,14 @@ def _project_event(
                 "call_id": call_id,
                 "checkpoint_phase": "tool_result",
             }
+            # The refusal is what went back to the model, so it is that call's result and
+            # the trace says so. Without it a denied boundary showed a call and a gate and
+            # then nothing, while every other call ended in a line naming its answer.
+            refused_frame = {"kind": "agent", "event": event}
             if projected_denials is not None and call_id in projected_denials:
                 projected_denials.discard(call_id)
-                return [blocked_frame]
-            return [unit_frame, blocked_frame]
+                return [blocked_frame, refused_frame]
+            return [unit_frame, blocked_frame, refused_frame]
         frames: list[dict[str, Any]] = []
         rewritten = isinstance(res, dict) and res.get("redacted_by")
         if rewritten and announced_rewrites is not None and call_id in announced_rewrites:

@@ -237,12 +237,15 @@ def test_refused_call_emits_request_then_gate():
         },
         pending,
     )
-    assert [f["kind"] for f in frames] == ["unit", "agent"]
+    assert [f["kind"] for f in frames] == ["unit", "agent", "agent"]
     assert frames[0]["unit"] == "dlp_block" and frames[0]["verdict"] == "deny"
     assert frames[1]["event"]["blocked"] is True
     assert frames[1]["event"]["name"] == "send_email"
     assert frames[1]["checkpoint_phase"] == "tool_result"
     assert frames[1]["call_id"] == "c1"
+    # The refusal is the result the model got, so the call ends in a line naming it.
+    assert frames[2]["event"]["type"] == "tool_result"
+    assert frames[2]["event"]["executed"] is False
 
 
 def test_resumed_refusal_keeps_the_original_call_identity_without_pending_state():
@@ -261,10 +264,11 @@ def test_resumed_refusal_keeps_the_original_call_identity_without_pending_state(
         {},
     )
 
-    blocked = frames[-1]
+    blocked = next(f for f in frames if f.get("event", {}).get("blocked"))
     assert blocked["event"]["id"] == "charge-2"
     assert blocked["event"]["name"] == "charge_card"
-    assert blocked["event"]["blocked"] is True
+    assert frames[-1]["event"]["type"] == "tool_result"
+    assert frames[-1]["event"]["executed"] is False
 
 
 def test_executed_call_emits_request_then_result():

@@ -241,13 +241,17 @@ export function reduceFrames(frames) {
       const result = toolResultOutput(event);
       const execution = result?.execution;
       const idempotency = result?.idempotency;
+      // A refused call has a result too — the refusal — and calling it 실행 완료 would be
+      // the console vouching for an effect the gate stopped.
+      const refused = event.executed === false;
       append(
         "result",
         toolResultLabel(event.name),
-        "실행 완료",
+        refused ? "실행 안 됨" : "실행 완료",
         {
+          tone: refused ? "deny" : "neutral",
           callId: execution?.call_id ?? event.id ?? null,
-          badges: resultBadges(event),
+          badges: refused ? [] : resultBadges(event),
           details: {
             output: result,
             executionCount: (
