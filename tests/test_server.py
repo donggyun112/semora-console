@@ -1731,3 +1731,37 @@ async def test_a_rejournaled_call_is_announced_at_its_boundary():
     assert answered["event"]["result"]["execution"]["replayed"] is True, (
         "the runtime restored it, and the badge reads that off the result"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_call_is_answered_once():
+    """A resume is a second stream for the same run, and it never saw the parked call's
+    tool_call frame. That is not a replayed call; the runtime reports its result itself.
+    A result synthesized from the boundary waits for that report and stands down."""
+    run_id = "run-resumed-once"
+    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "charge"}
+    real = {"type": "text", "text": '{"status": "charged"}', "execution_count": 1}
+
+    async def attempt(runtime, on_event):
+        call = {"turn": 0, "call_id": "call-1", "name": "charge_card",
+                "input": {"customer_id": "c-001", "amount": "10"}}
+        await runtime._emit(EventType.PRE_TOOL_USE, dict(call))
+        await runtime._emit(EventType.POST_TOOL_USE, {**call, "result": real})
+        await on_event({"type": "tool_result", "id": "call-1", "name": "charge_card",
+                        "executed": True, "result": real})
+        await runtime._emit(EventType.CONTEXT_INJECTED, {
+            "turn": 0, "kind": "resume_result",
+            "message": {"type": "tool", "data": {"tool_call_id": "call-1", "content": "ok"}},
+        })
+        return {"stop_reason": "completed"}
+
+    frames: list[dict] = []
+    try:
+        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="charge"):
+            frames.append(json.loads(chunk))
+    finally:
+        server._sessions.pop(run_id, None)
+
+    results = [f for f in frames if (f.get("event") or {}).get("type") == "tool_result"]
+    assert len(results) == 1, [f["event"] for f in results]
+    assert results[0]["event"]["result"] == real

@@ -450,6 +450,13 @@ async def _stream(
     projected_denials: set[str] = set()
     announced_rewrites: set[str] = set()
     replayed_calls: set[str] = set()
+    # Calls whose agent tool_result arrived in this stream, and results synthesized from
+    # a boundary that are held until the call's result enters context. A stream is one
+    # request, not one run: a resume never saw the tool_call frames of the request that
+    # parked, so "no tool_call seen" is not "replayed", and a result guessed from that
+    # doubled the real one when it arrived.
+    answered: set[str] = set()
+    deferred_results: dict[str, dict[str, Any]] = {}
     session = _sessions.get(run_id)
     projector = None
     if session is not None and {
@@ -484,6 +491,8 @@ async def _stream(
     def mark(unit: str) -> None:
         fired[unit] = fired.get(unit, 0) + 1
     async def on_event(event: dict[str, Any]) -> None:
+        if event.get("type") == "tool_result":
+            answered.add(str(event.get("id") or ""))
         for frame in _project_event(
             event, pending_calls, projected_denials, announced_rewrites
         ):
@@ -565,8 +574,16 @@ async def _stream(
                         "name": payload.get("name"),
                     }
                 )
+        if str(event_type).endswith("context_injected") and payload.get("kind") in {
+            "tool_result", "resume_result"
+        }:
+            origin = EventCheckpointProjector._tool_result_call_id(
+                "lifecycle", str(event_type), payload
+            )
+            held = deferred_results.pop(origin or "", None)
+            if held is not None and origin not in answered:
+                await put(held)
         await put({"kind": "lifecycle", "type": str(event_type), "payload": payload})
-        replayed_result = None
         if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
             call_id = str(payload.get("call_id") or "")
             if call_id in replayed_calls:
@@ -580,7 +597,7 @@ async def _stream(
                         **result,
                         "execution": {**(result.get("execution") or {}), "replayed": True},
                     }
-                replayed_result = {
+                deferred_results[call_id] = {
                     "kind": "agent",
                     "event": {
                         "type": "tool_result",
@@ -595,8 +612,6 @@ async def _stream(
             # post_tool_use, so a row above post_tool_use would date it wrong.
             mark(str(rewrite["unit"]))
             await put(rewrite)
-        if replayed_result is not None:
-            await put(replayed_result)
 
     def summary_frame() -> dict[str, Any]:
         rows = []
@@ -637,6 +652,11 @@ async def _stream(
             if completed is not None:
                 completed["terminal"] = True
                 await _remember_session(run_id, completed)
+            # A result that never entered context still deserves its row.
+            for call_id, held in list(deferred_results.items()):
+                if call_id not in answered:
+                    await put(held)
+            deferred_results.clear()
             await put({"kind": "outcome", "outcome": outcome})
             if selected:
                 await put(summary_frame())
