@@ -739,9 +739,19 @@ async def test_every_coordinate_says_where_the_run_resumes():
         "result": {"before_model"},
     }
     rebuilds = {
-        update["rebuild"]["resumes_at"]
+        (update["rebuild"]["resumes_at"], update["rebuild"]["rejournal_at"])
         for frame in frames
         for update in frame.get("restore_updates", [])
         if update.get("rebuild")
     }
-    assert rebuilds == {"pre_tool_use"}
+    assert rebuilds == {("pre_tool_use", "post_tool_use")}, (
+        "a finished call's gate can also be taken as a re-journal"
+    )
+    rejournals = {
+        update["boundary"]: update.get("rejournal_at")
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+    }
+    assert rejournals == {"tool": "post_tool_use", "result": None}, (
+        "only the gate of a finished call has a record to journal again"
+    )

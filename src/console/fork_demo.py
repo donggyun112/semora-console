@@ -67,6 +67,7 @@ class EventCheckpointProjector:
         leaf_uuid: str | None,
         boundary: str,
         rebuild: dict[str, str] | None = None,
+        rejournal_at: str | None = None,
     ) -> list[dict[str, Any]]:
         if leaf_uuid is None:
             return []
@@ -97,6 +98,10 @@ class EventCheckpointProjector:
                 # pick one, which made renaming an event a UI change.
                 "boundary": boundary,
                 "resumes_at": resumes_at,
+                # Where the same coordinate resumes if the branch only re-journals: the
+                # gate skipped, the recorded effect standing in. Only a call that finished
+                # has a record to stand in, so a refused one offers nothing here.
+                "rejournal_at": rejournal_at,
             }
             if rebuild is not None:
                 # Where to go to make this boundary again. A recorded result restores as
@@ -108,14 +113,24 @@ class EventCheckpointProjector:
         return updates
 
     async def _settle_tool(
-        self, call_id: str, leaf_uuid: str | None, entries: list[dict[str, Any]]
+        self,
+        call_id: str,
+        leaf_uuid: str | None,
+        entries: list[dict[str, Any]],
+        *,
+        executed: bool = True,
     ) -> list[dict[str, Any]]:
         """Close the boundary before a call, once, whenever the call actually ends."""
         before_tool = self._before_tool_events.pop(call_id, [])
         if not before_tool:
             return []
+        rejournal_at = "post_tool_use" if executed else None
         updates = await self._stabilize(
-            before_tool, entries=entries, leaf_uuid=leaf_uuid, boundary="tool"
+            before_tool,
+            entries=entries,
+            leaf_uuid=leaf_uuid,
+            boundary="tool",
+            rejournal_at=rejournal_at,
         )
         # The last gate rather than the first: an approved call is gated twice, and
         # rewinding past the approval discards the operator's decision.
@@ -124,6 +139,7 @@ class EventCheckpointProjector:
             "event_id": gate_event,
             "edge": gate_edge,
             "resumes_at": updates[-1]["resumes_at"] if updates else "pre_tool_use",
+            "rejournal_at": rejournal_at,
         }
         return updates
 
@@ -203,7 +219,13 @@ class EventCheckpointProjector:
             agent_type == "tool_result" or checkpoint_phase == "tool_result"
         )
         if call_id and is_tool_result:
-            restore_updates.extend(await self._settle_tool(call_id, current_leaf, entries))
+            executed = not (
+                isinstance(event, dict)
+                and (event.get("blocked") or event.get("executed") is False)
+            )
+            restore_updates.extend(
+                await self._settle_tool(call_id, current_leaf, entries, executed=executed)
+            )
             self._after_tool_events.setdefault(call_id, []).append((event_id, "after"))
 
         if call_id and frame_kind == "lifecycle" and frame_type.endswith(
@@ -409,6 +431,7 @@ async def run_from_event(
     on_event: Any = None,
     should_stop_after_turn: Any = None,
     aborted: Any = None,
+    rejournal: bool = False,
 ) -> dict[str, Any]:
     """Fork one selected observation edge and publish the resulting active branch."""
     options = {
@@ -432,6 +455,7 @@ async def run_from_event(
         model=agent,
         controls=controls,
         conversation_id=conversation_id,
+        rejournal=rejournal,
         **options,
     )
     history = await runtime.committed_history(run_id, conversation_id)

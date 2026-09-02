@@ -587,6 +587,7 @@ assert.deepEqual(
     event_id: "event-03",
     edge: "before",
     units: ["pii_mask", "dlp_block", "approval"],
+    rejournal: false,
   },
   "an event-row fork keeps the operator-selected masking policy",
 );
@@ -601,6 +602,7 @@ assert.deepEqual(
     event_id: "event-03",
     edge: "after",
     units: [],
+    rejournal: false,
   },
   "forking a tool result with masking off sends an empty control set",
 );
@@ -617,6 +619,7 @@ const PLAN = {
   reruns: {
     on_inputs: ["on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"],
     pre_tool_use: ["pre_tool_use", "post_tool_use", "before_finish"],
+    post_tool_use: ["post_tool_use", "before_finish"],
     before_model: ["before_model", "before_finish"],
   },
 };
@@ -645,7 +648,10 @@ const postToolRow = {
   forkable: true,
   forkEdge: "after",
   resumesAt: "before_model",
-  rebuild: { event_id: "event-pre", edge: "before", resumes_at: "pre_tool_use" },
+  rebuild: {
+    event_id: "event-pre", edge: "before",
+    resumes_at: "pre_tool_use", rejournal_at: "post_tool_use",
+  },
 };
 assert.deepEqual(
   getEventForkRequest(unmaskedMaskingTerminal, postToolRow, PLAN),
@@ -654,8 +660,23 @@ assert.deepEqual(
     event_id: "event-pre",
     edge: "before",
     units: [],
+    rejournal: false,
   },
-  "turning pii_mask off at a saved tool result runs the tool again through the new journal",
+  "turning everything off rewinds to the gate — dlp_block lives there, and a changed gate "
+  + "has to be asked again",
+);
+const unmaskedOnly = updateDraft(forkSourceTerminal, { unitNames: ["dlp_block"] });
+assert.deepEqual(
+  getEventForkRequest(unmaskedOnly, postToolRow, PLAN),
+  {
+    run_id: "run-b",
+    event_id: "event-pre",
+    edge: "before",
+    units: ["dlp_block"],
+    rejournal: true,
+  },
+  "turning only pii_mask off journals the recorded result again without asking the gate, "
+  + "which decided nothing new",
 );
 assert.deepEqual(
   getEventForkRequest(forkSourceTerminal, postToolRow, PLAN),
@@ -664,18 +685,21 @@ assert.deepEqual(
     event_id: "event-post",
     edge: "after",
     units: ["pii_mask", "dlp_block"],
+    rejournal: false,
   },
   "unchanged units keep the after-result continue edge",
 );
 const gatedLater = updateDraft(forkSourceTerminal, {
   unitNames: ["pii_mask", "dlp_block", "approval"],
 });
+const gated = getEventForkRequest(gatedLater, postToolRow, PLAN);
 assert.equal(
-  getEventForkRequest(gatedLater, postToolRow, PLAN).event_id,
+  gated.event_id,
   "event-pre",
   "adding a gate policy at a saved result rewinds too — a gate is not a journal, and it "
   + "would not run from here either",
 );
+assert.equal(gated.rejournal, false, "and a changed gate has to be asked, so no skipping it");
 const finishOnly = updateDraft(forkSourceTerminal, {
   unitNames: ["pii_mask", "dlp_block", "log_gate"],
 });
@@ -686,7 +710,22 @@ assert.equal(
 );
 const described = describeFork(gatedLater, postToolRow, PLAN);
 assert.equal(described.retargeted, true);
+assert.equal(described.mode, "retarget");
 assert.equal(described.resumesAt, "pre_tool_use", "the policies are judged where the branch lands");
+const rejournaled = describeFork(unmaskedOnly, postToolRow, PLAN);
+assert.equal(rejournaled.mode, "rejournal");
+assert.equal(rejournaled.resumesAt, "post_tool_use", "a journal-only change resumes past the gate");
+assert.equal(
+  getForkActionLabel(postToolRow, rejournaled.policies, rejournaled.mode),
+  "기록된 결과에 새 정책만 적용 · 적용 없음 · 건너뜀 dlp_block",
+  "the gate policy stays selected but is not consulted — the button says so",
+);
+const refusedRow = { ...postToolRow, rebuild: { ...postToolRow.rebuild, rejournal_at: null } };
+assert.equal(
+  getEventForkRequest(unmaskedOnly, refusedRow, PLAN).rejournal,
+  false,
+  "a call that never finished has no record to journal again, so the gate it is",
+);
 assert.deepEqual(described.policies, {
   applies: ["pii_mask", "dlp_block", "approval"], skipped: [],
 });
@@ -706,6 +745,7 @@ assert.deepEqual(
     event_id: "event-post",
     edge: "after",
     units: [],
+    rejournal: false,
   },
   "a boundary the projector cannot rebuild stays where it is",
 );
@@ -725,6 +765,7 @@ assert.deepEqual(
     event_id: "event-generic",
     edge: "before",
     units: ["rate_cap"],
+    rejournal: false,
   },
   "completed runs expose event forks for every scenario",
 );
@@ -744,6 +785,7 @@ assert.deepEqual(
     event_id: "event-from-v1",
     edge: "before",
     units: ["rate_cap"],
+    rejournal: false,
   },
   "an older selected version remains forkable after newer versions exist",
 );
@@ -1645,10 +1687,10 @@ assert.equal(isRetargetedFork(resultRow, { event_id: "ev-result" }), false);
 assert.equal(isRetargetedFork(resultRow, null), false);
 const one = { applies: ["pii_mask"], skipped: [] };
 assert.equal(
-  getForkActionLabel(resultRow, one, true),
+  getForkActionLabel(resultRow, one, "retarget"),
   "저장된 결과를 버리고 툴부터 다시 · 적용 pii_mask",
 );
-assert.equal(getForkActionLabel(resultRow, one, false), "툴 결과에서 분기 · 적용 pii_mask");
+assert.equal(getForkActionLabel(resultRow, one, null), "툴 결과에서 분기 · 적용 pii_mask");
 assert.equal(
   getForkActionLabel({ label: "pre_tool_use", forkable: true, boundary: "tool" }, both),
   "툴 실행 전 분기 · 적용 pii_mask, dlp_block",

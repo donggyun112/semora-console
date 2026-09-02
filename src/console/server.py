@@ -187,6 +187,9 @@ class ForkRequest(BaseModel):
     event_id: str
     edge: Literal["before", "after"] = "before"
     units: list[str]
+    # Skip the gate and re-run only the journal over the recorded result. Sent when the
+    # operator changed nothing that lives at the gate.
+    rejournal: bool = False
 
 
 _SESSION_KEY = "console:session"
@@ -503,23 +506,28 @@ async def _stream(
                 await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
                 )
-        if str(event_type).endswith("pre_tool_use"):
+        async def announce(call_id: str) -> None:
             # A replayed call is executed from the record, so the loop emits its hooks and
             # no agent events at all — the trace showed a gate and a boundary with nothing
             # between them, and the chat had no card for a tool that ran. The hook payload
-            # names the call, so the console can say what happened rather than leaving the
-            # operator to infer it from two lifecycle rows.
-            call_id = str(payload.get("call_id") or "")
-            if call_id and call_id not in pending_calls:
-                replayed_calls.add(call_id)
-                call = {
-                    "type": "tool_call",
-                    "id": call_id,
-                    "name": payload.get("name"),
-                    "input": payload.get("input") or {},
-                }
-                pending_calls[call_id] = call
-                await put({"kind": "agent", "event": {**call, "pending": True}})
+            # names the call, so the console says what happened rather than leaving the
+            # operator to infer it from two lifecycle rows. Announced at the first hook
+            # that names it: the gate, or — when a branch skipped the gate to journal the
+            # result again — the boundary itself.
+            if not call_id or call_id in pending_calls or call_id in replayed_calls:
+                return
+            replayed_calls.add(call_id)
+            call = {
+                "type": "tool_call",
+                "id": call_id,
+                "name": payload.get("name"),
+                "input": payload.get("input") or {},
+            }
+            pending_calls[call_id] = call
+            await put({"kind": "agent", "event": {**call, "pending": True}})
+
+        if str(event_type).endswith(("pre_tool_use", "post_tool_use", "post_tool_use_failure")):
+            await announce(str(payload.get("call_id") or ""))
 
         rewrite: dict[str, Any] | None = None
         if str(event_type).endswith(("post_tool_use", "post_tool_use_failure")):
@@ -564,6 +572,14 @@ async def _stream(
             if call_id in replayed_calls:
                 replayed_calls.discard(call_id)
                 pending_calls.pop(call_id, None)
+                result = payload.get("result")
+                if payload.get("replayed") and isinstance(result, dict):
+                    # The runtime restored this result from a record. The badge reads
+                    # the tool's own replay mark, so the record's mark is set beside it.
+                    result = {
+                        **result,
+                        "execution": {**(result.get("execution") or {}), "replayed": True},
+                    }
                 replayed_result = {
                     "kind": "agent",
                     "event": {
@@ -571,7 +587,7 @@ async def _stream(
                         "id": call_id,
                         "name": payload.get("name"),
                         "executed": not str(event_type).endswith("post_tool_use_failure"),
-                        "result": payload.get("result"),
+                        "result": result,
                     },
                 }
         if rewrite is not None:
@@ -814,6 +830,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "fork_event_id": request.event_id,
         "fork_edge": request.edge,
         "fork_mode": fork_mode,
+        "fork_rejournal": request.rejournal,
         "event_ids": set(),
         "forkable_events": {},
         "terminal": False,
@@ -835,6 +852,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             on_event=on_event,
             should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(fork_run_id),
+            rejournal=request.rejournal,
         )
 
     return StreamingResponse(

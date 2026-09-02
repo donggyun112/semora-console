@@ -1639,3 +1639,95 @@ def test_units_carry_the_framework_rerun_table():
     assert {u["point"] for u in payload["units"]} <= {
         point for points in payload["reruns"].values() for point in points
     }, "every unit lives at a point some branch can reach"
+
+
+def test_fork_forwards_the_rejournal_choice(monkeypatch):
+    """The page decides a branch only re-journals; the server hands that to the fork."""
+    source_id = "run-rejournal-source"
+    server._sessions[source_id] = {
+        "units": ["approval", "pii_mask"],
+        "agent": object(),
+        "scenario_id": "leak",
+        "aborted": False,
+        "crash": False,
+        "crash_at": None,
+        "conversation_id": "conv-rejournal",
+        "origin_id": "p1",
+        "source_run_id": source_id,
+        "origin_runs": {"p1": source_id},
+        "default_fork_origin": "p1",
+        "event_ids": {"event-gate"},
+        "forkable_events": {"event-gate": "before"},
+        "terminal": True,
+    }
+    seen: dict = {}
+
+    async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
+        seen.update(kwargs)
+        return {"stop_reason": "completed"}
+
+    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
+        coordinate = ForkCoordinate(source_id, None, "leaf-gate")
+        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
+
+    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
+    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
+    monkeypatch.setattr(server, "compose_controls", lambda names: object())
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/fork",
+                json={
+                    "run_id": source_id,
+                    "event_id": "event-gate",
+                    "edge": "before",
+                    "units": ["approval"],
+                    "rejournal": True,
+                },
+            )
+        assert response.status_code == 200
+        assert seen["rejournal"] is True
+        fork_id = server._sessions[source_id]["forked_to"]
+        assert server._sessions[fork_id]["fork_rejournal"] is True
+    finally:
+        fork_id = server._sessions.get(source_id, {}).get("forked_to")
+        server._sessions.pop(source_id, None)
+        if fork_id:
+            server._sessions.pop(fork_id, None)
+
+
+@pytest.mark.asyncio
+async def test_a_rejournaled_call_is_announced_at_its_boundary():
+    """A branch that only journals again never reaches the gate, so nothing named the call.
+
+    The boundary is the first hook that does. The call is announced there, before the
+    boundary row, so the trace reads call → boundary → result like any other.
+    """
+    run_id = "run-rejournaled"
+    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "leak"}
+    result = {"type": "text", "text": '{"status": "sent"}'}
+
+    async def attempt(runtime, _on_event):
+        call = {"turn": 0, "call_id": "call-1", "name": "send_email",
+                "input": {"to": "x@y"}, "result": result, "replayed": True}
+        await runtime._emit(EventType.POST_TOOL_USE, call)
+        return {"stop_reason": "completed"}
+
+    frames: list[dict] = []
+    try:
+        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="leak"):
+            frames.append(json.loads(chunk))
+    finally:
+        server._sessions.pop(run_id, None)
+
+    named = {"tool_call", "post_tool_use", "tool_result"}
+    shape = [
+        kind
+        for f in frames
+        if (kind := f.get("type") or (f.get("event") or {}).get("type")) in named
+    ]
+    assert shape == ["tool_call", "post_tool_use", "tool_result"]
+    answered = next(f for f in frames if (f.get("event") or {}).get("type") == "tool_result")
+    assert answered["event"]["result"]["execution"]["replayed"] is True, (
+        "the runtime restored it, and the badge reads that off the result"
+    )

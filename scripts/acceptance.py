@@ -197,6 +197,38 @@ def c_fork():
     return ok, f"source_masked={masked}, fork_original={original}"
 
 
+def c_rejournal():
+    """approval + pii_mask → approve → fork with pii_mask off, journal only.
+
+    The send already went out and was approved. Taking pii_mask off must give the
+    original recipient back without asking anyone to approve the send again.
+    """
+    on = ["approval", "pii_mask"]
+    fs = stream("/api/run", {"scenario_id": "leak", "units": on})
+    pend = pending(fs)
+    if not pend:
+        return False, "no suspend"
+    fs2 = stream("/api/resume", {"run_id": run_id(fs), "pending_id": pend, "approved": True, "units": on})
+    masked = any(r.get("redacted_by") == "pii_mask" for r in results(fs2))
+    rebuild = next((f["rebuild"] for f in reversed(fs2) if f.get("rebuild")), None)
+    if not rebuild or not rebuild.get("rejournal_at"):
+        return False, f"no rejournal coordinate: masked={masked}, rebuild={rebuild}"
+    fs3 = stream(
+        "/api/fork",
+        {"run_id": run_id(fs), "event_id": rebuild["event_id"], "edge": rebuild["edge"],
+         "units": ["approval"], "rejournal": True},
+    )
+    asked_again = any(f["kind"] == "suspended" for f in fs3)
+    sent = [r for r in results(fs3) if "sent" in str(r.get("text", ""))]
+    original = any(
+        "leaker@personal-mail.com" in str(r.get("text", "")) and not r.get("redacted_by")
+        for r in sent
+    )
+    restored = bool(sent) and all((r.get("execution") or {}).get("replayed") for r in sent)
+    ok = masked and not asked_again and original and restored
+    return ok, f"masked={masked}, asked_again={asked_again}, original={original}, restored={restored}"
+
+
 def main() -> None:
     case("1) approval + charge → suspend → resume → exec ×1", c_approval_resume)
     case("1b) approval + parallel → one suspend over ≥2 charge_card in the batch", c_parallel_approval)
@@ -210,6 +242,7 @@ def main() -> None:
     case("7) HEADLINE leak + approval+dlp_block → DENY wins over SUSPEND", c_headline)
     case("8) dormancy → rate_cap dormant with reason, pii_mask fired", c_dormancy)
     case("9) pii_mask on → fork off → tool result unmasked", c_fork)
+    case("10) approval+pii_mask → approve → rejournal off → original, no second approval", c_rejournal)
     print()
     if FAILED:
         print(f"{FAILED} CASE(S) FAILED")

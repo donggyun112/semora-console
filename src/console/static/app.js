@@ -459,14 +459,18 @@ const BOUNDARY_DESCRIPTIONS = {
   result: "저장된 툴 결과 다음부터 이어서 실행합니다.",
 };
 
-export function getForkActionLabel(row, policies, retargeted = false) {
+export function getForkActionLabel(row, policies, mode = null) {
   // A result row can only branch to where the transcript has a leaf, and that leaf holds
   // the result a journal unit already rewrote. Change one and there is nothing at this
   // coordinate to change it on, so the branch moves back to the call — which the button
   // has to say, because "결과에서 분기" would be describing a boundary it is leaving.
-  const name = retargeted
-    ? "저장된 결과를 버리고 툴부터 다시"
-    : BOUNDARY_LABELS[row?.boundary] ?? "이 지점에서 분기";
+  // When only the journal changed, the call is not re-gated either: the recorded result
+  // is journaled again and nothing is asked of anyone.
+  const name = mode === "rejournal"
+    ? "기록된 결과에 새 정책만 적용"
+    : mode === "retarget"
+      ? "저장된 결과를 버리고 툴부터 다시"
+      : BOUNDARY_LABELS[row?.boundary] ?? "이 지점에서 분기";
   // The policies by name, split by whether this branch reaches them. A count said how
   // many were selected; what a person deciding where to branch needs is which of them
   // will run from here.
@@ -483,6 +487,9 @@ export function isRetargetedFork(row, request) {
 }
 
 function getForkActionDescription(row, request) {
+  if (request?.rejournal) {
+    return "게이트는 건너뜁니다. 기록된 결과에 저널 정책을 다시 적용하고, 효과는 다시 나가지 않습니다.";
+  }
   if (isRetargetedFork(row, request)) {
     return "기록된 결과는 버려집니다. 툴이 다시 실행되고 새 정책을 통과합니다.";
   }
@@ -507,6 +514,40 @@ export function deriveVersionPhase(frames, fallback = "idle") {
   return fallback;
 }
 
+function forkTarget(runState, row, plan) {
+  // Where a branch from this row goes, and how it resumes there.
+  const changed = unitsChanged(runState);
+  let target = {
+    eventId: row.eventId,
+    edge: row.forkEdge ?? "before",
+    resumesAt: row.resumesAt ?? null,
+    rejournalAt: row.rejournalAt ?? null,
+  };
+  if (row.rebuild) {
+    // A policy the operator just changed that this coordinate would not reach, but the
+    // coordinate that makes the boundary again would, moves the branch there: a
+    // recorded result restores as a result, and a journal unit has nothing to rewrite
+    // on it unless the tool round runs again.
+    const missed = policiesAt(row.resumesAt, changed, plan).skipped;
+    const reached = policiesAt(row.rebuild.resumes_at, missed, plan).applies;
+    if (reached.length) {
+      target = {
+        eventId: row.rebuild.event_id,
+        edge: row.rebuild.edge,
+        resumesAt: row.rebuild.resumes_at ?? null,
+        rejournalAt: row.rebuild.rejournal_at ?? null,
+      };
+    }
+  }
+  // Nothing that changed lives at the gate, and the target has a recorded result to
+  // journal again: skip the gate. Re-masking a result should not re-ask for approval
+  // of an effect that already happened.
+  const rejournal = Boolean(target.rejournalAt)
+    && changed.length > 0
+    && policiesAt(target.rejournalAt, changed, plan).skipped.length === 0;
+  return { target, changed, rejournal };
+}
+
 export function getEventForkRequest(runState, row, plan = null) {
   if (
     runState?.phase !== "terminal" ||
@@ -516,40 +557,28 @@ export function getEventForkRequest(runState, row, plan = null) {
   ) {
     return null;
   }
-  const units = [...runState.draft.unitNames];
-  let eventId = row.eventId;
-  let edge = row.forkEdge ?? "before";
-  if (row.rebuild) {
-    // A policy the operator just changed that this coordinate would not reach, but the
-    // coordinate that makes the boundary again would, moves the branch there: a
-    // recorded result restores as a result, and a journal unit has nothing to rewrite
-    // on it unless the tool round runs again.
-    const changed = unitsChanged(runState);
-    const missed = policiesAt(row.resumesAt, changed, plan).skipped;
-    const reached = policiesAt(row.rebuild.resumes_at, missed, plan).applies;
-    if (reached.length) {
-      eventId = row.rebuild.event_id;
-      edge = row.rebuild.edge;
-    }
-  }
+  const { target, rejournal } = forkTarget(runState, row, plan);
   return {
     run_id: row.runId ?? runState.runId,
-    event_id: eventId,
-    edge,
-    units,
+    event_id: target.eventId,
+    edge: target.edge,
+    units: [...runState.draft.unitNames],
+    rejournal,
   };
 }
 
 export function describeFork(runState, row, plan) {
-  // Everything one branch button says, from one place: where the request goes, and
-  // which of the selected policies it will run once there.
+  // Everything one branch button says, from one place: where the request goes, how it
+  // resumes there, and which of the selected policies it will run once there.
   const request = getEventForkRequest(runState, row, plan);
   if (!request) return null;
+  const { target, rejournal } = forkTarget(runState, row, plan);
   const retargeted = isRetargetedFork(row, request);
-  const resumesAt = retargeted ? row.rebuild?.resumes_at : row.resumesAt;
+  const resumesAt = rejournal ? target.rejournalAt : target.resumesAt;
   return {
     request,
     retargeted,
+    mode: rejournal ? "rejournal" : retargeted ? "retarget" : null,
     resumesAt: resumesAt ?? null,
     policies: policiesAt(resumesAt, request.units, plan),
   };
@@ -818,12 +847,12 @@ export function createConsole({
         ? describeFork(state.run, row, forkPlan())
         : null;
       if (fork) {
-        const { request, retargeted, policies } = fork;
+        const { request, mode, policies } = fork;
         const action = documentRef.createElement("div");
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
-        button.textContent = getForkActionLabel(row, policies, retargeted);
+        button.textContent = getForkActionLabel(row, policies, mode);
         const forkDescription = getForkActionDescription(row, request);
         button.title = [
           `${fork.resumesAt ?? "?"}부터 다시 실행`,
