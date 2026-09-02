@@ -151,10 +151,11 @@ def test_resume_result_stabilizes_the_completed_tool_boundary(monkeypatch):
         assert restored[result["event_id"]] == "after"
         assert injected["forkable"] is True
         assert injected["restore_edge"] == "after"
-        assert result["event"]["result"]["idempotency"] == {
-            "key": "charge:c-001",
-            "replayed": False,
-        }
+        idempotency = result["event"]["result"]["idempotency"]
+        assert idempotency["replayed"] is False
+        assert idempotency["key"].startswith("charge:") and idempotency["key"].endswith(":c-001"), (
+            "keyed by the request and the customer"
+        )
     finally:
         server._sessions.pop(run_id, None)
 
@@ -387,7 +388,14 @@ def _charge_result_frames(text: str) -> list[dict]:
     return frames
 
 
-def test_rerun_reuses_the_scenario_payment_ledger(monkeypatch):
+def test_a_rerun_is_a_new_request_and_charges_again(monkeypatch):
+    """Two runs of the same scenario are two orders. The charge key carries the request.
+
+    Keyed by customer alone, the second run replayed the first run's charge and the demo
+    told a story it was not living: "복구해도 청구는 한 번" read as "already charged last
+    time". A recovery, a resume or a fork inherit the request and still replay; a new
+    run does not.
+    """
     model = BoundFakeMessagesListChatModel(
         responses=[
             AIMessage(
@@ -423,14 +431,12 @@ def test_rerun_reuses_the_scenario_payment_ledger(monkeypatch):
 
     first_results = _charge_result_frames(first.text)
     second_results = _charge_result_frames(second.text)
-    assert first_results[0]["event"]["result"]["idempotency"] == {
-        "key": "charge:c-001",
-        "replayed": False,
-    }
-    assert second_results[0]["event"]["result"]["idempotency"] == {
-        "key": "charge:c-001",
-        "replayed": True,
-    }
+    first_key = first_results[0]["event"]["result"]["idempotency"]["key"]
+    second_key = second_results[0]["event"]["result"]["idempotency"]["key"]
+    assert first_key != second_key, "each run is its own request"
+    assert first_key.endswith(":c-001") and second_key.endswith(":c-001")
+    assert first_results[0]["event"]["result"]["idempotency"]["replayed"] is False
+    assert second_results[0]["event"]["result"]["idempotency"]["replayed"] is False
     assert second_results[0]["event"]["result"]["execution"]["replayed"] is False
 
 

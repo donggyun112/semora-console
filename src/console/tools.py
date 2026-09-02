@@ -49,11 +49,19 @@ def _same_amount(recorded: Any, requested: Any) -> bool:
 class DemoTools:
     """A minimal ``Tools`` implementation: execute / get / list."""
 
-    def __init__(self, session: SessionStep | None = None) -> None:
-        """Bind to the session whose steps these effects are."""
+    def __init__(self, session: SessionStep | None = None, intent: str | None = None) -> None:
+        """Bind to the session whose steps these effects are, and to the request they serve.
+
+        ``intent`` is the request's identity — the console passes the run's origin prompt
+        id. A recovery, a resume and a fork all inherit it, so they replay the charge; a new
+        request gets a new one, so it charges. Without it a charge is keyed by customer
+        alone, which is "once, ever" — right for a test, wrong for a customer who orders
+        twice.
+        """
         self.notes: dict[str, str] = {}
         self.execution_counts: dict[str, int] = {}
         self._session = session
+        self._intent = intent
 
     async def execute(self, name: str, call_id: str, arguments: Any) -> dict[str, Any]:
         """Execute a demo tool as a session step, or replay the one already recorded.
@@ -110,14 +118,18 @@ class DemoTools:
         return self._answer(name, call_id, args)
 
     async def _charge(self, call_id: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Charge once per customer, as a step of the session.
+        """Charge once per request and customer, as a step of the session.
 
-        A second step, keyed by the customer rather than the call, because the business
-        question is not "did this call run" but "was this customer charged". That one
-        spans reruns and forks the way the call key cannot.
+        A second step, keyed by the request and the customer rather than the call, because
+        the business question is not "did this call run" but "was this customer charged
+        for this order". That one spans reruns and forks the way the call key cannot, and
+        stops at the next order the way a customer key would not.
         """
         customer_id = str(args.get("customer_id", "c-001"))
         amount = str(args.get("amount", "0"))
+        key = (
+            f"charge:{self._intent}:{customer_id}" if self._intent else f"charge:{customer_id}"
+        )
 
         async def perform() -> dict[str, Any]:
             body = {"status": "charged", "amount": amount}
@@ -128,10 +140,9 @@ class DemoTools:
                 "amount": amount,
             }
 
-        charged, fresh = await self._step(f"charge:{customer_id}", perform)
+        charged, fresh = await self._step(key, perform)
         if charged.get("type") == "error":
             return charged
-        key = f"charge:{customer_id}"
         if not _same_amount(str(charged.get("amount", amount)), amount):
             return {
                 "type": "error",

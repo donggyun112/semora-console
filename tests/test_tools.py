@@ -196,3 +196,27 @@ def test_charge_card_requires_the_customer_it_charges():
     charge = DemoTools().get("charge_card")
     assert charge is not None
     assert charge["parameters"]["required"] == ["customer_id", "amount"]
+
+
+@pytest.mark.asyncio
+async def test_a_charge_is_once_per_request_not_once_per_customer():
+    """The same request charges once however it is re-run; the next request charges again.
+
+    Keyed by customer alone, a second order from the same customer replayed the first —
+    "once, ever". The request's identity is the console's origin prompt id, which a
+    recovery, a resume and a fork all inherit and a new run does not.
+    """
+    log = MemorySteps()
+    first = DemoTools(session=session_on(log), intent="prompt-1")
+    charged = await first.execute("charge_card", "c1", {"customer_id": "c-001", "amount": "49"})
+    assert charged["idempotency"] == {"key": "charge:prompt-1:c-001", "replayed": False}
+
+    again = DemoTools(session=session_on(log), intent="prompt-1")
+    replayed = await again.execute("charge_card", "c2", {"customer_id": "c-001", "amount": "49"})
+    assert replayed["idempotency"]["replayed"] is True, "a re-run of the same request"
+
+    later = DemoTools(session=session_on(log), intent="prompt-2")
+    fresh = await later.execute("charge_card", "c3", {"customer_id": "c-001", "amount": "49"})
+    assert fresh["idempotency"] == {"key": "charge:prompt-2:c-001", "replayed": False}, (
+        "the next order from the same customer is a charge of its own"
+    )

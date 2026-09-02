@@ -76,14 +76,16 @@ confidential is ever in the body to leak. One screen, the composer's live preced
 ## Sessions: an effect is a step of something longer than a run
 
 An operator name goes with every run. Effects are durable steps of that operator's
-**session** (`session:{operator}:{scenario}`), not of the run: `charge_card` is the step
-`charge:{customer}`, every call is `call:{call_id}`, both taken through
-`Orchestrator.run` on the session. So a retry, a recovery, or a branch under different
-policies **replays** the effect from the session ledger instead of making it again — the
-result row shows `CALL REPLAY` and, for a charge, `PAYMENT DEDUPE`. Two people on the same
-link get their own ledgers and never replay each other. The runtime's own step keyed by
-call id covers one run; the session is what makes the promise hold across runs, and it is
-the host's key, which is why it lives in `tools.py` and not in the framework.
+**session** (`session:{operator}:{scenario}`), not of the run: every call is
+`call:{call_id}`, and `charge_card` is `charge:{request}:{customer}` where the request is
+the run's origin prompt id — both taken through `Orchestrator.run` on the session. So a
+retry, a recovery, or a branch of *that request* **replays** the charge from the session
+ledger instead of making it again — the result row shows `CALL REPLAY` and
+`PAYMENT DEDUPE` — while the next request from the same operator charges the same
+customer afresh, as a second order should. Two people on the same link get their own
+ledgers and never replay each other. The runtime's own step keyed by call id covers one
+run; the session is what makes the promise hold across runs, and its key is the
+business's — which is why it lives in `tools.py` and not in the framework.
 
 ## Branching: every button says what it will re-decide
 

@@ -91,13 +91,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Semora Control Plane Console", lifespan=lifespan)
 
 
-def _new_agent(session_id: str) -> Agent:
-    """Create the run agent. Payment records are keyed by scenario id so a rerun can reuse them."""
+def _new_agent(session_id: str, intent: str | None = None) -> Agent:
+    """Create the run agent.
+
+    Its effects are steps of ``session_id`` keyed by ``intent`` — the request's origin
+    prompt id — so a recovery, a resume or a fork of one request replays its charge and a
+    new request makes its own.
+    """
     return Agent(
         name="control-plane-console",
         description="Runs locked operator control-plane scenarios.",
         model=openrouter_model(),
-        tools=DemoTools(session=_session_step(session_id)),
+        tools=DemoTools(session=_session_step(session_id), intent=intent),
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -237,7 +242,8 @@ async def _session(run_id: str) -> dict[str, Any]:
         # The session, not the scenario: a resumed run must rejoin the session whose
         # steps its effects are, or the charge it already made is invisible to it.
         "agent": _new_agent(
-            str(stored.get("session_id") or f"session:{stored.get('scenario_id')}")
+            str(stored.get("session_id") or f"session:{stored.get('scenario_id')}"),
+            intent=str(stored["origin_id"]) if stored.get("origin_id") else None,
         ),
         "aborted": False,
     }
@@ -756,7 +762,7 @@ async def run(request: RunRequest) -> StreamingResponse:
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
     session_id = _session_id(request.operator, request.scenario_id)
-    agent = _new_agent(session_id)
+    agent = _new_agent(session_id, intent=prompt_id)
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     origin_runs = {prompt_id: run_id}
     _sessions[run_id] = {
