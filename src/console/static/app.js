@@ -18,6 +18,7 @@ import {
   failRun,
   finishRun,
   markRecoverable,
+  replayStream,
   returnToDraft,
   startRun,
   suspendRun,
@@ -1386,7 +1387,25 @@ export function createConsole({
         unitNames: [...(kept.units ?? [])],
       });
       state.run = startRun(state.run);
-      for (const frame of kept.frames) handleFrame(frame);
+      let streams = 0;
+      for (const frame of kept.frames) {
+        if (frame?.kind === "meta") {
+          // Every request after the first began from wherever the previous one ended,
+          // and the button that began it is not here to say so.
+          if (streams > 0) state.run = replayStream(state.run, frame.units ?? null);
+          streams += 1;
+        }
+        handleFrame(frame);
+      }
+    } catch (error) {
+      // A run this page cannot rebuild must not be shown half-rebuilt: a parked-looking
+      // run with a 복구 button the ledger will refuse is worse than the launch screen.
+      // The id stays remembered; a later page may know how to replay it.
+      console.error("restore failed", error);
+      state.run = createRunState();
+      state.frames = [];
+      state.rows = [];
+      state.selectedVersionRunId = null;
     } finally {
       state.restoring = false;
     }

@@ -37,6 +37,7 @@ import {
   failRun,
   finishRun,
   markRecoverable,
+  replayStream,
   returnToDraft,
   startRun,
   suspendRun,
@@ -532,6 +533,16 @@ const recoverable = markRecoverable(streaming);
 assert.equal(recoverable.phase, "recoverable");
 assert.equal(canStartRun(recoverable), false);
 assert.equal(acceptsStreamEnd(recoverable), true);
+
+// A kept run took several requests. Replaying its frames, the next stream's meta lands on
+// whatever phase the previous stream left — and only a streaming run may take a run id.
+for (const parked of [recoverable, suspendRun(streaming, "p-1"), finishRun(streaming, "completed")]) {
+  const again = replayStream(parked, ["approval"]);
+  assert.equal(again.phase, "streaming", `a replayed stream begins from ${parked.phase}`);
+  assert.deepEqual(again.active.unitNames, ["approval"], "with the units that stream ran under");
+  assert.equal(attachRunId(again, "run-x").runId, "run-x");
+}
+assert.throws(() => replayStream(createRunState()), /no active run/);
 
 const terminal = finishRun(streaming, "completed");
 assert.equal(terminal.phase, "terminal");

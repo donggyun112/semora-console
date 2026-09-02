@@ -105,6 +105,24 @@ export function beginContinuation(state) {
   return { ...state, phase: "streaming", continuationBusy: true };
 }
 
+export function replayStream(state, units = null) {
+  // Restore only. A kept run is several requests — the run, a recovery, each answer, a
+  // fork — and each began from the phase the one before ended in: a continuation from
+  // suspended or recoverable, a fork from terminal, a retry from error. Live, the button
+  // that opened the request made that transition; replaying the frames, nothing does,
+  // and the next stream's meta arrived on a run that was not streaming. This is that
+  // transition, for a request that already happened.
+  if (!state.active) throw new Error("no active run");
+  return {
+    ...state,
+    phase: "streaming",
+    continuationBusy: false,
+    pendingId: null,
+    error: null,
+    active: units ? { ...state.active, unitNames: [...units] } : state.active,
+  };
+}
+
 export function beginFork(state) {
   if (
     state.phase !== "terminal" ||
