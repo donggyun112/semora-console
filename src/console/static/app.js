@@ -1325,6 +1325,16 @@ export function createConsole({
   }
 
   function bind() {
+    // The wordmark is home. It is a link to "/", and a reload now brings the remembered
+    // run straight back — so going home has to mean leaving the run on purpose, which
+    // only a run that is not waiting on the operator may do. A parked or streaming run
+    // is left through its own buttons; the pointer goes to the one that ends it.
+    documentRef.querySelector(".brand")?.addEventListener("click", (event) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+      event.preventDefault();
+      if (canStartRun(state.run)) returnDraft();
+      else dom.abort.focus();
+    });
     dom["scenario-trigger"].addEventListener("click", () => {
       const willOpen = dom["scenario-menu"].classList.contains("hidden");
       setHidden(dom["scenario-menu"], !willOpen);
