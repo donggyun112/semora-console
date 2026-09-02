@@ -1,7 +1,7 @@
 # Semora Control Plane Console
 
 **You are the operator.** An AI agent holds real, effectful tools — it can charge a card,
-send an email, write to a store. Compose [semora](../semora)'s control plane from
+send an email, write to a store. Compose [semora](https://github.com/donggyun112/semora)'s control plane from
 **units across different lifecycle hooks**, and watch the *same task* behave differently by
 policy alone.
 
@@ -134,11 +134,9 @@ make up          # → http://localhost:8850
 make             # every other target
 ```
 
-`semora` is resolved by path from the neighbouring checkout, so it arrives as a named
-build context (`additional_contexts: semora: ../semora`) rather than by widening
-the build context to the parent directory. The ledger lives in a named volume, which is
-why `restart` and even `down` keep a parked run and `down -v` is the one that throws it
-away.
+`semora` comes from PyPI (`semora[fork,openrouter]>=0.2,<0.3`), so the image needs only
+this repository. The ledger lives in a named volume, which is why `restart` and even
+`down` keep a parked run and `down -v` is the one that throws it away.
 
 A second worker on the same ledger, for the contention a single process cannot show:
 

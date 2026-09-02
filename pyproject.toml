@@ -5,10 +5,10 @@ description = "Operator console showcasing semora's composable control plane —
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "semora[fork,openrouter]",
+  "semora[fork,openrouter]>=0.2,<0.3",
   # Imported directly for the OpenRouter preset, so not left to a transitive edge.
-  "semora-llm",
-  "semora-store-pg",
+  "semora-llm>=0.2,<0.3",
+  "semora-store-pg>=0.2,<0.3",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "python-dotenv>=1",
@@ -25,13 +25,6 @@ packages = ["src/console"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 
-# semora and siblings live in the neighbouring workspace, resolved by path.
-[tool.uv.sources]
-semora = { path = "../semora/packages/semora", editable = true }
-semora-llm = { path = "../semora/packages/semora-llm", editable = true }
-semora-fork = { path = "../semora/packages/semora-fork", editable = true }
-semora-store = { path = "../semora/packages/semora-store", editable = true }
-semora-store-pg = { path = "../semora/packages/semora-store-pg", editable = true }
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
