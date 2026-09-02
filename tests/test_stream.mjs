@@ -6,11 +6,13 @@ import {
   deriveRunVersions,
   deriveVersionPhase,
   deriveVersionRows,
+  describeFork,
   getForkActionLabel,
   GUIDE,
   getEventForkRequest,
   guideMatch,
   isRetargetedFork,
+  policiesAt,
   isForkRepresentative,
   nextGuideStep,
   pickInlineActionHost,
@@ -602,19 +604,51 @@ assert.deepEqual(
   },
   "forking a tool result with masking off sends an empty control set",
 );
+// The framework says where a coordinate resumes and which control points run again
+// from there; each unit says which point it lives at. That is the whole plan — the
+// page never decides from a policy's name whether a branch will reach it.
+const PLAN = {
+  points: new Map([
+    ["input_mask", "on_inputs"],
+    ["approval", "pre_tool_use"], ["dlp_block", "pre_tool_use"], ["rate_cap", "pre_tool_use"],
+    ["pii_mask", "post_tool_use"], ["context_firewall", "post_tool_use"],
+    ["log_gate", "before_finish"],
+  ]),
+  reruns: {
+    on_inputs: ["on_inputs", "before_model", "pre_tool_use", "post_tool_use", "before_finish"],
+    pre_tool_use: ["pre_tool_use", "post_tool_use", "before_finish"],
+    before_model: ["before_model", "before_finish"],
+  },
+};
+assert.deepEqual(
+  policiesAt("before_model", ["pii_mask", "dlp_block", "log_gate"], PLAN),
+  { applies: ["log_gate"], skipped: ["pii_mask", "dlp_block"] },
+  "after a recorded result neither the gate nor the journal runs again for that call",
+);
+assert.deepEqual(
+  policiesAt("pre_tool_use", ["pii_mask", "dlp_block", "log_gate"], PLAN),
+  { applies: ["pii_mask", "dlp_block", "log_gate"], skipped: [] },
+);
+assert.deepEqual(
+  policiesAt("before_model", ["mystery"], PLAN),
+  { applies: [], skipped: ["mystery"] },
+  "a unit whose point nobody declared is not promised to run",
+);
+
 // The projector sends both coordinates for a saved result: where it restores, and
-// where it was made. Changing a policy that only speaks while a tool runs takes the
-// second one, because there is nothing to rewrite at the first.
+// where it was made. A changed policy this coordinate would not reach, but the other
+// would, takes the second one — whichever control point that policy lives at.
 const postToolRow = {
   eventId: "event-post",
   label: "post_tool_use",
   kind: "lifecycle",
   forkable: true,
   forkEdge: "after",
-  rebuild: { event_id: "event-pre", edge: "before" },
+  resumesAt: "before_model",
+  rebuild: { event_id: "event-pre", edge: "before", resumes_at: "pre_tool_use" },
 };
 assert.deepEqual(
-  getEventForkRequest(unmaskedMaskingTerminal, postToolRow),
+  getEventForkRequest(unmaskedMaskingTerminal, postToolRow, PLAN),
   {
     run_id: "run-b",
     event_id: "event-pre",
@@ -624,14 +658,42 @@ assert.deepEqual(
   "turning pii_mask off at a saved tool result runs the tool again through the new journal",
 );
 assert.deepEqual(
-  getEventForkRequest(forkSourceTerminal, postToolRow),
+  getEventForkRequest(forkSourceTerminal, postToolRow, PLAN),
   {
     run_id: "run-b",
     event_id: "event-post",
     edge: "after",
     units: ["pii_mask", "dlp_block"],
   },
-  "unchanged journal units keep the after-result continue edge",
+  "unchanged units keep the after-result continue edge",
+);
+const gatedLater = updateDraft(forkSourceTerminal, {
+  unitNames: ["pii_mask", "dlp_block", "approval"],
+});
+assert.equal(
+  getEventForkRequest(gatedLater, postToolRow, PLAN).event_id,
+  "event-pre",
+  "adding a gate policy at a saved result rewinds too — a gate is not a journal, and it "
+  + "would not run from here either",
+);
+const finishOnly = updateDraft(forkSourceTerminal, {
+  unitNames: ["pii_mask", "dlp_block", "log_gate"],
+});
+assert.equal(
+  getEventForkRequest(finishOnly, postToolRow, PLAN).event_id,
+  "event-post",
+  "a finish policy runs from after the result, so nothing moves",
+);
+const described = describeFork(gatedLater, postToolRow, PLAN);
+assert.equal(described.retargeted, true);
+assert.equal(described.resumesAt, "pre_tool_use", "the policies are judged where the branch lands");
+assert.deepEqual(described.policies, {
+  applies: ["pii_mask", "dlp_block", "approval"], skipped: [],
+});
+assert.deepEqual(
+  describeFork(finishOnly, postToolRow, PLAN).policies,
+  { applies: ["log_gate"], skipped: ["pii_mask", "dlp_block"] },
+  "and a button that stays says which selected policies it will not reach",
 );
 assert.deepEqual(
   getEventForkRequest(unmaskedMaskingTerminal, {
@@ -1154,13 +1216,15 @@ assert.deepEqual(
   ],
   "late durable coordinates activate the earlier tool rows they stabilize",
 );
+const both = { applies: ["pii_mask", "dlp_block"], skipped: [] };
 assert.equal(
-  getForkActionLabel(restoredToolRows[0], 2),
-  "툴 실행 전 분기 · 정책 2개",
+  getForkActionLabel(restoredToolRows[0], both),
+  "툴 실행 전 분기 · 적용 pii_mask, dlp_block",
 );
 assert.equal(
-  getForkActionLabel(restoredToolRows[2], 2),
-  "툴 결과에서 분기 · 정책 2개",
+  getForkActionLabel(restoredToolRows[2], { applies: [], skipped: ["pii_mask", "dlp_block"] }),
+  "툴 결과에서 분기 · 적용 없음 · 건너뜀 pii_mask, dlp_block",
+  "a branch names what it will run and what it will not — a count said neither",
 );
 
 const leafVersionFrames = [
@@ -1564,8 +1628,8 @@ const replayedRows = [
 ];
 assert.deepEqual(
   replayedRows.map((row, index) => (isForkRepresentative(replayedRows, index)
-    ? `${index}:${getForkActionLabel(row, 0)}` : null)).filter(Boolean),
-  ["0:툴 실행 전 분기 · 정책 0개", "2:툴 결과에서 분기 · 정책 0개"],
+    ? `${index}:${getForkActionLabel(row, { applies: [], skipped: [] })}` : null)).filter(Boolean),
+  ["0:툴 실행 전 분기 · 적용 없음", "2:툴 결과에서 분기 · 적용 없음"],
   "one leaf, two boundaries, two buttons",
 );
 
@@ -1579,24 +1643,25 @@ const resultRow = {
 assert.equal(isRetargetedFork(resultRow, { event_id: "ev-gate" }), true);
 assert.equal(isRetargetedFork(resultRow, { event_id: "ev-result" }), false);
 assert.equal(isRetargetedFork(resultRow, null), false);
+const one = { applies: ["pii_mask"], skipped: [] };
 assert.equal(
-  getForkActionLabel(resultRow, 1, true),
-  "저장된 결과를 버리고 툴부터 다시 · 정책 1개",
+  getForkActionLabel(resultRow, one, true),
+  "저장된 결과를 버리고 툴부터 다시 · 적용 pii_mask",
 );
-assert.equal(getForkActionLabel(resultRow, 1, false), "툴 결과에서 분기 · 정책 1개");
+assert.equal(getForkActionLabel(resultRow, one, false), "툴 결과에서 분기 · 적용 pii_mask");
 assert.equal(
-  getForkActionLabel({ label: "pre_tool_use", forkable: true, boundary: "tool" }, 2),
-  "툴 실행 전 분기 · 정책 2개",
+  getForkActionLabel({ label: "pre_tool_use", forkable: true, boundary: "tool" }, both),
+  "툴 실행 전 분기 · 적용 pii_mask, dlp_block",
 );
 // The name comes from the projector, so an event renamed upstream keeps its button
 // text — and a coordinate the projector did not name says nothing it cannot support.
 assert.equal(
-  getForkActionLabel({ label: "그 무엇이든", forkable: true, boundary: "input" }, 1),
-  "이 입력에서 분기 · 정책 1개",
+  getForkActionLabel({ label: "그 무엇이든", forkable: true, boundary: "input" }, one),
+  "이 입력에서 분기 · 적용 pii_mask",
 );
 assert.equal(
-  getForkActionLabel({ label: "pre_tool_use", forkable: true }, 1),
-  "이 지점에서 분기 · 정책 1개",
+  getForkActionLabel({ label: "pre_tool_use", forkable: true }, one),
+  "이 지점에서 분기 · 적용 pii_mask",
 );
 
 console.log("run inspector state ok");

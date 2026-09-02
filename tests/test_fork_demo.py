@@ -701,3 +701,47 @@ async def test_a_seam_belongs_to_one_run():
 
     assert seams, "the run has boundaries at all"
     assert all(seam.startswith("run-source:") for seam in seams)
+
+
+@pytest.mark.asyncio
+async def test_every_coordinate_says_where_the_run_resumes():
+    """The projector passes on the framework's answer, and it is the right one per boundary.
+
+    A tool boundary resumes at the gate, a result boundary hands the conversation back to
+    the model, an input replays from the input — and the coordinate that makes a result
+    again says it resumes at the gate, which is what makes it worth rewinding to.
+    """
+    steps = MemorySteps()
+    transcript = MemoryTranscript()
+    tools = DemoTools(session=session_on(steps))
+    agent = tool_calling_agent(
+        tools, read_customer_call(), AIMessage(content="source finished")
+    )
+    projector = EventCheckpointProjector(
+        transcript,
+        run_id="run-source",
+        conversation_id="conv-tool",
+        origin_runs={"p1": "run-source"},
+        default_origin_id="p1",
+    )
+    _, frames = await run_tool_source(steps, transcript, projector, agent)
+
+    by_boundary: dict[str, set[str]] = {}
+    for frame in frames:
+        for update in frame.get("restore_updates", []):
+            by_boundary.setdefault(update["boundary"], set()).add(update["resumes_at"])
+        if frame.get("forkable"):
+            by_boundary.setdefault(frame["boundary"], set()).add(frame["resumes_at"])
+
+    assert by_boundary == {
+        "input": {"on_inputs"},
+        "tool": {"pre_tool_use"},
+        "result": {"before_model"},
+    }
+    rebuilds = {
+        update["rebuild"]["resumes_at"]
+        for frame in frames
+        for update in frame.get("restore_updates", [])
+        if update.get("rebuild")
+    }
+    assert rebuilds == {"pre_tool_use"}

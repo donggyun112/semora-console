@@ -1627,3 +1627,15 @@ async def test_a_replayed_call_still_shows_as_a_call_and_a_result():
     answered = next(f for f in frames if (f.get("event") or {}).get("type") == "tool_result")
     assert answered["event"]["result"] == result, "the result the hook actually carried"
     assert answered["event"]["executed"] is True
+
+
+def test_units_carry_the_framework_rerun_table():
+    """The page learns which control points a branch re-runs from the framework, not from a
+    list of policy names it keeps for itself."""
+    with TestClient(app) as client:
+        payload = client.get("/api/units").json()
+    assert payload["reruns"]["pre_tool_use"] == ["pre_tool_use", "post_tool_use", "before_finish"]
+    assert "pre_tool_use" not in payload["reruns"]["before_model"]
+    assert {u["point"] for u in payload["units"]} <= {
+        point for points in payload["reruns"].values() for point in points
+    }, "every unit lives at a point some branch can reach"

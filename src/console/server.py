@@ -38,7 +38,7 @@ from semora.dispatch import Answer, Prompt, Recover
 from semora.orchestrator import AgentSuspended, Orchestrator
 from semora_store import Contended, Fenced, Indeterminate
 from semora.transcript import SCHEMA_VERSION, entry_id
-from semora_fork import read_event_checkpoint
+from semora_fork import RERUNS, read_event_checkpoint
 from pydantic import BaseModel, Field
 
 from .dormancy import dormant_reason
@@ -701,6 +701,10 @@ async def units() -> dict[str, Any]:
              "verdict": u.verdict, "title": u.title, "desc": u.desc}
             for u in UNITS
         ],
+        # From each point a branch can resume at, the control points that run again over
+        # the recorded round — the framework's table, so the page never guesses which of
+        # the selected policies a branch will reach.
+        "reruns": {point: list(points) for point, points in RERUNS.items()},
     }
 
 

@@ -18,6 +18,8 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     // it. Rows sharing one are one branch, and the client never has to work that out.
     seam: options.seam ?? coordinateFrame?.seam ?? null,
     boundary: options.boundary ?? coordinateFrame?.boundary ?? null,
+    // The control point the runtime enters first when restored here, per the framework.
+    resumesAt: options.resumesAt ?? coordinateFrame?.resumes_at ?? null,
     // The coordinate that makes this boundary again instead of restoring it, for when the
     // operator changed a policy that only has something to say while the tool runs.
     rebuild: options.rebuild ?? coordinateFrame?.rebuild ?? null,
@@ -161,6 +163,7 @@ export function reduceFrames(frames) {
         edge: update.restore_edge,
         seam: update.seam ?? null,
         boundary: update.boundary ?? null,
+        resumesAt: update.resumes_at ?? null,
         rebuild: update.rebuild ?? null,
       });
     }
@@ -360,6 +363,7 @@ export function reduceFrames(frames) {
     row.forkEdge = update.edge;
     row.seam = update.seam ?? row.seam;
     row.boundary = update.boundary ?? row.boundary;
+    row.resumesAt = update.resumesAt ?? row.resumesAt;
     row.rebuild = update.rebuild ?? row.rebuild;
   }
 
