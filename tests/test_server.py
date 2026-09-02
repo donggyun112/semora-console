@@ -550,7 +550,7 @@ def test_units_endpoint_shape():
         names = {u["name"] for u in body["units"]}
         assert names == {
             "input_mask", "approval", "dlp_block", "rate_cap", "pii_mask",
-            "context_firewall", "injection_guard", "log_gate",
+            "context_firewall", "injection_guard", "result_drop", "log_gate",
         }
         points = {u["point"] for u in body["units"]}
         assert {"pre_tool_use", "post_tool_use", "before_finish"} <= points

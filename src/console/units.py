@@ -238,6 +238,25 @@ async def injection_guard(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> N
     result["control_note"] = "신뢰할 수 없는 상태"
 
 
+DROP_NOTICE = "[result_drop: 도구 결과 폐기]"
+
+
+async def result_drop(_ctx: Ctx, _call: ToolCall, result: dict[str, Any]) -> None:
+    """post_tool_use — discard the observation the model would ingest.
+
+    The effect already happened. This unit throws away the result text so the model
+    never sees it. Unlike context_firewall it does not wait for PII — any payload goes.
+    The durable ledger copy is untouched; a branch can re-journal from that original.
+    """
+    if not (isinstance(result, dict) and isinstance(result.get("text"), str)):
+        return
+    if not result["text"]:
+        return
+    result["text"] = DROP_NOTICE
+    result["redacted_by"] = "result_drop"
+    result["control_note"] = "도구 결과 폐기"
+
+
 LOG_HINT = "끝내기 전에 remember_note로 결과를 남겨라."
 
 
@@ -304,6 +323,8 @@ UNITS: list[Unit] = [
          "기밀 결과를 정책 문구로 교체.", context_firewall),
     Unit("injection_guard", "post_tool_use", "Journal", "Rewrite", "비신뢰 표시",
          "도구 결과에 ‘신뢰할 수 없는 상태’와 구조 표시.", injection_guard),
+    Unit("result_drop", "post_tool_use", "Journal", "Block", "결과 폐기",
+         "도구 결과를 모델 컨텍스트에서 버림. 효과는 남음.", result_drop),
     Unit("log_gate", "before_finish", "FinishPolicy", "Steer", "기록 강제",
          "remember_note 전 종료 거부.", log_gate),
 ]

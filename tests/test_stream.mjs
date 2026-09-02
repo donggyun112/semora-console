@@ -625,6 +625,7 @@ const PLAN = {
     ["input_mask", "on_inputs"],
     ["approval", "pre_tool_use"], ["dlp_block", "pre_tool_use"], ["rate_cap", "pre_tool_use"],
     ["pii_mask", "post_tool_use"], ["context_firewall", "post_tool_use"],
+    ["injection_guard", "post_tool_use"], ["result_drop", "post_tool_use"],
     ["log_gate", "before_finish"],
   ]),
   reruns: {
@@ -1315,6 +1316,152 @@ assert.deepEqual(
   deriveVersionRows(leafVersionFrames, "leaf-v2").map(({ eventId }) => eventId),
   ["leaf-session", "leaf-request", "leaf-child-pre", "leaf-child-post"],
   "a leaf continuation keeps the parent prefix and does not trim its shorter child stream",
+);
+
+const chargeCall = (runId, eventId, callId, customerId) => ({
+  kind: "agent",
+  run_id: runId,
+  event_id: eventId,
+  event: {
+    type: "tool_call",
+    id: callId,
+    name: "charge_card",
+    input: { customer_id: customerId, amount: "10" },
+  },
+});
+const chargePre = (runId, eventId, callId) => ({
+  kind: "lifecycle",
+  run_id: runId,
+  event_id: eventId,
+  type: "pre_tool_use",
+  payload: { call_id: callId, name: "charge_card" },
+});
+const chargePost = (runId, eventId, callId) => ({
+  kind: "lifecycle",
+  run_id: runId,
+  event_id: eventId,
+  type: "post_tool_use",
+  payload: { call_id: callId, name: "charge_card" },
+});
+const replayedSplitFrames = [
+  { kind: "meta", run_id: "pay-v1" },
+  {
+    kind: "lifecycle", run_id: "pay-v1", event_id: "pay-session",
+    type: "session_start", payload: {},
+  },
+  chargeCall("pay-v1", "pay-v1-c1", "c-001", "c-001"),
+  chargePre("pay-v1", "pay-v1-c1-pre", "c-001"),
+  chargeCall("pay-v1", "pay-v1-c2", "c-002", "c-002"),
+  chargePre("pay-v1", "pay-v1-c2-pre", "c-002"),
+  chargeCall("pay-v1", "pay-v1-c3", "c-003", "c-003"),
+  chargePre("pay-v1", "pay-v1-c3-pre", "c-003"),
+  {
+    kind: "meta", run_id: "pay-v2", fork_parent: "pay-v1",
+    fork_event_id: "pay-v1-c2-pre", fork_edge: "before", fork_mode: "leaf",
+  },
+  {
+    kind: "lifecycle", run_id: "pay-v2", event_id: "pay-v2-session",
+    type: "session_start", payload: {},
+  },
+  chargeCall("pay-v2", "pay-v2-c1", "c-001", "c-001"),
+  chargePre("pay-v2", "pay-v2-c1-pre", "c-001"),
+  chargePost("pay-v2", "pay-v2-c1-post", "c-001"),
+  chargeCall("pay-v2", "pay-v2-c2", "c-002", "c-002"),
+  chargePre("pay-v2", "pay-v2-c2-pre", "c-002"),
+  chargePost("pay-v2", "pay-v2-c2-post", "c-002"),
+  chargeCall("pay-v2", "pay-v2-c3", "c-003", "c-003"),
+  chargePre("pay-v2", "pay-v2-c3-pre", "c-003"),
+  chargePost("pay-v2", "pay-v2-c3-post", "c-003"),
+];
+const replayedSplitRows = deriveVersionRows(replayedSplitFrames, "pay-v2");
+assert.deepEqual(
+  replayedSplitRows.map(({ eventId, versionOrigin, forkStart }) => ({
+    eventId, versionOrigin, forkStart,
+  })),
+  [
+    { eventId: "pay-session", versionOrigin: "inherited", forkStart: false },
+    { eventId: "pay-v1-c1", versionOrigin: "inherited", forkStart: false },
+    { eventId: "pay-v1-c1-pre", versionOrigin: "inherited", forkStart: false },
+    { eventId: "pay-v1-c2", versionOrigin: "inherited", forkStart: false },
+    { eventId: "pay-v2-c2-pre", versionOrigin: "current", forkStart: true },
+    { eventId: "pay-v2-c2-post", versionOrigin: "current", forkStart: false },
+    { eventId: "pay-v2-c3", versionOrigin: "current", forkStart: false },
+    { eventId: "pay-v2-c3-pre", versionOrigin: "current", forkStart: false },
+    { eventId: "pay-v2-c3-post", versionOrigin: "current", forkStart: false },
+  ],
+  "forking at event 2 keeps 1 shared and puts 2 and 3 on the branch, dropping the child's replay of 1",
+);
+
+const chargePerm = (runId, eventId, callId) => ({
+  kind: "lifecycle",
+  run_id: runId,
+  event_id: eventId,
+  type: "permission_request",
+  payload: { call_id: callId, name: "charge_card" },
+});
+const parallelCrashForkFrames = [
+  { kind: "meta", run_id: "par-v1" },
+  {
+    kind: "lifecycle", run_id: "par-v1", event_id: "par-session",
+    type: "session_start", payload: {},
+  },
+  {
+    kind: "lifecycle", run_id: "par-v1", event_id: "par-submit",
+    type: "user_prompt_submit", payload: { kind: "user_prompt" },
+  },
+  {
+    kind: "lifecycle", run_id: "par-v1", event_id: "par-context",
+    type: "context_injected", payload: { kind: "user_prompt" },
+  },
+  chargeCall("par-v1", "par-v1-c1", "c-001", "c-001"),
+  chargeCall("par-v1", "par-v1-c2", "c-002", "c-002"),
+  chargeCall("par-v1", "par-v1-c3", "c-003", "c-003"),
+  chargePre("par-v1", "par-v1-c1-pre", "c-001"),
+  chargePre("par-v1", "par-v1-c2-pre", "c-002"),
+  {
+    kind: "recoverable", run_id: "par-v1", event_id: "par-crash",
+    step: "c-002", message: "워커 장애",
+  },
+  chargePre("par-v1", "par-v1-c2-pre2", "c-002"),
+  chargePre("par-v1", "par-v1-c3-pre", "c-003"),
+  {
+    kind: "meta", run_id: "par-v2", fork_parent: "par-v1",
+    fork_event_id: "par-v1-c3-pre", fork_edge: "before", fork_mode: "leaf",
+  },
+  {
+    kind: "lifecycle", run_id: "par-v2", event_id: "par-v2-session",
+    type: "session_start", payload: {},
+  },
+  chargeCall("par-v2", "par-v2-c1", "c-001", "c-001"),
+  chargePre("par-v2", "par-v2-c1-pre", "c-001"),
+  chargePerm("par-v2", "par-v2-c1-perm", "c-001"),
+  chargeCall("par-v2", "par-v2-c2", "c-002", "c-002"),
+  chargePre("par-v2", "par-v2-c2-pre", "c-002"),
+  chargePerm("par-v2", "par-v2-c2-perm", "c-002"),
+  chargeCall("par-v2", "par-v2-c3", "c-003", "c-003"),
+  chargePre("par-v2", "par-v2-c3-pre", "c-003"),
+  chargePerm("par-v2", "par-v2-c3-perm", "c-003"),
+];
+const parallelCrashRows = deriveVersionRows(parallelCrashForkFrames, "par-v2");
+assert.deepEqual(
+  parallelCrashRows.map(({ eventId, versionOrigin, forkStart }) => ({
+    eventId, versionOrigin, forkStart,
+  })),
+  [
+    { eventId: "par-session", versionOrigin: "inherited", forkStart: false },
+    { eventId: "par-submit", versionOrigin: "inherited", forkStart: false },
+    { eventId: "par-context", versionOrigin: "inherited", forkStart: false },
+    { eventId: "par-v2-c1", versionOrigin: "current", forkStart: true },
+    { eventId: "par-v2-c1-pre", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c1-perm", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c2", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c2-pre", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c2-perm", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c3", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c3-pre", versionOrigin: "current", forkStart: false },
+    { eventId: "par-v2-c3-perm", versionOrigin: "current", forkStart: false },
+  ],
+  "a gate fork inside a parallel batch starts the branch at the batch, not after v1's calls and crash",
 );
 
 const versionedChatFrames = [

@@ -108,6 +108,16 @@ async def test_approval_suspends_every_effect_but_passes_reads():
 
 
 @pytest.mark.asyncio
+async def test_result_drop_discards_tool_result_without_needing_pii():
+    plane = compose_controls(["result_drop"])
+    res = {"type": "text", "text": "charged c-001 $10"}
+    await plane.post_tool_use(_ctx(), _call("charge_card", customer_id="c-001", amount="10"), res)
+    assert "charged" not in res["text"]
+    assert "c-001" not in res["text"]
+    assert res["redacted_by"] == "result_drop"
+
+
+@pytest.mark.asyncio
 async def test_pii_mask_rewrites_result_in_place():
     plane = compose_controls(["pii_mask"])
     res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789"}

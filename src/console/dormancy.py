@@ -25,6 +25,9 @@ _REASONS: dict[str, dict[str, str]] = {
     "injection_guard": {
         "_": "구조화할 도구 결과가 없음",
     },
+    "result_drop": {
+        "_": "버릴 도구 결과가 없음",
+    },
     "log_gate": {
         "note": "이미 remember_note",
         "_": "이미 기록됨",

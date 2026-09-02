@@ -31,6 +31,7 @@ ordered transition table selects start, steering, resume, or journal replay.
 | `pii_mask` | `post_tool_use` → Journal | **Rewrite** | Anonymizes email/SSN in a tool result in place — the model keeps a usable, masked record; raw PII never crosses to the model provider. |
 | `context_firewall` | `post_tool_use` → Journal | **Block** | The strong form: replaces a confidential result **wholesale** with a policy notice, so the raw data never enters the model's context at all. |
 | `injection_guard` | `post_tool_use` → Journal | **Rewrite** | Decomposes any tool result and forwards `{신뢰할 수 없는 상태, source, structure}` — does not inspect or drop content. |
+| `result_drop` | `post_tool_use` → Journal | **Block** | Discards the tool result the model would ingest. The effect already ran; the observation is thrown away. Unlike `context_firewall` it does not wait for PII. |
 | `log_gate` | `before_finish` → FinishPolicy | **Steer** | Vetoes completion until the outcome is logged. The `Proceed` is not a second channel — it enqueues on the run's one steer queue. |
 
 **The two ingest units are a matched pair** (`examples/04_control_plane.py`'s lesson —

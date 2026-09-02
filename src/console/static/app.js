@@ -380,7 +380,31 @@ export function selectRunFrames(frames, runId, options = {}) {
 }
 
 function rowFingerprint(row) {
-  return [row.kind, row.label, row.summary].join("\u0000");
+  // callId first: three charge_card gates share kind/label/summary, and matching
+  // the first one put the child's replay of event 1 onto a branch from event 2.
+  return [row.callId ?? "", row.kind, row.label, row.summary].join("\u0000");
+}
+
+function parallelBatchStart(rows, forkIndex) {
+  const fork = rows[forkIndex];
+  if (!fork?.callId) return null;
+  const callStart = rows.findIndex((row) => row.callId === fork.callId);
+  if (callStart < 0 || callStart > forkIndex) return null;
+  const parallel = rows.slice(callStart, forkIndex).some(
+    (row) => row.callId && row.callId !== fork.callId,
+  );
+  if (!parallel) return null;
+  let start = callStart;
+  for (let i = callStart - 1; i >= 0; i -= 1) {
+    if (rows[i].kind === "tool" || rows[i].callId) start = i;
+    else break;
+  }
+  return start;
+}
+
+function childBatchStart(rows) {
+  const index = rows.findIndex((row) => row.kind === "tool" || row.callId);
+  return index < 0 ? 0 : index;
 }
 
 export function deriveVersionRows(frames, runId, ancestors = new Set()) {
@@ -402,20 +426,34 @@ export function deriveVersionRows(frames, runId, ancestors = new Set()) {
   if (forkIndex < 0) return directRows;
 
   const after = meta.fork_edge === "after";
-  const prefixEnd = forkIndex + (after ? 1 : 0);
+  let prefixEnd = forkIndex + (after ? 1 : 0);
   const selectedFingerprint = rowFingerprint(parentRows[forkIndex]);
   let childStart = directRows.findIndex(
     (row) => rowFingerprint(row) === selectedFingerprint,
   );
+  let matchedChild = childStart >= 0;
   if (childStart < 0) childStart = Math.min(prefixEnd, directRows.length);
   else if (after) childStart += 1;
+  // Parallel tools emit every call before any gate. Cutting at the clicked
+  // pre kept v1's whole batch in the prefix, then drew the child batch again.
+  if (!after) {
+    const batchStart = parallelBatchStart(parentRows, forkIndex);
+    if (batchStart !== null) {
+      prefixEnd = batchStart;
+      childStart = childBatchStart(directRows);
+      matchedChild = true;
+    }
+  }
 
   const inherited = parentRows.slice(0, prefixEnd).map((row) => ({
     ...row,
     versionOrigin: "inherited",
     forkStart: false,
   }));
-  const current = meta.fork_mode === "leaf"
+  // Leaf used to append the whole child stream so a short continuation stayed
+  // intact. That also stacked CALL REPLAY of 1-2-3 after the parent prefix.
+  // When the child actually re-emits the fork row, cut there like input forks.
+  const current = meta.fork_mode === "leaf" && !matchedChild
     ? directRows.filter((row) => row.label !== "session_start")
     : directRows.slice(childStart);
   if (current.length) current[0] = { ...current[0], forkStart: true };
