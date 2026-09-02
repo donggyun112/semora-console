@@ -1010,6 +1010,7 @@ requires-dist = [
     { name = "langchain-openai", marker = "extra == 'openrouter'", specifier = ">=1,<2" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1,<2" },
     { name = "loguru", specifier = ">=0.7,<1" },
+    { name = "semora-coding", marker = "extra == 'coding'", editable = "../semora/packages/semora-coding" },
     { name = "semora-fork", marker = "extra == 'fork'", editable = "../semora/packages/semora-fork" },
     { name = "semora-llm", editable = "../semora/packages/semora-llm" },
     { name = "semora-permissions", marker = "extra == 'permissions'", editable = "../semora/packages/semora-permissions" },
@@ -1017,7 +1018,7 @@ requires-dist = [
     { name = "semora-store-pg", marker = "extra == 'postgres'", editable = "../semora/packages/semora-store-pg" },
     { name = "semora-ui", marker = "extra == 'ui'", editable = "../semora/packages/semora-ui" },
 ]
-provides-extras = ["postgres", "permissions", "ui", "fork", "openai", "anthropic", "google", "xai", "openrouter"]
+provides-extras = ["postgres", "permissions", "ui", "fork", "coding", "openai", "anthropic", "google", "xai", "openrouter"]
 
 [[package]]
 name = "semora-console"
