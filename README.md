@@ -1,9 +1,10 @@
 # Semora Control Plane Console
 
 **You are the operator.** An AI agent holds real, effectful tools — it can charge a card,
-send an email, write to a store. Compose [semora](https://github.com/donggyun112/semora)'s control plane from
-**units across different lifecycle hooks**, and watch the *same task* behave differently by
-policy alone.
+send an email, write to a store. Compose [semora](https://github.com/donggyun112/semora)'s
+control plane from **units across different lifecycle hooks**, watch the *same task* behave
+differently by policy alone, kill the worker mid-charge and see the charge made once, then
+branch the finished run with a policy changed and see exactly which decisions run again.
 
 > **Seven hooks. Every hook composes the same way.**
 
@@ -37,7 +38,8 @@ policy lands at a seam and reaches a destination): both run at `post_tool_use` a
 guard **ingest** — what enters the model. `pii_mask` anonymizes and lets the model keep
 working; `context_firewall` blanks the result entirely. Both reach the model's view and
 the UI stream but **not** the durable ledger copy (recorded inside the durable step, before
-any hook) — masking that is a Tools-wrapper seam, out of scope by design.
+any hook) — masking that is a Tools-wrapper seam, out of scope by design. That untouched
+copy is what a branch re-journals from, below.
 
 **Why ingest is the real data boundary.** With a third-party model, a tool result egresses
 to the provider's network the moment it enters the *next* model request. So blocking a
@@ -61,11 +63,6 @@ on the next model call. Stop is a button. Steer is a queue.
 result and executes the remaining calls so all three effects finish exactly once.
 `batch` is sequential so `rate_cap` can trip on the third.
 
-`fork_masking` runs `ssn is 123-45` through `input_mask`, so the source transcript shows
-`ssn is ***` while the source ledger keeps the submitted original. **원문으로 분기 실행**
-calls `fork_run` without that masker: the conversation head moves from the shared prefix,
-and the original becomes durable in the fork ledger, transcript, and `CONTEXT_INJECTED` event.
-
 **Stop is a button, not a unit.** While a run is in flight the operator can hit **중단**;
 that trips Semora's `aborted()` hook (`POST /api/abort`) and cancels the attempt, on any
 scenario and any assembled plane. There is no locked "stop" task.
@@ -75,6 +72,56 @@ the agent reads raw SSN and tries to send it to a personal inbox; `send_email` i
 by both `approval` (Suspend) and `dlp_block` (Deny) — and **Deny wins** (Permissions
 precedence). Turn on `context_firewall` instead and the read is blanked, so nothing
 confidential is ever in the body to leak. One screen, the composer's live precedence rule.
+
+## Sessions: an effect is a step of something longer than a run
+
+An operator name goes with every run. Effects are durable steps of that operator's
+**session** (`session:{operator}:{scenario}`), not of the run: `charge_card` is the step
+`charge:{customer}`, every call is `call:{call_id}`, both taken through
+`Orchestrator.run` on the session. So a retry, a recovery, or a branch under different
+policies **replays** the effect from the session ledger instead of making it again — the
+result row shows `CALL REPLAY` and, for a charge, `PAYMENT DEDUPE`. Two people on the same
+link get their own ledgers and never replay each other. The runtime's own step keyed by
+call id covers one run; the session is what makes the promise hold across runs, and it is
+the host's key, which is why it lives in `tools.py` and not in the framework.
+
+## Branching: every button says what it will re-decide
+
+A finished run is a set of durable coordinates, and the trace offers a branch at each:
+
+| button | where the run resumes | what runs again |
+| --- | --- | --- |
+| **이 입력에서 분기** | `on_inputs` — the prompt is re-screened from its pre-mask original | everything |
+| **툴 실행 전 분기** | `pre_tool_use` — the gate decides again, the effect replays, the journal runs again | gate, journal, finish |
+| **툴 결과에서 분기** | `before_model` — the recorded round is final, the model continues | finish |
+| **기록된 결과에 새 정책만 적용** | `post_tool_use` — no gate, the effect is the record, only the journal runs | journal, finish |
+
+The server knows all of this: `fork_demo.py` stamps every coordinate with its boundary,
+its seam and `resumes_at` (from `semora_fork.resume_point`), and `/api/units` ships the
+framework's table of what re-runs from each. The page only intersects that with the
+policies you selected, so the button reads
+`툴 결과에서 분기 · 적용 log_gate · 건너뜀 pii_mask, dlp_block` — by name, not by count.
+
+Two rules fall out of it. Change a policy this coordinate would not reach but the gate
+would — turning `pii_mask` off at a saved result, adding `dlp_block` — and the branch
+**rewinds to the gate** on its own (`저장된 결과를 버리고 툴부터 다시`). Change *only*
+journal policies and the branch **skips the gate** (`fork_event(rejournal=True)`): the
+source run's finished record stands in, the tool does not run, nobody is asked to approve
+an effect that already happened, and the journal sees the result as the tool returned it.
+`fork_masking` is the scene: run under `pii_mask`, then branch with it off and the original
+comes back — `123-45-6789`, `CALL REPLAY`, no second approval.
+
+A refused call has a result too — the refusal — and its row says `실행 안 됨`. It has no
+`post_tool_use` and no journal run, by the framework's design: a policy result stands in
+for an effect and must not claim the tool ran.
+
+## Come back to it
+
+Refresh the page and the run is still there. Every frame the console renders is kept
+beside the conversation it describes (an unchained `console_frame` transcript entry),
+and `GET /api/runs/{run_id}/frames` reads the whole version chain back in order. The
+browser remembers only the run id; a parked approval restored this way is the live one —
+answer it and the charge runs once, in a process that never saw the suspension.
 
 ## Run locally
 
@@ -88,7 +135,14 @@ Open <http://127.0.0.1:8850>. Verify the composition logic with no server or API
 
 ```bash
 uv run python -m console.units   # prints "units self-check ok"
-uv run pytest                    # composition + streaming-assembly tests
+uv run pytest                    # composition, projector, server, streaming assembly
+node tests/test_stream.mjs       # the reducer and the branch buttons
+```
+
+The live gate, against a real model and a running server:
+
+```bash
+make acceptance                  # ten scenes, retried for model variance, exit 1 on any miss
 ```
 
 ## 효과 경계
@@ -121,8 +175,12 @@ except로 감싸는 순간 아래에서 일부러 흘려보낸 것만 골라 삼
 순서도 보장 범위 안에 있다. 같은 파일에 멱등한 쓰기 두 개를 순서만 바꿔 넣어도 결과가 갈린다.
 콜 전부가 동시 실행해도 안전하다고 선언되지 않는 한, 배치는 한 건씩 순서대로 돈다.
 
-`parallel_crash`에 `approval`을 얹고 승인 대기 중에 워커를 죽여 보면 위 내용이 화면에서
-그대로 돈다.
+세 장애 시나리오가 그 셋을 하나씩 친다. `crash`·`parallel_crash`는 첫 효과가 **커밋된 뒤**
+워커를 죽인다 — 복구하면 그 결과는 replay되고 나머지가 실행된다. `approval`을 얹으면
+게이트 안에서 죽는다 — park가 기록되기 전이라 복구가 게이트부터 다시 탄다.
+`unknown_effect`는 세션 스텝의 `start`와 `finish` **사이**에서 죽인다 — 유일하게 스텝을
+running으로 남기는 자리라, 다시 실행하면 원장이 `Indeterminate`로 답하고 화면은 "이 효과는
+나갔을 수도, 안 나갔을 수도 있습니다"에서 멈춘다. 그게 이 시나리오의 요점이다.
 
 ## Docker
 
@@ -146,7 +204,7 @@ make two-workers      # worker-a :8850, worker-b :8851
 
 They take separate lease owners on purpose. Workers sharing a name renew each other's
 lease instead of contending, which would make the run look free while somebody else is
-executing it. While one is mid-round, `select run_id, owner, token from semora_run_lease`
+executing it. While one is mid-round, `select run_id, owner, token from ledger_run_lease`
 names the holder, and the other answers a request for that run with **contended** rather
 than running it a second time.
 
@@ -180,26 +238,17 @@ of a record the ledger holds, so a worker rebuilds what it needs from `run_id` a
 Without `DATABASE_URL` the ledger is memory too, and the restart loses the run exactly
 as the runtime does.
 
-## Durable exactly-once
-
-`approval` suspends a call and persists both the continuation and conversation transcript;
-resuming runs the effect **exactly once** (`exec ×1` in the UI). Run without
-`DATABASE_URL` and both stores are memory, which is enough to watch the gate work but not
-to watch it survive anything — [Docker](#docker) has the restart proof.
-
-**청구 중 장애** and **동시 청구 중 장애** arm a worker crash after the first tool
-`finish_effect`. In the parallel case the committed result is replayed and the absent
-siblings execute during **복원**: `POST /api/recover` dispatches `Recover()`, and the
-runtime selects journal replay from durable state. Process restart still needs `DATABASE_URL`.
-
 ## Layout
 
 | File | Role |
 | --- | --- |
 | `units.py` | The substance — units + `compose_controls()` + self-check. |
-| `scenarios.py` | 10 locked scenarios (no free-text → no LLM-proxy abuse). |
+| `scenarios.py` | 11 locked scenarios (no free-text → no LLM-proxy abuse). |
+| `tools.py` | Demo effects as session steps (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
+| `fork_demo.py` | The projector: stamps every frame with its durable coordinate, seam, boundary and resume point; runs a fork. |
+| `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set; the fault injector for the crash scenes. |
 | `dormancy.py` | Why a toggled-on unit stayed dormant in a scenario. |
-| `tools.py` | Demo effects (`read_customer` returns PII, `charge_card`, `send_email`, `remember_note`). |
-| `store.py` | In-memory ledger locally, Postgres when `DATABASE_URL` is set. |
+| `server.py` | FastAPI: `/api/run`, `/api/fork`, `/api/resume`, `/api/recover`, `/api/steer`, `/api/abort`, `/api/runs/{id}/frames`, `/api/units`, `/api/scenarios`, static UI. |
+| `static/` | `reducer.mjs` turns frames into trace rows; `app.js` draws them and decides nothing the server already did. |
+| `scripts/acceptance.py` | The live gate: ten scenes against a real model. |
 | `Dockerfile` · `compose.yaml` · `Makefile` | The stack with a Postgres ledger, where a parked run outlives its worker. |
-| `server.py` | FastAPI: `/api/run`, `/api/fork`, `/api/resume`, `/api/recover`, `/api/abort`, `/api/steer`, `/api/units`, static UI. |
