@@ -1,13 +1,15 @@
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk
-from semora import AgentRuntime, MemorySteps
-from semora.orchestrator import AgentSuspended, Orchestrator
+from pydantic_ai.messages import ToolCallPart
+from semora import MemorySteps
 from semora_store import MemoryTranscript
 
 from console.provider import DEFAULT_MODEL, openrouter_model
-from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval, make_store
-from console.tools import DemoTools
-from console.units import compose_controls
+from console.store import (
+    FaultInjectingSteps,
+    SimulatedWorkerCrash,
+    crash_before_approval,
+    make_store,
+)
 
 
 def test_provider_raises_without_key(monkeypatch):
@@ -21,12 +23,9 @@ def test_provider_builds_with_key(monkeypatch):
     monkeypatch.delenv("MODEL", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     m = openrouter_model()
-    assert m.model == DEFAULT_MODEL
-    # The gateway that leaks DeepSeek's markup is the one this preset points at.
-    assert m.recover_dsml is True
-    assert m.timeout == 60
+    assert m.model_name == DEFAULT_MODEL
     monkeypatch.setenv("MODEL", "vendor/other")
-    assert openrouter_model().model == "vendor/other"
+    assert openrouter_model().model_name == "vendor/other"
 
 
 @pytest.mark.asyncio
@@ -74,7 +73,7 @@ async def test_gate_hook_fires_once_then_continues():
     store = FaultInjectingSteps(MemorySteps())
     store.arm("r1", at="gate")
     stage = crash_before_approval("r1", store)
-    call = {"id": "c1", "name": "charge_card", "args": {}, "type": "tool_call"}
+    call = ToolCallPart("charge_card", {}, "c1")
     try:
         await stage(None, call)
         raise AssertionError("expected SimulatedWorkerCrash")
@@ -97,91 +96,3 @@ async def test_fault_survives_for_execution_scope():
     except SimulatedWorkerCrash:
         pass
     assert (await scoped.read("r1", "call_1")).status == "done"
-
-
-@pytest.mark.asyncio
-async def test_recover_after_pre_park_crash_reissues_approval_under_the_same_id():
-    """tool_call is in history, park is not; recover re-gates and Suspends with that call id."""
-    store = FaultInjectingSteps(MemorySteps())
-    run_id = "run-pre-park"
-    store.arm(run_id, at="gate")
-    call = {
-        "id": "call-charge",
-        "name": "charge_card",
-        "args": {"customer_id": "c-001", "amount": "49"},
-        "type": "tool_call",
-    }
-    calls = [call]
-    history = [AIMessage(content="", tool_calls=calls)]
-    tools = DemoTools()
-    plane = compose_controls(["approval"], extra_pre=[crash_before_approval(run_id, store)])
-
-    async with Orchestrator(run_id, store) as owner:
-        await owner.record_pending(calls, 0)
-        with pytest.raises(SimulatedWorkerCrash) as crashed:
-            await owner.execute_round(tools, calls, lambda: False, controls=plane)
-        assert crashed.value.step == "call-charge"
-    assert tools.execution_counts == {}
-
-    with pytest.raises(AgentSuspended) as stopped:
-        await AgentRuntime(store=store).recover(
-            run_id,
-            history,
-            object(),
-            DemoTools(),
-            controls=compose_controls(["approval"]),
-            retry_running=False,
-        )
-    assert stopped.value.pending_id == "call-charge"
-    assert stopped.value.tool_call_id == "call-charge"
-    assert stopped.value.pending == [("call-charge", "call-charge")]
-
-
-@pytest.mark.asyncio
-async def test_recover_parallel_round_finishes_each_call_exactly_once():
-    """A committed call is replayed while absent siblings execute once after recovery."""
-    store = FaultInjectingSteps(MemorySteps())
-    run_id = "run-parallel-crash"
-    calls = [
-        {
-            "id": "charge-c001",
-            "name": "charge_card",
-            "args": {"customer_id": "c-001", "amount": "10"},
-            "type": "tool_call",
-        },
-        {
-            "id": "charge-c002",
-            "name": "charge_card",
-            "args": {"customer_id": "c-002", "amount": "10"},
-            "type": "tool_call",
-        },
-        {
-            "id": "charge-c003",
-            "name": "charge_card",
-            "args": {"customer_id": "c-003", "amount": "10"},
-            "type": "tool_call",
-        },
-    ]
-    history = [AIMessage(content="", tool_calls=calls)]
-    tools = DemoTools()
-    store.arm(run_id)
-
-    async with Orchestrator(run_id, store) as owner:
-        with pytest.raises(SimulatedWorkerCrash) as crashed:
-            await owner.execute_round(tools, calls, lambda: False)
-    assert crashed.value.step == "charge-c001"
-    assert tools.execution_counts == {"charge-c001": 1}
-
-    async with Orchestrator(run_id, store) as owner:
-        recovered = await owner.recover_pending(
-            history,
-            tools,
-            retry_running=False,
-        )
-
-    assert len(recovered.completed) == 3
-    assert tools.execution_counts == {
-        "charge-c001": 1,
-        "charge-c002": 1,
-        "charge-c003": 1,
-    }

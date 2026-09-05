@@ -16,7 +16,6 @@ Scenario prompts are locked. Mid-run steer is the operator's one queue (capped),
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 import json
 import os
 import re
@@ -24,6 +23,7 @@ import socket
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -31,24 +31,27 @@ from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from langchain_core.messages import HumanMessage
-from semora import Agent, AgentRuntime, new_run_id
-from semora.contracts.types import PendingInput
-from semora.dispatch import Answer, Prompt, Recover
-from semora.orchestrator import AgentSuspended, Orchestrator
-from semora_store import Contended, Fenced, Indeterminate
-from semora.transcript import SCHEMA_VERSION, entry_id
-from semora_fork import RERUNS, read_event_checkpoint
 from pydantic import BaseModel, Field
+from pydantic_ai import Agent
+from pydantic_ai.messages import UserPromptPart
+from semora import AgentSuspended, new_run_id
+from semora.contracts import PendingInput
+from semora.dispatch import Answer, Prompt, Recover
+from semora.transcript import SCHEMA_VERSION, entry_id
+from semora_store import Contended, Fenced, Indeterminate
 
 from .dormancy import dormant_reason
 from .fork_demo import (
+    RERUNS,
     EventCheckpointProjector,
     branch_snapshot,
+    read_event_checkpoint,
     run_from_event,
 )
 from .provider import model_name, openrouter_model
+from .runtime import ConsoleRuntime as AgentRuntime
 from .scenarios import SCENARIOS, SYSTEM_PROMPT
+from .session import session_step
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
 from .tools import DemoTools
 from .units import LOG_HINT, UNITS, UNITS_BY_NAME, compose_controls
@@ -100,10 +103,10 @@ def _new_agent(session_id: str, intent: str | None = None) -> Agent:
     """
     return Agent(
         name="control-plane-console",
-        description="Runs locked operator control-plane scenarios.",
         model=openrouter_model(),
-        tools=DemoTools(session=_session_step(session_id), intent=intent),
+        tools=DemoTools(session=_session_step(session_id), intent=intent).native_tools(),
         system_prompt=SYSTEM_PROMPT,
+        model_settings={"timeout": 60},
     )
 
 
@@ -165,18 +168,14 @@ def _session_id(operator: str, scenario_id: str) -> str:
 
 
 def _session_step(session_id: str) -> Any:
-    """``Orchestrator.run`` for that session, taken and released per effect.
+    """A leased business step for the session, taken and released per effect.
 
     A fresh attempt each time rather than one held open: nothing else holds this run's
     lease, and a worker that grabbed it for the length of an agent turn would contend
     with its own tools.
     """
 
-    async def run(step: str, fn: Any) -> Any:
-        orchestrator = Orchestrator(session_id, _store, owner=WORKER, ttl=LEASE_TTL)
-        return await orchestrator.run(step, fn)
-
-    return run
+    return session_step(_store, session_id, ttl=LEASE_TTL)
 
 
 class RecoverRequest(BaseModel):
@@ -208,7 +207,7 @@ _DURABLE_SESSION = (
     # Which coordinates a fork may start from. Rebuilt only by watching a run stream, so
     # a worker that never saw the run had an empty map and refused every branch — the
     # transcript still held the events it was refusing to reach.
-    "forkable_events",
+    "forkable_events", "frame_sequence",
 )
 
 
@@ -284,13 +283,9 @@ def _injected_text(payload: dict[str, Any]) -> str:
     if not isinstance(data, dict):
         data = message if isinstance(message, dict) else {}
     content = data.get("content") if isinstance(data, dict) else None
+    if content is None:
+        content = message.get("content")
     return content if isinstance(content, str) else str(content or "")
-
-async def _capped(turn: int, _text: str, _calls: list[dict[str, Any]]) -> bool:
-    """Bounded-turn backstop: runaway/cost guard for a public link, and a terminator for
-    units like log_gate that veto completion."""
-    return turn >= 8
-
 
 def _frame(kind: str, **payload: Any) -> str:
     """Encode one newline-delimited stream frame."""
@@ -479,7 +474,7 @@ async def _stream(
             )
             session["event_projector"] = projector
 
-    kept = 0
+    kept = int((session or {}).get("frame_sequence", 0))
 
     async def put(frame: dict[str, Any]) -> None:
         nonlocal kept
@@ -492,6 +487,7 @@ async def _stream(
             if conversation_id:
                 await _keep_frame(str(conversation_id), run_id, kept, frame)
                 kept += 1
+                session["frame_sequence"] = kept
         await queue.put(frame)
 
     def mark(unit: str) -> None:
@@ -711,6 +707,8 @@ async def _stream(
             await runtime.events.session_end("error")
             await put({"kind": "error", "message": str(failure)})
         finally:
+            if session is not None:
+                await _remember_session(run_id, session)
             await queue.put(None)
 
     task = asyncio.create_task(run_attempt())
@@ -791,7 +789,6 @@ async def run(request: RunRequest) -> StreamingResponse:
             conversation_id=conversation_id,
             controls=_controls(selected, run_id, crash_at),
             on_event=on_event,
-            should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(run_id),
         )
         await _publish_source_branch(
@@ -848,7 +845,8 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "crash": False,
         "crash_at": None,
         "conversation_id": source["conversation_id"],
-        "origin_id": coordinate.origin_id,
+        "origin_id": source["origin_id"],
+        "session_id": source["session_id"],
         "source_run_id": request.run_id,
         "origin_runs": child_origin_runs,
         "default_fork_origin": coordinate.origin_id,
@@ -876,7 +874,6 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             agent=source["agent"],
             controls=compose_controls(fork_units),
             on_event=on_event,
-            should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(fork_run_id),
             rejournal=request.rejournal,
         )
@@ -918,7 +915,6 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
-            should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(request.run_id),
         )
 
@@ -946,7 +942,6 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
-            should_stop_after_turn=_capped,
             aborted=lambda: _is_aborted(request.run_id),
         )
 
@@ -1026,7 +1021,7 @@ async def steer(request: SteerRequest) -> dict[str, Any]:
     # taken on the operator's behalf about the call in front of them.
     await runtime.submit(
         request.run_id,
-        PendingInput("user_steer", HumanMessage(text)),
+        PendingInput("user_steer", UserPromptPart(text)),
         input_mode="headless",
     )
     task = session.get("task")

@@ -18,7 +18,7 @@ services:
     volumes:
       # Named, so `docker compose restart console` and even `down` keep the ledger.
       # `down -v` is the one that throws the proof away.
-      - console-ledger:/var/lib/postgresql/data
+      - console-ledger-v03:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U console -d console"]
       interval: 2s
@@ -29,6 +29,8 @@ services:
     build: &console-build
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        semora: ../semora
     environment: &console-env
       DATABASE_URL: postgresql://console:console@db:5432/console
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY in .env}
@@ -59,4 +61,4 @@ services:
         condition: service_healthy
 
 volumes:
-  console-ledger:
+  console-ledger-v03:

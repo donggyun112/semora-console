@@ -23,7 +23,7 @@ import os
 from typing import Any
 
 from semora import Continue, MemorySteps
-from semora.contracts.types import ControlSignal
+from semora.contracts import ControlSignal
 from semora_store import MemoryTranscript
 
 
@@ -107,7 +107,7 @@ def crash_before_approval(run_id: str, store: FaultInjectingSteps):
 
     async def stage(_ctx: Any, call: Any) -> Any:
         if store.consume_gate(run_id):
-            raise SimulatedWorkerCrash(run_id, str(call.get("id") or call.get("name") or ""))
+            raise SimulatedWorkerCrash(run_id, call.tool_call_id)
         return Continue()
 
     return stage
@@ -119,13 +119,13 @@ async def make_store() -> tuple[Any, Any, Any]:
     if not url:
         return FaultInjectingSteps(MemorySteps()), MemoryTranscript(), None
 
+    from psycopg_pool import AsyncConnectionPool
     from semora_store_pg import (
         SCHEMA,
         TRANSCRIPT_SCHEMA,
         PostgresSteps,
         PostgresTranscript,
     )
-    from psycopg_pool import AsyncConnectionPool
 
     pool = AsyncConnectionPool(url, open=False)
     await pool.open()

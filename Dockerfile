@@ -1,4 +1,4 @@
-# semora comes from PyPI like everything else; this image needs only this repository.
+# Semora 0.3 is local until released. Compose supplies the sibling checkout by name.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -6,6 +6,10 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
+COPY --from=semora packages/semora /semora/packages/semora
+COPY --from=semora packages/semora-store /semora/packages/semora-store
+COPY --from=semora packages/semora-store-pg /semora/packages/semora-store-pg
 
 # Dependencies first, so editing console source does not reinstall the world.
 COPY pyproject.toml uv.lock ./

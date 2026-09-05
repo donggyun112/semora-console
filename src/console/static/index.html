@@ -10,14 +10,10 @@
   <body>
     <header class="site-header">
       <a class="brand" href="/" aria-label="Semora 홈">SEMORA</a>
-      <div class="header-actions">
-        <span class="environment"><i aria-hidden="true"></i>LOCAL DEMO</span>
-      </div>
     </header>
 
     <main id="app">
       <section id="launch" class="launch" aria-labelledby="launch-title">
-        <p class="eyebrow">CONTROL PLANE PLAYGROUND</p>
         <h1 id="launch-title"></h1>
         <p id="launch-prompt" class="launch-prompt"></p>
 
@@ -28,11 +24,6 @@
           </button>
           <div id="scenario-menu" class="scenario-menu hidden"></div>
         </div>
-          <label class="operator" for="operator">
-            <span>실행 주체</span>
-            <input id="operator" maxlength="24" autocomplete="off" spellcheck="false"
-                   placeholder="이름을 적으면 결제 기록이 당신 것이 됩니다" />
-          </label>
         </div>
 
         <div id="launch-policies" class="policy-chips" aria-label="선택된 정책"></div>
@@ -44,40 +35,6 @@
 
         <ol id="guide" class="guide" aria-label="가이드 장면"></ol>
         <p id="guide-note" class="guide-note"></p>
-
-        <details class="why">
-          <summary>왜 런타임이 필요한가</summary>
-          <p>
-            한 모델 턴이 청구 세 건을 요청하고, 첫 건이 나간 뒤 워커가 죽는다. 양쪽 다
-            재개해서 라운드를 마친다.
-          </p>
-          <table>
-            <thead><tr><th></th><th>크래시 시점</th><th>재개 후</th></tr></thead>
-            <tbody>
-              <tr>
-                <th scope="row">그래프 프레임워크</th>
-                <td><code>c-001</code></td>
-                <td><code>c-001 · c-001 · c-002 · c-003</code></td>
-              </tr>
-              <tr>
-                <th scope="row">이 런타임</th>
-                <td><code>c-001</code></td>
-                <td><code>c-001 · c-002 · c-003</code></td>
-              </tr>
-            </tbody>
-          </table>
-          <p>
-            노드 단위로 체크포인트를 찍고 ReAct 에이전트는 툴 배치 전체를 노드 하나에서
-            돈다. 배치 중간에 죽으면 그 노드를 처음부터 다시 타고, 이미 카드를 긁은 콜이
-            한 번 더 긁는다. 대화 기록은 멀쩡히 돌아오는데 돈이 나갔다는 사실만 어디에도
-            없다.
-          </p>
-          <p class="why-source">
-            직접 돌려보려면 <code>semora</code> 저장소에서
-            <code>uv run python examples/vs_langgraph.py</code>. 위 숫자가 그 출력이다.
-          </p>
-        </details>
-
       </section>
 
       <section id="run-shell" class="run-shell hidden" aria-labelledby="run-title">

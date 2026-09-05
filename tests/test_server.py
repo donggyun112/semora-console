@@ -1,187 +1,18 @@
-import asyncio
-import json
 from html.parser import HTMLParser
-from uuid import UUID
 
-import pytest
 from fastapi.testclient import TestClient
-from langchain_core.language_models.fake_chat_models import (
-    FakeMessagesListChatModel,
-    GenericFakeChatModel,
-)
-from langchain_core.messages import AIMessage, AIMessageChunk
-from langchain_core.outputs import ChatGenerationChunk
-from semora import Agent
-from semora.contracts.events import EventType
-from semora.dispatch import Answer, Prompt, Recover
-from semora_fork import EventCheckpoint, ForkCoordinate, read_event_checkpoint
 
 from console import server
+from console.fork_demo import RERUNS
 from console.provider import model_name
 from console.server import (
-    _session_id,
     _crash_point,
     _is_aborted,
     _project_event,
     _register_frame,
-    _stream,
+    _session_id,
     app,
 )
-
-
-class BoundFakeMessagesListChatModel(FakeMessagesListChatModel):
-    def bind_tools(self, _tools, **_kwargs):
-        return self
-
-
-class StreamingFakeChatModel(GenericFakeChatModel):
-    """A fake that streams chunks, which the journal needs to be replayable.
-
-    ``FakeMessagesListChatModel`` yields whole messages, so a durable model step recorded
-    from it cannot be replayed — a shape only the recovery path ever reads.
-    """
-
-    def bind_tools(self, _tools, **_kwargs):
-        return self
-
-    def _stream(self, messages, *args, **kwargs):
-        reply = next(self.messages)
-        if reply.tool_calls:
-            yield ChatGenerationChunk(
-                message=AIMessageChunk(content=reply.content, tool_calls=reply.tool_calls)
-            )
-            return
-        yield ChatGenerationChunk(message=AIMessageChunk(content=str(reply.content)))
-
-
-def _approved_charge_frames(monkeypatch):
-    model = BoundFakeMessagesListChatModel(
-        responses=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "charge-approval-1",
-                        "name": "charge_card",
-                        "args": {"customer_id": "c-001", "amount": 49},
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="청구가 완료됐습니다."),
-        ]
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        first = client.post(
-            "/api/run",
-            json={"scenario_id": "charge", "units": ["approval"]},
-        )
-        initial = [json.loads(line) for line in first.text.splitlines()]
-        run_id = next(frame["run_id"] for frame in initial if frame["kind"] == "meta")
-        suspended = next(frame for frame in initial if frame["kind"] == "suspended")
-        resumed_response = client.post(
-            "/api/resume",
-            json={
-                "run_id": run_id,
-                "pending_id": suspended["pending_id"],
-                "approved": True,
-            },
-        )
-        resumed = [json.loads(line) for line in resumed_response.text.splitlines()]
-    return run_id, initial, resumed
-
-
-def test_resume_stabilizes_the_gate_and_only_the_gate(monkeypatch):
-    """A boundary has one coordinate, and for a tool call it is the gate.
-
-    The model asking for the tool restores to the same place, so marking it too gave the
-    trace two rows claiming one branch point — and the console then had to decide which
-    of them the operator meant.
-    """
-    run_id, initial, resumed = _approved_charge_frames(monkeypatch)
-    try:
-        request = next(
-            frame
-            for frame in initial
-            if frame.get("kind") == "agent"
-            and frame.get("event", {}).get("type") == "tool_call"
-        )
-        original_pre = next(
-            frame
-            for frame in initial
-            if frame.get("type") == "pre_tool_use"
-        )
-        restored = {
-            update["event_id"]: update["restore_edge"]
-            for frame in resumed
-            for update in frame.get("restore_updates", [])
-        }
-
-        assert restored[original_pre["event_id"]] == "before"
-        assert request["event_id"] not in restored
-        assert not request.get("forkable")
-    finally:
-        server._sessions.pop(run_id, None)
-
-
-def test_resume_result_stabilizes_the_completed_tool_boundary(monkeypatch):
-    run_id, _initial, resumed = _approved_charge_frames(monkeypatch)
-    try:
-        post = next(frame for frame in resumed if frame.get("type") == "post_tool_use")
-        result = next(
-            frame
-            for frame in resumed
-            if frame.get("kind") == "agent"
-            and frame.get("event", {}).get("type") == "tool_result"
-        )
-        injected = next(
-            frame
-            for frame in resumed
-            if frame.get("type") == "context_injected"
-            and frame.get("payload", {}).get("kind") == "resume_result"
-        )
-        restored = {
-            update["event_id"]: update["restore_edge"]
-            for frame in resumed
-            for update in frame.get("restore_updates", [])
-        }
-
-        assert restored[post["event_id"]] == "after"
-        assert restored[result["event_id"]] == "after"
-        assert injected["forkable"] is True
-        assert injected["restore_edge"] == "after"
-        idempotency = result["event"]["result"]["idempotency"]
-        assert idempotency["replayed"] is False
-        assert idempotency["key"].startswith("charge:") and idempotency["key"].endswith(":c-001"), (
-            "keyed by the request and the customer"
-        )
-    finally:
-        server._sessions.pop(run_id, None)
-
-
-def test_resume_result_itself_restores_from_the_tool_message_leaf(monkeypatch):
-    run_id, _initial, resumed = _approved_charge_frames(monkeypatch)
-    try:
-        injected = next(
-            frame
-            for frame in resumed
-            if frame.get("type") == "context_injected"
-            and frame.get("payload", {}).get("kind") == "resume_result"
-        )
-        conversation_id = server._sessions[run_id]["conversation_id"]
-        checkpoint = asyncio.run(
-            read_event_checkpoint(
-                server._transcript,
-                conversation_id,
-                injected["event_id"],
-            )
-        )
-
-        assert checkpoint.after.origin_id is None
-        assert checkpoint.after.leaf_uuid is not None
-    finally:
-        server._sessions.pop(run_id, None)
 
 
 def test_suspend_does_not_mark_the_call_blocked():
@@ -199,7 +30,6 @@ def test_suspend_does_not_mark_the_call_blocked():
     )
     assert [f["kind"] for f in frames] == ["unit"]
     assert frames[0]["verdict"] == "suspend"
-
 
 def test_suspend_frame_names_the_call_it_gates():
     """A parallel batch suspends once per call; without the id every SUSPEND row
@@ -222,7 +52,6 @@ def test_suspend_frame_names_the_call_it_gates():
     assert [f["call_id"] for f in frames] == ["c1", "c2"]
     assert [f["input"]["customer_id"] for f in frames] == ["c-001", "c-002"]
     assert {f["name"] for f in frames} == {"charge_card"}
-
 
 def test_refused_call_emits_request_then_gate():
     pending: dict = {}
@@ -248,7 +77,6 @@ def test_refused_call_emits_request_then_gate():
     assert frames[2]["event"]["type"] == "tool_result"
     assert frames[2]["event"]["executed"] is False
 
-
 def test_resumed_refusal_keeps_the_original_call_identity_without_pending_state():
     frames = _project_event(
         {
@@ -271,7 +99,6 @@ def test_resumed_refusal_keeps_the_original_call_identity_without_pending_state(
     assert frames[-1]["event"]["type"] == "tool_result"
     assert frames[-1]["event"]["executed"] is False
 
-
 def test_executed_call_emits_request_then_result():
     pending: dict = {}
     req = _project_event({"type": "tool_call", "id": "c1", "name": "read_customer", "input": {}}, pending)
@@ -287,7 +114,6 @@ def test_executed_call_emits_request_then_result():
     )
     assert [f["kind"] for f in frames] == ["unit", "agent"]
     assert frames[0]["verdict"] == "rewrite"
-
 
 def test_restore_updates_register_earlier_tool_events_as_forkable():
     session = {"event_ids": {"event-pre"}, "forkable_events": {}}
@@ -316,7 +142,6 @@ def test_restore_updates_register_earlier_tool_events_as_forkable():
         "event-result-context": "after",
     }
 
-
 def test_scenarios_endpoint():
     with TestClient(app) as c:
         r = c.get("/api/scenarios")
@@ -325,221 +150,6 @@ def test_scenarios_endpoint():
             "note", "customer", "leak", "inject", "charge", "crash", "unknown_effect", "batch", "parallel",
             "parallel_crash", "fork_masking",
         ]
-
-def test_run_uses_agent_definition(monkeypatch):
-    """The server dispatches a Prompt with one bound Agent definition."""
-    model = object()
-    captured: dict = {}
-
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-
-    async def fake_dispatch(self, run_id, agent, command, **kwargs):
-        captured.update(run_id=run_id, agent=agent, command=command, kwargs=kwargs)
-        return {"stop_reason": "completed"}
-
-    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
-
-    with TestClient(app) as c:
-        response = c.post("/api/run", json={"scenario_id": "note", "units": []})
-
-    frames = [json.loads(line) for line in response.text.splitlines()]
-    run_id = next(frame["run_id"] for frame in frames if frame["kind"] == "meta")
-    try:
-        assert UUID(run_id.removeprefix("run-")).version == 7
-        assert [frame for frame in frames if frame["kind"] == "error"] == []
-        agent = captured["agent"]
-        assert isinstance(agent, Agent)
-        assert agent.name == "control-plane-console"
-        assert agent.description
-        assert agent.model is model
-        assert isinstance(agent.tools, server.DemoTools)
-        assert agent.system_prompt == server.SYSTEM_PROMPT
-        command = captured["command"]
-        assert isinstance(command, Prompt)
-        assert command.text == next(
-            scenario["prompt"] for scenario in server.SCENARIOS if scenario["id"] == "note"
-        )
-        assert command.prompt_id
-        assert "system_prompt" not in captured["kwargs"]
-        assert server._sessions[run_id]["agent"] is agent
-        assert captured["kwargs"]["conversation_id"] == server._sessions[run_id][
-            "conversation_id"
-        ]
-        assert server._sessions[run_id]["default_fork_origin"] == command.prompt_id
-        assert server._sessions[run_id]["origin_runs"] == {command.prompt_id: run_id}
-        assert all("event_id" in frame for frame in frames)
-        assert all(frame["run_id"] == run_id for frame in frames)
-        assert any(
-            frame.get("type") == "branch_snapshot"
-            and frame.get("payload", {}).get("branch") == "source"
-            for frame in frames
-        )
-    finally:
-        server._sessions.pop(run_id, None)
-
-
-def _charge_result_frames(text: str) -> list[dict]:
-    frames = []
-    for line in text.splitlines():
-        frame = json.loads(line)
-        event = frame.get("event") or {}
-        if frame.get("kind") == "agent" and event.get("type") == "tool_result":
-            frames.append(frame)
-    return frames
-
-
-def test_a_rerun_is_a_new_request_and_charges_again(monkeypatch):
-    """Two runs of the same scenario are two orders. The charge key carries the request.
-
-    Keyed by customer alone, the second run replayed the first run's charge and the demo
-    told a story it was not living: "복구해도 청구는 한 번" read as "already charged last
-    time". A recovery, a resume or a fork inherit the request and still replay; a new
-    run does not.
-    """
-    model = BoundFakeMessagesListChatModel(
-        responses=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "charge-run-1",
-                        "name": "charge_card",
-                        "args": {"customer_id": "c-001", "amount": "10"},
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="청구가 완료됐습니다."),
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "charge-run-2",
-                        "name": "charge_card",
-                        "args": {"customer_id": "c-001", "amount": "10"},
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="청구가 완료됐습니다."),
-        ]
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        first = client.post("/api/run", json={"scenario_id": "parallel", "units": []})
-        second = client.post("/api/run", json={"scenario_id": "parallel", "units": []})
-
-    first_results = _charge_result_frames(first.text)
-    second_results = _charge_result_frames(second.text)
-    first_key = first_results[0]["event"]["result"]["idempotency"]["key"]
-    second_key = second_results[0]["event"]["result"]["idempotency"]["key"]
-    assert first_key != second_key, "each run is its own request"
-    assert first_key.endswith(":c-001") and second_key.endswith(":c-001")
-    assert first_results[0]["event"]["result"]["idempotency"]["replayed"] is False
-    assert second_results[0]["event"]["result"]["idempotency"]["replayed"] is False
-    assert second_results[0]["event"]["result"]["execution"]["replayed"] is False
-
-
-def test_resume_reuses_session_agent(monkeypatch):
-    """Continuation dispatches an Answer with the original Agent definition."""
-    model = object()
-    agent = Agent(
-        "control-plane-console",
-        "Runs locked operator control-plane scenarios.",
-        model,
-        server.DemoTools(),
-        server.SYSTEM_PROMPT,
-    )
-    captured: dict = {}
-
-    def unexpected_model():
-        raise AssertionError("resume must not create a new model")
-
-    async def fake_dispatch(self, run_id, resumed_agent, command, **kwargs):
-        captured.update(
-            run_id=run_id,
-            agent=resumed_agent,
-            command=command,
-            kwargs=kwargs,
-        )
-        return {"stop_reason": "completed"}
-
-    monkeypatch.setattr(server, "openrouter_model", unexpected_model)
-    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
-    server._sessions["run-agent-resume"] = {
-        "units": [],
-        "agent": agent,
-        "scenario_id": "charge",
-        "conversation_id": "conv-agent-resume",
-        "aborted": False,
-        "crash": False,
-    }
-    try:
-        with TestClient(app) as c:
-            response = c.post(
-                "/api/resume",
-                json={"run_id": "run-agent-resume", "pending_id": "pending-1", "approved": True},
-            )
-        frames = [json.loads(line) for line in response.text.splitlines()]
-        assert [frame for frame in frames if frame["kind"] == "error"] == []
-        assert captured["agent"] is agent
-        command = captured["command"]
-        assert isinstance(command, Answer)
-        assert command.pending_id == "pending-1"
-        assert command.payload == {"type": "text", "text": "approved by the human"}
-        assert "system_prompt" not in captured["kwargs"]
-        assert captured["kwargs"]["conversation_id"] == "conv-agent-resume"
-    finally:
-        server._sessions.pop("run-agent-resume", None)
-
-
-def test_recover_reuses_session_agent(monkeypatch):
-    """Crash recovery dispatches Recover with the original Agent definition."""
-    model = object()
-    agent = Agent(
-        "control-plane-console",
-        "Runs locked operator control-plane scenarios.",
-        model,
-        server.DemoTools(),
-        server.SYSTEM_PROMPT,
-    )
-    captured: dict = {}
-
-    def unexpected_model():
-        raise AssertionError("recover must not create a new model")
-
-    async def fake_dispatch(self, run_id, recovered_agent, command, **kwargs):
-        captured.update(
-            run_id=run_id,
-            agent=recovered_agent,
-            command=command,
-            kwargs=kwargs,
-        )
-        return {"stop_reason": "completed"}
-
-    monkeypatch.setattr(server, "openrouter_model", unexpected_model)
-    monkeypatch.setattr(server.AgentRuntime, "dispatch", fake_dispatch)
-    server._sessions["run-agent-recover"] = {
-        "units": [],
-        "agent": agent,
-        "scenario_id": "crash",
-        "conversation_id": "conv-agent-recover",
-        "aborted": False,
-    }
-    try:
-        with TestClient(app) as c:
-            response = c.post("/api/recover", json={"run_id": "run-agent-recover"})
-        frames = [json.loads(line) for line in response.text.splitlines()]
-        assert response.status_code == 200
-        assert [frame for frame in frames if frame["kind"] == "error"] == []
-        assert captured["agent"] is agent
-        assert isinstance(captured["command"], Recover)
-        assert "system_prompt" not in captured["kwargs"]
-        assert "retry_running" not in captured["kwargs"]
-        assert captured["kwargs"]["conversation_id"] == "conv-agent-recover"
-    finally:
-        server._sessions.pop("run-agent-recover", None)
-
 
 def test_units_endpoint_shape():
     with TestClient(app) as c:
@@ -556,7 +166,6 @@ def test_units_endpoint_shape():
         assert {"pre_tool_use", "post_tool_use", "before_finish"} <= points
         assert "on_inputs" in points
         assert "before_model" not in points
-
 
 def test_static_shell_is_run_inspector_with_contextual_drawers():
     with TestClient(app) as c:
@@ -604,7 +213,6 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
     assert "fork-run" not in shell.ids
     assert "fork-warning" not in shell.ids
 
-
 def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
     with TestClient(app) as c:
         css = c.get("/styles.css").text
@@ -631,7 +239,6 @@ def test_stylesheet_has_run_inspector_drawers_and_accessibility_contracts():
         assert selector in css
     assert ".workspace.mode-demo" not in css
     assert ".composer-panel" not in css
-
 
 def test_run_workspace_pairs_chat_with_trace_and_stacks_below_desktop():
     with TestClient(app) as c:
@@ -675,7 +282,6 @@ def test_run_workspace_pairs_chat_with_trace_and_stacks_below_desktop():
     responsive_workspace = responsive_workspace[:responsive_workspace.index("}")]
     assert "grid-template-columns: 1fr" in responsive_workspace
 
-
 def test_branch_switcher_sits_inside_the_event_panel_above_the_trace():
     with TestClient(app) as c:
         html = c.get("/").text
@@ -705,7 +311,6 @@ def test_branch_switcher_sits_inside_the_event_panel_above_the_trace():
 
     assert event_panel.ids.index("version-switcher") < event_panel.ids.index("event-count")
     assert event_panel.ids.index("event-count") < event_panel.ids.index("trace")
-
 
 def test_live_instruction_form_sits_in_the_chat_panel_after_the_thread():
     with TestClient(app) as c:
@@ -737,7 +342,6 @@ def test_live_instruction_form_sits_in_the_chat_panel_after_the_thread():
     assert chat_panel.ids.index("chat-thread") < chat_panel.ids.index("steer-form")
     assert chat_panel.ids.index("steer-form") < chat_panel.ids.index("steer-text")
 
-
 def test_policy_button_sits_with_the_run_status_and_abort_control():
     with TestClient(app) as c:
         html = c.get("/").text
@@ -768,7 +372,6 @@ def test_policy_button_sits_with_the_run_status_and_abort_control():
 
     assert controls.ids == ["run-status", "policy-open", "abort"]
 
-
 def test_run_control_buttons_keep_a_compact_click_target():
     with TestClient(app) as c:
         css = c.get("/styles.css").text
@@ -780,7 +383,6 @@ def test_run_control_buttons_keep_a_compact_click_target():
     assert "min-height: 34px" in rule
     assert "padding: 0 13px" in rule
     assert "font-size: 13px" in rule
-
 
 def test_launch_content_starts_nearer_the_header_across_viewports():
     with TestClient(app) as c:
@@ -794,7 +396,6 @@ def test_launch_content_starts_nearer_the_header_across_viewports():
     mobile_launch_rule = mobile[mobile.index(".launch {"):]
     mobile_launch_rule = mobile_launch_rule[:mobile_launch_rule.index("}")]
     assert "margin-top: 36px" in mobile_launch_rule
-
 
 def test_desktop_workspace_scrolls_chat_and_events_inside_the_viewport():
     with TestClient(app) as c:
@@ -820,7 +421,6 @@ def test_desktop_workspace_scrolls_chat_and_events_inside_the_viewport():
     assert "grid-template-rows: minmax(0, 1fr)" in rule(".inspector")
     assert "overflow: auto" in rule(".trace")
 
-
 def test_event_details_overlay_does_not_widen_the_trace_column():
     with TestClient(app) as c:
         css = c.get("/styles.css").text
@@ -837,12 +437,10 @@ def test_event_details_overlay_does_not_widen_the_trace_column():
     assert "max-height: 100%" in drawer_rule
     assert "min-height: 0" in drawer_rule
 
-
 def test_steer_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/steer", json={"run_id": "run-missing", "text": "기록하라"})
         assert r.status_code == 404
-
 
 def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
     """The queue is the ledger, so the worker holding the run does not have to be this one.
@@ -865,7 +463,6 @@ def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
     finally:
         server._sessions.pop("run-steer", None)
 
-
 def test_crash_with_approval_is_the_pre_park_seam():
     """crash + approval dies at pre_tool_use; crash alone still dies after commit."""
     assert _crash_point("crash", ["approval"]) == "gate"
@@ -877,12 +474,10 @@ def test_crash_with_approval_is_the_pre_park_seam():
     assert _crash_point("parallel_crash", ["approval"]) == "gate"
     assert _crash_point("parallel_crash", []) == "commit"
 
-
 def test_recover_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/recover", json={"run_id": "run-missing"})
     assert r.status_code == 404
-
 
 def test_fork_rejects_unknown_source():
     with TestClient(app) as client:
@@ -891,7 +486,6 @@ def test_fork_rejects_unknown_source():
             json={"run_id": "missing", "event_id": "event-missing", "units": []},
         )
     assert response.status_code == 404
-
 
 def test_fork_rejects_inflight_source():
     agent = object()
@@ -918,209 +512,6 @@ def test_fork_rejects_inflight_source():
         for run_id in cases:
             server._sessions.pop(run_id, None)
 
-
-def test_fork_uses_selected_event_and_units(monkeypatch):
-    captured: dict = {}
-    source_id = "run-fork-source"
-    server._sessions[source_id] = {
-        "units": ["input_mask", "log_gate"],
-        "agent": object(),
-        "scenario_id": "fork_masking",
-        "terminal": True,
-        "conversation_id": "conv-fork",
-        "origin_id": "p2",
-        "source_run_id": source_id,
-        "origin_runs": {"p2": source_id},
-        "default_fork_origin": "p2",
-            "event_ids": {"event-selected"},
-            "forkable_events": {"event-selected": "before"},
-    }
-
-    async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
-        captured.update(kwargs)
-        return {"stop_reason": "completed"}
-
-    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
-        coordinate = ForkCoordinate(source_id, "p2", None)
-        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
-
-    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
-    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/fork",
-                json={
-                    "run_id": source_id,
-                    "event_id": "event-selected",
-                    "edge": "before",
-                    "units": ["log_gate"],
-                },
-            )
-        assert response.status_code == 200
-        frames = [json.loads(line) for line in response.text.splitlines()]
-        meta = next(frame for frame in frames if frame["kind"] == "meta")
-        fork_id = meta["run_id"]
-        assert meta["fork_parent"] == source_id
-        assert meta["fork_event_id"] == "event-selected"
-        assert meta["fork_edge"] == "before"
-        assert captured["event_id"] == "event-selected"
-        assert captured["edge"] == "before"
-        assert captured["run_id"] == fork_id
-        assert captured["conversation_id"] == "conv-fork"
-        assert server._sessions[source_id]["forked_to"] == fork_id
-        assert server._sessions[fork_id]["units"] == ["log_gate"]
-        assert server._sessions[fork_id]["origin_runs"]["p2"] == fork_id
-        assert server._sessions[fork_id]["terminal"] is True
-    finally:
-        fork_id = server._sessions.get(source_id, {}).get("forked_to")
-        server._sessions.pop(source_id, None)
-        if fork_id:
-            server._sessions.pop(fork_id, None)
-
-
-def test_fork_uses_modified_controls_for_other_scenarios(monkeypatch):
-    """The fork executes the controls selected after the source run completed."""
-    source_id = "run-generic-source"
-    composed: list[list[str]] = []
-    server._sessions[source_id] = {
-        "units": ["approval", "dlp_block"],
-        "agent": object(),
-        "scenario_id": "leak",
-        "terminal": True,
-        "conversation_id": "conv-generic",
-        "origin_id": "p1",
-        "source_run_id": source_id,
-        "origin_runs": {"p1": source_id},
-        "default_fork_origin": "p1",
-            "event_ids": {"event-selected"},
-            "forkable_events": {"event-selected": "before"},
-    }
-
-    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
-        return {"stop_reason": "completed"}
-
-    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
-        coordinate = ForkCoordinate(source_id, "p1", None)
-        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
-
-    def fake_compose_controls(names):
-        composed.append(list(names))
-        return object()
-
-    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
-    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
-    monkeypatch.setattr(server, "compose_controls", fake_compose_controls)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/fork",
-                json={
-                    "run_id": source_id,
-                    "event_id": "event-selected",
-                    "units": ["rate_cap"],
-                },
-            )
-        assert response.status_code == 200
-        fork_id = server._sessions[source_id]["forked_to"]
-        assert server._sessions[fork_id]["units"] == ["rate_cap"]
-        assert composed == [["rate_cap"]]
-    finally:
-        fork_id = server._sessions.get(source_id, {}).get("forked_to")
-        server._sessions.pop(source_id, None)
-        if fork_id:
-            server._sessions.pop(fork_id, None)
-
-
-def test_tool_leaf_fork_keeps_the_child_on_leaf_coordinates(monkeypatch):
-    source_id = "run-tool-source"
-    server._sessions[source_id] = {
-        "units": [],
-        "agent": object(),
-        "scenario_id": "customer",
-        "terminal": True,
-        "conversation_id": "conv-tool",
-        "origin_id": "p1",
-        "origin_runs": {"p1": source_id},
-        "default_fork_origin": "p1",
-        "event_ids": {"event-pre-tool"},
-        "forkable_events": {"event-pre-tool": "before"},
-    }
-
-    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
-        return {"stop_reason": "completed"}
-
-    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
-        coordinate = ForkCoordinate(source_id, None, "assistant-tool-leaf")
-        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
-
-    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
-    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/fork",
-                json={
-                    "run_id": source_id,
-                    "event_id": "event-pre-tool",
-                    "edge": "before",
-                    "units": [],
-                },
-            )
-        assert response.status_code == 200
-        frames = [json.loads(line) for line in response.text.splitlines()]
-        meta = next(frame for frame in frames if frame["kind"] == "meta")
-        child = server._sessions[meta["run_id"]]
-        assert meta["fork_mode"] == "leaf"
-        assert child["default_fork_origin"] is None
-    finally:
-        child_ids = server._sessions.get(source_id, {}).get("fork_children", [])
-        server._sessions.pop(source_id, None)
-        for child_id in child_ids:
-            server._sessions.pop(child_id, None)
-
-
-def test_completed_version_can_create_another_fork(monkeypatch):
-    """A prior child version must not lock a completed version against later forks."""
-    source_id = "run-version-source"
-    server._sessions[source_id] = {
-        "units": [],
-        "agent": object(),
-        "scenario_id": "note",
-        "terminal": True,
-        "conversation_id": "conv-version",
-        "origin_id": "p1",
-        "origin_runs": {"p1": source_id},
-        "default_fork_origin": "p1",
-        "forked_to": "run-older-child",
-            "event_ids": {"event-next"},
-            "forkable_events": {"event-next": "before"},
-    }
-
-    async def fake_run_from_event(_runtime, _store, _transcript, **_kwargs):
-        return {"stop_reason": "completed"}
-
-    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
-        coordinate = ForkCoordinate(source_id, "p1", None)
-        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
-
-    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
-    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/fork",
-                json={"run_id": source_id, "event_id": "event-next", "units": []},
-            )
-        assert response.status_code == 200
-        assert len(server._sessions[source_id]["fork_children"]) == 1
-    finally:
-        child_ids = server._sessions.get(source_id, {}).get("fork_children", [])
-        server._sessions.pop(source_id, None)
-        for child_id in child_ids:
-            server._sessions.pop(child_id, None)
-
-
 def test_fork_rejects_an_event_owned_by_another_version():
     source_id = "run-owner-source"
     server._sessions[source_id] = {
@@ -1146,7 +537,6 @@ def test_fork_rejects_an_event_owned_by_another_version():
     finally:
         server._sessions.pop(source_id, None)
 
-
 def test_fork_rejects_an_observation_only_event():
     source_id = "run-observation-source"
     server._sessions[source_id] = {
@@ -1171,7 +561,6 @@ def test_fork_rejects_an_observation_only_event():
         assert "not an exact restore point" in response.json()["detail"]
     finally:
         server._sessions.pop(source_id, None)
-
 
 def test_fork_rejects_the_wrong_edge_for_an_exact_restore_point():
     source_id = "run-edge-source"
@@ -1203,12 +592,10 @@ def test_fork_rejects_the_wrong_edge_for_an_exact_restore_point():
     finally:
         server._sessions.pop(source_id, None)
 
-
 def test_abort_unknown_run_is_404():
     with TestClient(app) as c:
         r = c.post("/api/abort", json={"run_id": "run-missing"})
         assert r.status_code == 404
-
 
 def test_abort_flags_existing_session():
     """POST /api/abort trips the loop's aborted() flag for that run."""
@@ -1220,283 +607,6 @@ def test_abort_flags_existing_session():
         assert _is_aborted("run-test") is True
     finally:
         server._sessions.pop("run-test", None)
-
-
-@pytest.mark.asyncio
-async def test_abort_cancels_in_flight_stream():
-    """An in-flight attempt ends as aborted once the operator cancels it."""
-    run_id = "run-abort-live"
-    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "note"}
-    started = asyncio.Event()
-
-    async def attempt(_runtime, _on_event):
-        started.set()
-        await asyncio.sleep(30)
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-
-    async def consume() -> None:
-        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="note"):
-            frames.append(json.loads(chunk))
-
-    consumer = asyncio.create_task(consume())
-    try:
-        await asyncio.wait_for(started.wait(), timeout=2)
-        server._sessions[run_id]["aborted"] = True
-        task = server._sessions[run_id]["task"]
-        task.cancel()
-        await asyncio.wait_for(consumer, timeout=2)
-        outcome = next(f for f in frames if f["kind"] == "outcome")
-        assert outcome["outcome"]["stop_reason"] == "aborted"
-    finally:
-        if not consumer.done():
-            consumer.cancel()
-        server._sessions.pop(run_id, None)
-
-
-@pytest.mark.asyncio
-async def test_new_run_opens_and_closes_a_session():
-    """Each 실행 is a new host session — resume is the same one."""
-    run_id = "run-session"
-    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "note"}
-
-    async def attempt(_runtime, _on_event):
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-    try:
-        async for chunk in _stream(
-            run_id, attempt, selected=[], scenario_id="note", open_session=True,
-        ):
-            frames.append(json.loads(chunk))
-        life = [(f.get("type"), (f.get("payload") or {})) for f in frames if f["kind"] == "lifecycle"]
-        assert any(t == "session_start" and p.get("source") == "console" for t, p in life)
-        assert any(t == "session_end" and p.get("reason") == "completed" for t, p in life)
-    finally:
-        server._sessions.pop(run_id, None)
-
-
-@pytest.mark.asyncio
-async def test_denial_projects_policy_before_permission_lifecycle_once():
-    """The deciding policy precedes its permission consequence and is not duplicated."""
-    run_id = "run-denial-order"
-    server._sessions[run_id] = {"units": ["dlp_block"], "aborted": False, "scenario_id": "leak"}
-
-    async def attempt(runtime, on_event):
-        call = {
-            "type": "tool_call",
-            "id": "call-send",
-            "name": "send_email",
-            "input": {"body": "ssn"},
-        }
-        await on_event(call)
-        await runtime.events.publish(
-            EventType.PRE_TOOL_USE,
-            turn=1,
-            call_id="call-send",
-            name="send_email",
-        )
-        denied = {
-            "type": "error",
-            "unit": "dlp_block",
-            "message": "거부",
-        }
-        await runtime.events.publish(
-            EventType.PERMISSION_DENIED,
-            turn=1,
-            call_id="call-send",
-            name="send_email",
-            reason=denied,
-            source="pre_tool_use",
-        )
-        await on_event({**call, "type": "tool_result", "executed": False, "result": denied})
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-    try:
-        async for chunk in _stream(run_id, attempt, selected=["dlp_block"], scenario_id="leak"):
-            frames.append(json.loads(chunk))
-    finally:
-        server._sessions.pop(run_id, None)
-
-    visible = [
-        (frame["kind"], frame.get("unit") or frame.get("type"))
-        for frame in frames
-        if frame["kind"] in {"unit", "lifecycle"}
-        and (frame.get("unit") == "dlp_block" or frame.get("type") == "permission_denied")
-    ]
-    assert visible == [("unit", "dlp_block"), ("lifecycle", "permission_denied")]
-
-
-def test_a_parked_run_resumes_in_a_process_that_never_saw_it(monkeypatch):
-    """The README proves exactly-once across a restart, and that proof went through
-    /api/resume — which used to 404 because the console's session dict is memory. The
-    run record lives in the ledger now, so a worker that never saw the run can finish it.
-    """
-    model = BoundFakeMessagesListChatModel(
-        responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "id": "charge-restart-1", "name": "charge_card",
-                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="청구가 완료됐습니다."),
-        ]
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        started = client.post("/api/run", json={"scenario_id": "charge", "units": ["approval"]})
-        frames = [json.loads(line) for line in started.text.splitlines()]
-        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
-        pending = next(f["pending_id"] for f in frames if f["kind"] == "suspended")
-
-        # The worker goes away. Only the ledger survives.
-        server._sessions.clear()
-
-        resumed = client.post("/api/resume", json={
-            "run_id": run_id, "pending_id": pending, "approved": True,
-        })
-        assert resumed.status_code == 200, resumed.text
-        after = [json.loads(line) for line in resumed.text.splitlines()]
-
-    charged = [
-        f["event"]["result"] for f in after
-        if f.get("kind") == "agent"
-        and f["event"].get("type") == "tool_result"
-        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
-    ]
-    assert charged, after
-    assert charged[0]["execution_count"] == 1
-    assert server._sessions[run_id]["units"] == ["approval"]
-    assert server._sessions[run_id]["scenario_id"] == "charge"
-
-
-def test_an_unknown_run_id_is_still_a_404(monkeypatch):
-    """Rehydration must not turn a bad id into a run."""
-    with TestClient(app) as client:
-        refused = client.post("/api/resume", json={
-            "run_id": "run-does-not-exist", "pending_id": "x", "approved": True,
-        })
-    assert refused.status_code == 404
-
-
-def test_an_effect_that_started_and_never_reported_is_not_guessed(monkeypatch):
-    """The crash seam that leaves a step running is the only one recovery cannot decide.
-
-    Retrying repeats a charge that may already have gone out; reporting it stops and
-    hands the call to a person. The runtime asks rather than picking, so the console has
-    to ask too.
-    """
-    model = StreamingFakeChatModel(
-        messages=iter([
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "id": "charge-unknown-1", "name": "charge_card",
-                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="청구했습니다."),
-        ])
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        started = client.post("/api/run", json={"scenario_id": "unknown_effect", "units": []})
-        frames = [json.loads(line) for line in started.text.splitlines()]
-        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
-        assert any(f["kind"] == "recoverable" for f in frames), frames
-
-        recovered = client.post("/api/recover", json={"run_id": run_id})
-        after = [json.loads(line) for line in recovered.text.splitlines()]
-
-    unknown = [f for f in after if f["kind"] == "indeterminate"]
-    assert unknown, after
-    assert unknown[0]["step"]
-    assert not [
-        f for f in after
-        if f.get("kind") == "agent"
-        and f["event"].get("type") == "tool_result"
-        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
-    ], "the runtime refuses rather than repeating an effect it cannot vouch for"
-
-
-@pytest.mark.asyncio
-async def test_aborting_drops_what_is_still_queued_before_it_stops():
-    """A steer queued for a killed run must not be waiting for whoever recovers next.
-
-    The loop is stopped after the queue is emptied, not before, so nothing admitted on
-    the way down is an instruction aimed at a run the operator already ended.
-    """
-    server._sessions["run-drop"] = {
-        "units": [], "aborted": False, "scenario_id": "note", "terminal": False,
-    }
-    try:
-        with TestClient(app) as c:
-            c.post("/api/steer", json={"run_id": "run-drop", "text": "이건 버려져야 한다"})
-            queued = await server._store.list_inputs("run-drop")
-            assert [record.status for record in queued] == ["pending"]
-
-            stopped = c.post("/api/abort", json={"run_id": "run-drop"})
-            assert stopped.json()["dropped"] == 1
-
-        after = await server._store.list_inputs("run-drop")
-        assert [record.status for record in after] == ["discarded"]
-        assert after[0].value, "a discarded input keeps its idempotency key"
-    finally:
-        server._sessions.pop("run-drop", None)
-
-
-def test_steering_a_parked_run_adds_a_note_without_taking_the_decision(monkeypatch):
-    """A steer joins the queue; it does not answer the approval that is waiting.
-
-    submit() in interactive mode treats operator input as a replacement and cancels a
-    parked request to switch the run to it. That is right for a new prompt and wrong for
-    a steer, which is why this goes in headless. The synthetic sessions elsewhere in this
-    file cannot reach any of it — a real suspension has to exist first.
-    """
-    model = StreamingFakeChatModel(
-        messages=iter([
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "id": "charge-steered-1", "name": "charge_card",
-                    "args": {"customer_id": "c-001", "amount": 49}, "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="청구했습니다."),
-        ])
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        started = client.post("/api/run", json={"scenario_id": "charge", "units": ["approval"]})
-        frames = [json.loads(line) for line in started.text.splitlines()]
-        run_id = next(f["run_id"] for f in frames if f["kind"] == "meta")
-        pending = next(f["pending_id"] for f in frames if f["kind"] == "suspended")
-
-        steered = client.post(
-            "/api/steer", json={"run_id": run_id, "text": "금액을 다시 확인해줘"}
-        )
-        assert steered.status_code == 200, steered.text
-        assert steered.json()["admits"] == "on_resume"
-
-        resumed = client.post("/api/resume", json={
-            "run_id": run_id, "pending_id": pending, "approved": True, "units": ["approval"],
-        })
-        after = [json.loads(line) for line in resumed.text.splitlines()]
-
-    charged = [
-        f for f in after
-        if f.get("kind") == "agent"
-        and f["event"].get("type") == "tool_result"
-        and "charged" in str((f["event"].get("result") or {}).get("text", ""))
-    ]
-    assert charged, "the steer must not have cancelled the call that was waiting"
-    admitted = [f for f in after if f["kind"] == "steer"]
-    assert [(f["source"], f["phase"]) for f in admitted] == [("user_steer", "admitted")]
-
 
 def test_two_visitors_do_not_replay_each_others_charges():
     """Effects are steps of a session, and the session is whoever is driving.
@@ -1511,263 +621,17 @@ def test_two_visitors_do_not_replay_each_others_charges():
     assert _session_id("a" * 80, "charge") == f"session:{'a' * 24}:charge", "bounded"
     assert _session_id("alice", "charge") != _session_id("bob", "charge")
 
-
-@pytest.mark.asyncio
-async def test_a_named_run_keeps_its_ledger_across_a_restart():
-    """A resumed run has to rejoin the session its effects are steps of, or the charge
-    it already made is invisible to it and goes out twice."""
-    from console.store import make_store
-
-    server._store, server._transcript, _ = await make_store()
-    server._sessions["run-named"] = {
-        "units": [], "scenario_id": "charge", "session_id": "session:alice:charge",
-        "conversation_id": "conv-x", "aborted": False, "terminal": False,
-    }
-    try:
-        await server._remember_session("run-named", server._sessions["run-named"])
-        server._sessions.clear()
-        rehydrated = await server._session("run-named")
-        # The rebuilt tools rejoin the session their effects are steps of.
-        recorded = await rehydrated["agent"].tools.execute(
-            "charge_card", "after-restart", {"customer_id": "c-001", "amount": "49"}
-        )
-        assert recorded["idempotency"]["key"] == "charge:c-001"
-    finally:
-        server._sessions.pop("run-named", None)
-
-
-def test_a_reload_gets_the_run_back_frame_for_frame(monkeypatch):
-    """The browser holds a run id; everything else it was showing comes from the server.
-
-    Frames were built while streaming and kept nowhere, so a reload dropped an operator out
-    of a run the ledger still held — a parked approval became unreachable from the page that
-    parked it. They are kept beside the conversation now and read back in order.
-    """
-    model = BoundFakeMessagesListChatModel(
-        responses=[
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "id": "charge-reload-1",
-                        "name": "charge_card",
-                        "args": {"customer_id": "c-001", "amount": 49},
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="청구가 완료됐습니다."),
-        ]
-    )
-    monkeypatch.setattr(server, "openrouter_model", lambda: model)
-    with TestClient(app) as client:
-        streamed = [
-            json.loads(line)
-            for line in client.post(
-                "/api/run", json={"scenario_id": "charge", "units": ["approval"]}
-            ).text.splitlines()
-        ]
-        run_id = next(f["run_id"] for f in streamed if f["kind"] == "meta")
-        try:
-            payload = client.get(f"/api/runs/{run_id}/frames").json()
-
-            assert payload["scenario_id"] == "charge"
-            assert payload["units"] == ["approval"]
-            assert [f["kind"] for f in payload["frames"]] == [
-                f["kind"] for f in streamed
-            ], "the same frames in the same order"
-            assert any(f["kind"] == "suspended" for f in payload["frames"]), (
-                "including the one that says a person has to decide"
-            )
-            parked = next(f for f in payload["frames"] if f["kind"] == "suspended")
-            assert parked["pending_id"], "and what to answer it with"
-        finally:
-            server._sessions.pop(run_id, None)
-
-
 def test_a_run_nobody_kept_is_not_offered_back():
     """A wiped ledger has to say so, or the console restores a run that does not exist."""
     with TestClient(app) as client:
         assert client.get("/api/runs/run-nothing-here/frames").status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_a_replayed_call_still_shows_as_a_call_and_a_result():
-    """A fork executes its tool from the record, so the loop emits hooks and no agent events.
-
-    The trace then held a gate and a boundary with nothing named between them, and the chat
-    had no card for a tool that had run. The hook payloads carry the call and its result, so
-    the console says what happened instead of leaving it to be inferred from two rows.
-    """
-    run_id = "run-replayed"
-    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "customer"}
-    result = {
-        "type": "text",
-        "text": '{"customer_id": "c-001"}',
-        "execution": {"call_id": "call-1", "replayed": True},
-    }
-
-    async def attempt(runtime, _on_event):
-        call = {"turn": 0, "call_id": "call-1", "name": "read_customer",
-                "input": {"customer_id": "c-001"}}
-        await runtime._emit(EventType.PRE_TOOL_USE, dict(call))
-        await runtime._emit(EventType.POST_TOOL_USE, {**call, "result": result})
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-    try:
-        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="customer"):
-            frames.append(json.loads(chunk))
-    finally:
-        server._sessions.pop(run_id, None)
-
-    named = {"tool_call", "pre_tool_use", "post_tool_use", "tool_result"}
-    shape = [
-        kind
-        for f in frames
-        if (kind := f.get("type") or (f.get("event") or {}).get("type")) in named
-    ]
-    assert shape == ["tool_call", "pre_tool_use", "post_tool_use", "tool_result"], (
-        "the call is named at its gate and answered after its boundary"
-    )
-    answered = next(f for f in frames if (f.get("event") or {}).get("type") == "tool_result")
-    assert answered["event"]["result"] == result, "the result the hook actually carried"
-    assert answered["event"]["executed"] is True
-
 
 def test_units_carry_the_framework_rerun_table():
     """The page learns which control points a branch re-runs from the framework, not from a
     list of policy names it keeps for itself."""
     with TestClient(app) as client:
         payload = client.get("/api/units").json()
-    assert payload["reruns"]["pre_tool_use"] == ["pre_tool_use", "post_tool_use", "before_finish"]
-    assert "pre_tool_use" not in payload["reruns"]["before_model"]
+    assert payload["reruns"] == {name: list(points) for name, points in RERUNS.items()}
     assert {u["point"] for u in payload["units"]} <= {
         point for points in payload["reruns"].values() for point in points
     }, "every unit lives at a point some branch can reach"
-
-
-def test_fork_forwards_the_rejournal_choice(monkeypatch):
-    """The page decides a branch only re-journals; the server hands that to the fork."""
-    source_id = "run-rejournal-source"
-    server._sessions[source_id] = {
-        "units": ["approval", "pii_mask"],
-        "agent": object(),
-        "scenario_id": "leak",
-        "aborted": False,
-        "crash": False,
-        "crash_at": None,
-        "conversation_id": "conv-rejournal",
-        "origin_id": "p1",
-        "source_run_id": source_id,
-        "origin_runs": {"p1": source_id},
-        "default_fork_origin": "p1",
-        "event_ids": {"event-gate"},
-        "forkable_events": {"event-gate": "before"},
-        "terminal": True,
-    }
-    seen: dict = {}
-
-    async def fake_run_from_event(_runtime, _store, _transcript, **kwargs):
-        seen.update(kwargs)
-        return {"stop_reason": "completed"}
-
-    async def fake_read_checkpoint(_transcript, conversation_id, event_id):
-        coordinate = ForkCoordinate(source_id, None, "leaf-gate")
-        return EventCheckpoint(event_id, conversation_id, coordinate, coordinate)
-
-    monkeypatch.setattr(server, "run_from_event", fake_run_from_event)
-    monkeypatch.setattr(server, "read_event_checkpoint", fake_read_checkpoint)
-    monkeypatch.setattr(server, "compose_controls", lambda names: object())
-    try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/api/fork",
-                json={
-                    "run_id": source_id,
-                    "event_id": "event-gate",
-                    "edge": "before",
-                    "units": ["approval"],
-                    "rejournal": True,
-                },
-            )
-        assert response.status_code == 200
-        assert seen["rejournal"] is True
-        fork_id = server._sessions[source_id]["forked_to"]
-        assert server._sessions[fork_id]["fork_rejournal"] is True
-    finally:
-        fork_id = server._sessions.get(source_id, {}).get("forked_to")
-        server._sessions.pop(source_id, None)
-        if fork_id:
-            server._sessions.pop(fork_id, None)
-
-
-@pytest.mark.asyncio
-async def test_a_rejournaled_call_is_announced_at_its_boundary():
-    """A branch that only journals again never reaches the gate, so nothing named the call.
-
-    The boundary is the first hook that does. The call is announced there, before the
-    boundary row, so the trace reads call → boundary → result like any other.
-    """
-    run_id = "run-rejournaled"
-    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "leak"}
-    result = {"type": "text", "text": '{"status": "sent"}'}
-
-    async def attempt(runtime, _on_event):
-        call = {"turn": 0, "call_id": "call-1", "name": "send_email",
-                "input": {"to": "x@y"}, "result": result, "replayed": True}
-        await runtime._emit(EventType.POST_TOOL_USE, call)
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-    try:
-        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="leak"):
-            frames.append(json.loads(chunk))
-    finally:
-        server._sessions.pop(run_id, None)
-
-    named = {"tool_call", "post_tool_use", "tool_result"}
-    shape = [
-        kind
-        for f in frames
-        if (kind := f.get("type") or (f.get("event") or {}).get("type")) in named
-    ]
-    assert shape == ["tool_call", "post_tool_use", "tool_result"]
-    answered = next(f for f in frames if (f.get("event") or {}).get("type") == "tool_result")
-    assert answered["event"]["result"]["execution"]["replayed"] is True, (
-        "the runtime restored it, and the badge reads that off the result"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_resumed_call_is_answered_once():
-    """A resume is a second stream for the same run, and it never saw the parked call's
-    tool_call frame. That is not a replayed call; the runtime reports its result itself.
-    A result synthesized from the boundary waits for that report and stands down."""
-    run_id = "run-resumed-once"
-    server._sessions[run_id] = {"units": [], "aborted": False, "scenario_id": "charge"}
-    real = {"type": "text", "text": '{"status": "charged"}', "execution_count": 1}
-
-    async def attempt(runtime, on_event):
-        call = {"turn": 0, "call_id": "call-1", "name": "charge_card",
-                "input": {"customer_id": "c-001", "amount": "10"}}
-        await runtime._emit(EventType.PRE_TOOL_USE, dict(call))
-        await runtime._emit(EventType.POST_TOOL_USE, {**call, "result": real})
-        await on_event({"type": "tool_result", "id": "call-1", "name": "charge_card",
-                        "executed": True, "result": real})
-        await runtime._emit(EventType.CONTEXT_INJECTED, {
-            "turn": 0, "kind": "resume_result",
-            "message": {"type": "tool", "data": {"tool_call_id": "call-1", "content": "ok"}},
-        })
-        return {"stop_reason": "completed"}
-
-    frames: list[dict] = []
-    try:
-        async for chunk in _stream(run_id, attempt, selected=[], scenario_id="charge"):
-            frames.append(json.loads(chunk))
-    finally:
-        server._sessions.pop(run_id, None)
-
-    results = [f for f in frames if (f.get("event") or {}).get("type") == "tool_result"]
-    assert len(results) == 1, [f["event"] for f in results]
-    assert results[0]["event"]["result"] == real

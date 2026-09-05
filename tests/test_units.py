@@ -1,16 +1,20 @@
 import json
 
 import pytest
-from langchain_core.messages import HumanMessage
+from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from semora import Continue, Deny, Halt, PendingInput, Proceed, Suspend
 from semora.controls import Ctx
 
-from console.store import FaultInjectingSteps, SimulatedWorkerCrash, crash_before_approval
+from console.store import (
+    FaultInjectingSteps,
+    SimulatedWorkerCrash,
+    crash_before_approval,
+)
 from console.units import compose_controls
 
 
 def _call(name, **args):
-    return {"id": "c1", "name": name, "args": args, "type": "tool_call"}
+    return ToolCallPart(name, args, "c1")
 
 
 def _ctx(*names):
@@ -20,11 +24,11 @@ def _ctx(*names):
 @pytest.mark.asyncio
 async def test_input_mask_rewrites_content_but_preserves_origin():
     plane = compose_controls(["input_mask"])
-    incoming = [PendingInput("user_prompt", HumanMessage("ssn is 123-45"), "p2")]
+    incoming = [PendingInput("user_prompt", UserPromptPart("ssn is 123-45"), "p2")]
 
     screened = await plane.on_inputs(Ctx(turn=0), incoming)
 
-    assert screened[0].message.content == "ssn is ***"
+    assert screened[0].part.content == "ssn is ***"
     assert screened[0].origin_id == "p2"
     assert screened[0].kind == "user_prompt"
 

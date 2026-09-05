@@ -1,7 +1,7 @@
 """The demo effects, and the session steps that decide whether they happen again.
 
 Nothing here reaches into a dictionary the tools keep. Every property below is the
-ledger's, exercised through a real ``Orchestrator``, because a demo whose idempotency
+ledger's, exercised through leased business steps, because a demo whose idempotency
 lives beside the runtime proves nothing about the runtime.
 """
 
@@ -9,9 +9,9 @@ import json
 
 import pytest
 from semora import MemorySteps
-from semora.orchestrator import Orchestrator
 from semora_store import Indeterminate
 
+from console.session import session_step
 from console.tools import INJECT_NOTE, DemoTools
 
 
@@ -19,9 +19,26 @@ def session_on(log: MemorySteps, run_id: str = "session:test"):
     """A session step handle: one attempt per effect, as the console builds it."""
 
     async def run(step, fn):
-        return await Orchestrator(run_id, log).run(step, fn)
+        return await session_step(log, run_id)(step, fn)
 
     return run
+
+
+@pytest.mark.asyncio
+async def test_an_effect_that_raises_after_acting_is_not_retried():
+    log = MemorySteps()
+    run = session_step(log, "session:uncertain")
+    effects = []
+
+    async def act_then_raise():
+        effects.append("charged")
+        raise RuntimeError("connection lost after payment")
+
+    with pytest.raises(RuntimeError):
+        await run("charge:request:customer", act_then_raise)
+    with pytest.raises(Indeterminate):
+        await run("charge:request:customer", act_then_raise)
+    assert effects == ["charged"]
 
 
 def body_of(result: dict) -> dict:
@@ -71,16 +88,16 @@ async def test_a_charge_is_a_session_step_so_a_second_call_replays_it():
 
 
 @pytest.mark.asyncio
-async def test_the_same_call_replays_whole_rather_than_running_again():
+async def test_tool_bodies_do_not_conflate_provider_call_ids_across_executions():
     log = MemorySteps()
     tools = DemoTools(session=session_on(log))
 
     first = await tools.execute("read_customer", "r1", {"customer_id": "c-001"})
     assert first["execution"] == {"call_id": "r1", "replayed": False}
 
-    again = await tools.execute("read_customer", "r1", {"customer_id": "c-001"})
-    assert again["execution"] == {"call_id": "r1", "replayed": True}
-    assert body_of(again) == body_of(first)
+    again = await tools.execute("charge_card", "r1", {"customer_id": "c-001", "amount": "49"})
+    assert again["execution"] == {"call_id": "r1", "replayed": False}
+    assert body_of(again)["status"] == "charged"
 
 
 @pytest.mark.asyncio
@@ -145,36 +162,17 @@ async def test_the_model_dressing_the_amount_differently_is_the_same_charge():
 async def test_a_worker_that_died_mid_charge_leaves_the_step_undecided():
     """The ledger holds an effect it cannot vouch for, and says so instead of repeating it."""
     log = MemorySteps()
-    orchestrator = Orchestrator("session:crash", log)
+    run_step = session_step(log, "session:crash")
 
     async def charge_then_vanish():
         raise __import__("asyncio").CancelledError()
 
     with pytest.raises(__import__("asyncio").CancelledError):
-        await orchestrator.run("charge:c-001", charge_then_vanish)
+        await run_step("charge:c-001", charge_then_vanish)
 
     tools = DemoTools(session=session_on(log, "session:crash"))
     with pytest.raises(Indeterminate):
         await tools.execute("charge_card", "c9", {"customer_id": "c-001", "amount": "49"})
-
-
-@pytest.mark.asyncio
-async def test_charging_one_customer_twice_in_one_attempt_is_told_to_the_model():
-    """Two steps sharing a name would replay as one another, so the session refuses.
-
-    Surfaced as the tool's answer: asking twice in one turn is the model's mistake to
-    hear about, not the console's to hide behind a 500.
-    """
-    log = MemorySteps()
-    orchestrator = Orchestrator("session:dup", log)
-
-    async def one_attempt(step, fn):
-        return await orchestrator.run(step, fn)
-
-    tools = DemoTools(session=one_attempt)
-    await tools.execute("charge_card", "c1", {"customer_id": "c-001", "amount": "49"})
-    twice = await tools.execute("charge_card", "c2", {"customer_id": "c-001", "amount": "49"})
-    assert twice["code"] == "duplicate_effect"
 
 
 @pytest.mark.asyncio

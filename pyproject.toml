@@ -5,10 +5,9 @@ description = "Operator console showcasing semora's composable control plane —
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "semora[fork,openrouter]>=0.2,<0.3",
-  # Imported directly for the OpenRouter preset, so not left to a transitive edge.
-  "semora-llm>=0.2,<0.3",
-  "semora-store-pg>=0.2,<0.3",
+  "semora>=0.3,<0.4",
+  "pydantic-ai-slim[openai]>=2.38,<3",
+  "semora-store-pg>=0.3,<0.4",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "python-dotenv>=1",
@@ -28,3 +27,8 @@ asyncio_mode = "auto"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.uv.sources]
+semora = { path = "../semora/packages/semora", editable = true }
+semora-store = { path = "../semora/packages/semora-store", editable = true }
+semora-store-pg = { path = "../semora/packages/semora-store-pg", editable = true }

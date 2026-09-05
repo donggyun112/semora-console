@@ -9,3 +9,7 @@ __pycache__
 **/__pycache__
 docs
 tests
+.env.*
+**/.codecanvas
+**/.mypy_cache
+**/.ruff_cache

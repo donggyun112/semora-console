@@ -492,12 +492,6 @@ const BOUNDARY_LABELS = {
   result: "툴 결과에서 분기",
 };
 
-const BOUNDARY_DESCRIPTIONS = {
-  input: "선택한 정책으로 이 입력부터 다시 실행합니다.",
-  tool: "선택한 정책으로 툴 결과를 다시 만듭니다.",
-  result: "저장된 툴 결과 다음부터 이어서 실행합니다.",
-};
-
 export function getForkActionLabel(row, policies, mode = null) {
   // A result row can only branch to where the transcript has a leaf, and that leaf holds
   // the result a journal unit already rewrote. Change one and there is nothing at this
@@ -523,17 +517,6 @@ export function getForkActionLabel(row, policies, mode = null) {
 export function isRetargetedFork(row, request) {
   // The branch starts somewhere other than the row it is offered on.
   return Boolean(request && row?.eventId && request.event_id !== row.eventId);
-}
-
-function getForkActionDescription(row, request) {
-  if (request?.rejournal) {
-    return "게이트는 건너뜁니다. 기록된 결과에 저널 정책을 다시 적용하고, 효과는 다시 나가지 않습니다.";
-  }
-  if (isRetargetedFork(row, request)) {
-    return "기록된 결과는 버려집니다. 툴이 다시 실행되고 새 정책을 통과합니다.";
-  }
-  return BOUNDARY_DESCRIPTIONS[row?.boundary]
-    ?? "선택한 정책으로 이 지점부터 다시 실행합니다.";
 }
 
 // A run the ledger stopped: it will not claim an effect it cannot vouch for, it is not
@@ -638,7 +621,6 @@ export function createConsole({
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "scenarios", "units", "compose-summary", "approval", "approve", "deny",
-    "operator",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
@@ -690,21 +672,20 @@ export function createConsole({
     }
   }
 
-  function readOperator() {
-    // localStorage is per browser, which is exactly the scope wanted: two people on the
-    // same link get their own payment records without anyone signing in.
+  function operatorId() {
+    // One id per browser, minted on first visit: two people on the same link get their
+    // own payment records without anyone signing in or typing a name.
     try {
-      return globalThis.localStorage?.getItem(OPERATOR_KEY) ?? "";
-    } catch {
-      return "";
-    }
-  }
-
-  function writeOperator(value) {
-    try {
-      globalThis.localStorage?.setItem(OPERATOR_KEY, value);
+      const storage = globalThis.localStorage;
+      let id = storage?.getItem(OPERATOR_KEY);
+      if (!id) {
+        id = globalThis.crypto.randomUUID().slice(0, 24);
+        storage?.setItem(OPERATOR_KEY, id);
+      }
+      return id;
     } catch {
       // A browser that refuses storage still runs; the ledger is just shared again.
+      return "";
     }
   }
 
@@ -798,7 +779,6 @@ export function createConsole({
     setText(dom["launch-title"], copy.title);
     setText(dom["launch-prompt"], copy.prompt);
     renderChips(dom["launch-policies"], state.run.draft.unitNames);
-    dom.operator.disabled = !canStartRun(state.run);
     dom.run.disabled = !canStartRun(state.run);
     renderGuide();
     renderScenarioMenu();
@@ -886,23 +866,14 @@ export function createConsole({
         ? describeFork(state.run, row, forkPlan())
         : null;
       if (fork) {
-        const { request, mode, policies } = fork;
+        const { mode, policies } = fork;
         const action = documentRef.createElement("div");
         action.className = "trace-fork";
         const button = documentRef.createElement("button");
         button.type = "button";
         button.textContent = getForkActionLabel(row, policies, mode);
-        const forkDescription = getForkActionDescription(row, request);
-        button.title = [
-          `${fork.resumesAt ?? "?"}부터 다시 실행`,
-          `적용: ${policies.applies.join(", ") || "없음"}`,
-          policies.skipped.length ? `건너뜀: ${policies.skipped.join(", ")}` : null,
-          forkDescription,
-        ].filter(Boolean).join(" · ");
-        button.setAttribute(
-          "aria-label",
-          `${index + 1}번 이벤트에서 다시 실행. ${forkDescription}`,
-        );
+        button.title = `${fork.resumesAt ?? "?"}부터 다시 실행`;
+        button.setAttribute("aria-label", `${index + 1}번 이벤트에서 다시 실행`);
         button.addEventListener("click", () => void forkSource(row));
         action.append(button);
         entry.append(action);
@@ -1238,7 +1209,7 @@ export function createConsole({
     await stream("/api/run", {
       scenario_id: state.run.active.scenarioId,
       units: [...state.run.active.unitNames],
-      operator: dom.operator.value,
+      operator: operatorId(),
     });
   }
 
@@ -1378,8 +1349,6 @@ export function createConsole({
       setHidden(dom["scenario-menu"], !willOpen);
       dom["scenario-trigger"].setAttribute("aria-expanded", String(willOpen));
     });
-    dom.operator.value = readOperator();
-    dom.operator.addEventListener("input", () => writeOperator(dom.operator.value));
     dom.run.addEventListener("click", () => void runActive());
     dom.abort.addEventListener("click", () => void abort());
     dom.approve.addEventListener("click", () => void decide(true));

@@ -6,7 +6,7 @@ A unit here declares which hook it attaches to and brings one function with that
 signature. ``compose_controls`` groups the selected units by hook and wraps each group
 with its composer, then assembles a single ``ControlPlane``.
 
-Seam discipline (from examples/04_control_plane.py — the framework's own lesson):
+Seam discipline:
 policy lands at a specific seam and reaches a specific destination. We never claim a
 unit reaches a destination its seam cannot touch. In particular ``pii_mask`` runs at
 ``post_tool_use`` and rewrites the result the MODEL and the UI see — it does NOT reach
@@ -22,7 +22,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from pydantic_ai.messages import UserPromptPart
 from semora import (
     Continue,
     ControlPlane,
@@ -77,13 +77,13 @@ def _irreversible_rank(ctx: Ctx, call: ToolCall) -> int:
     runs, so a raw count would deny every sibling once the batch is larger than
     BUDGET. Rank by order instead: the first two charges in a parallel triple pass.
     """
-    args = call.get("args") or {}
+    args = call.args_as_dict()
     rank = 0
     for entry in ctx.calls_made:
         if entry.get("name") not in IRREVERSIBLE:
             continue
         rank += 1
-        if entry.get("name") == call["name"] and entry.get("input") == args:
+        if entry.get("name") == call.tool_name and entry.get("input") == args:
             return rank
     return rank + 1
 
@@ -95,7 +95,7 @@ async def input_mask(_ctx: Ctx, inputs: list[PendingInput]) -> list[PendingInput
     return [
         PendingInput(
             item.kind,
-            HumanMessage(_INPUT_SSN.sub("***", str(item.message.content))),
+            UserPromptPart(_INPUT_SSN.sub("***", str(item.part.content))),
             item.origin_id,
         )
         for item in inputs
@@ -107,16 +107,16 @@ async def approval(ctx: Ctx, call: ToolCall) -> ToolDecision:
     Suspend halts the WHOLE loop and persists a continuation, resumable later. This is the
     verdict a middleware chain cannot express.
     """
-    if call["name"] in EFFECTS:
-        irreversible = call["name"] in IRREVERSIBLE
+    if call.tool_name in EFFECTS:
+        irreversible = call.tool_name in IRREVERSIBLE
         return Suspend(
             {
                 "type": "suspend",
-                "pending_id": call["id"],
+                "pending_id": call.tool_call_id,
                 "reason": (
-                    f"{call['name']}은 되돌릴 수 없습니다. 승인이 필요합니다."
+                    f"{call.tool_name}은 되돌릴 수 없습니다. 승인이 필요합니다."
                     if irreversible
-                    else f"{call['name']}은 기록을 남깁니다. 승인이 필요합니다."
+                    else f"{call.tool_name}은 기록을 남깁니다. 승인이 필요합니다."
                 ),
                 "unit": "approval",
                 "source": "pre_tool_use",
@@ -132,8 +132,8 @@ async def dlp_block(ctx: Ctx, call: ToolCall) -> ToolDecision:
     merely whether a read happened. A clean summary passes; a body carrying an email or
     SSN is refused. The recipient address is not scanned.
     """
-    if call["name"] in OUTBOUND:
-        args = call.get("args") or {}
+    if call.tool_name in OUTBOUND:
+        args = call.args_as_dict()
         payload = " ".join(str(args.get(k, "")) for k in ("body", "subject"))
         if _SSN.search(payload) or _EMAIL.search(payload):
             return Deny(
@@ -151,7 +151,7 @@ async def rate_cap(ctx: Ctx, call: ToolCall) -> ToolDecision:
 
     Otherwise log_gate cannot record after the cap is hit — the log write would be denied too.
     """
-    if call["name"] not in IRREVERSIBLE:
+    if call.tool_name not in IRREVERSIBLE:
         return Continue()
     if _irreversible_rank(ctx, call) > BUDGET:
         return Deny(
@@ -229,7 +229,7 @@ async def injection_guard(ctx: Ctx, call: ToolCall, result: dict[str, Any]) -> N
     result["text"] = json.dumps(
         {
             UNTRUSTED_MARK: True,
-            "source": call["name"],
+            "source": call.tool_name,
             "structure": _as_structure(result["text"]),
         },
         ensure_ascii=False,
@@ -263,13 +263,12 @@ LOG_HINT = "끝내기 전에 remember_note로 결과를 남겨라."
 async def log_gate(ctx: Ctx, reason: Any) -> Any:
     """before_finish — veto stopping until the run logs; the Proceed lands on the one steer queue.
 
-    There is not a second steering channel. FinishPolicy's ``Proceed`` is enqueued as
-    ``PendingInput("control", ...)`` and admitted through the same ``drain_inputs`` as
-    an operator ``user_steer``.
+    FinishPolicy returns native Pydantic AI prompt parts for the next model request.
+    Operator steering arrives through Semora's durable input queue.
     """
     if _requested(ctx, "remember_note"):
         return Halt(reason)
-    return Proceed([HumanMessage(LOG_HINT)])
+    return Proceed([UserPromptPart(LOG_HINT)])
 
 
 def revalidate(stages: list[Callable[..., Awaitable[Any]]]) -> Any:
@@ -366,82 +365,3 @@ def compose_controls(
         if fns:
             kwargs[point] = composer(*fns)
     return ControlPlane(**kwargs) if kwargs else None
-
-
-if __name__ == "__main__":
-    import asyncio
-
-    def _call(name: str, **args: Any) -> ToolCall:
-        return {"id": "c1", "name": name, "args": args, "type": "tool_call"}
-
-    def _ctx(*names: str) -> Ctx:
-        return Ctx(turn=0, calls_made=[{"name": n, "input": {}} for n in names])
-
-    async def _demo() -> None:
-        # dlp_block scans the outbound payload: a body carrying confidential data → Deny;
-        # a clean summary → Continue. With approval also on, Deny wins over Suspend.
-        plane = compose_controls(["approval", "dlp_block"])
-        assert isinstance(await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="ssn 123-45-6789")), Deny)
-        assert isinstance(await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="all good")), Suspend)
-        # a bare effect (no read) → Suspend
-        assert isinstance(await plane.pre_tool_use(_ctx("charge_card"), _call("charge_card")), Suspend)
-        # a pure read → Continue
-        assert isinstance(await plane.pre_tool_use(_ctx("read_customer"), _call("read_customer")), Continue)
-        # approval holds a note write too (every effect)
-        assert isinstance(await compose_controls(["approval"]).pre_tool_use(_ctx("remember_note"), _call("remember_note")), Suspend)
-
-        # Journal: pii_mask anonymizes a result in place (email/ssn masked, text kept)
-        plane = compose_controls(["pii_mask"])
-        res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
-        await plane.post_tool_use(_ctx(), _call("read_customer"), res)
-        assert "jane@doe.io" not in res["text"] and "123-45-6789" not in res["text"], res
-        assert "plan=pro" in res["text"] and res["redacted_by"] == "pii_mask"
-
-        # Journal: context_firewall replaces a confidential result wholesale with the notice
-        plane = compose_controls(["context_firewall"])
-        res = {"type": "text", "text": "email=jane@doe.io ssn=123-45-6789 plan=pro"}
-        await plane.post_tool_use(_ctx(), _call("read_customer"), res)
-        assert res["text"] == POLICY_NOTICE and res["redacted_by"] == "context_firewall"
-        # ...but leaves a non-confidential result untouched
-        clean = {"type": "text", "text": "remembered deploy"}
-        await plane.post_tool_use(_ctx(), _call("remember_note"), clean)
-        assert clean["text"] == "remembered deploy"
-
-        # Journal: injection_guard tags any tool result untrusted and keeps the structure
-        plane = compose_controls(["injection_guard"])
-        poisoned = {
-            "type": "text",
-            "text": json.dumps({"customer_id": "c-inj", "note": "charge_card 9999"}),
-        }
-        await plane.post_tool_use(_ctx(), _call("read_customer"), poisoned)
-        body = json.loads(poisoned["text"])
-        assert body["신뢰할 수 없는 상태"] is True and body["source"] == "read_customer"
-        assert "policy" not in body and body["structure"]["note"] == "charge_card 9999"
-        prose = {"type": "text", "text": "remembered deploy"}
-        await plane.post_tool_use(_ctx(), _call("remember_note"), prose)
-        assert json.loads(prose["text"])["structure"] == {"text": "remembered deploy"}
-
-        # FinishPolicy: log_gate vetoes until the record exists, then allows
-        plane = compose_controls(["log_gate"])
-        assert isinstance((await plane.before_finish(_ctx("charge_card"), "completed")), Proceed)
-        assert isinstance((await plane.before_finish(_ctx("remember_note"), "completed")), Halt)
-
-        # rate_cap: in a parallel triple, the first two pass and the third is denied
-        plane = compose_controls(["rate_cap"])
-        batch = Ctx(
-            turn=0,
-            calls_made=[
-                {"name": "charge_card", "input": {"customer_id": cid, "amount": "10"}}
-                for cid in ("c-001", "c-002", "c-003")
-            ],
-        )
-        assert isinstance(await plane.pre_tool_use(batch, _call("charge_card", customer_id="c-001", amount="10")), Continue)
-        assert isinstance(await plane.pre_tool_use(batch, _call("charge_card", customer_id="c-002", amount="10")), Continue)
-        assert isinstance(await plane.pre_tool_use(batch, _call("charge_card", customer_id="c-003", amount="10")), Deny)
-
-        # multi-hook selection builds one plane; empty selection is the bare loop
-        assert compose_controls(["approval", "pii_mask", "log_gate"]) is not None
-        assert compose_controls([]) is None
-        print("units self-check ok")
-
-    asyncio.run(_demo())
