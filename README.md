@@ -10,9 +10,6 @@ The console adds business effect keys, scenario policies, and the browser frame 
 
 ## Run locally
 
-Keep this checkout beside the canonical `semora` checkout. Semora 0.3 has not been
-published: `pyproject.toml` and `uv.lock` resolve its three packages from `../semora`.
-
 ```sh
 uv sync
 export OPENROUTER_API_KEY=...
@@ -36,8 +33,8 @@ transition does not migrate in-flight runs or reinterpret their stored messages.
 docker compose up --build
 ```
 
-Compose supplies `../semora` as an additional build context, so the image installs
-the same local packages. Its new `console-ledger-v03` volume keeps 0.3 data separate
+The image installs semora 0.3 from PyPI like every other dependency. Its new
+`console-ledger-v03` volume keeps 0.3 data separate
 from the previous `console-ledger` volume. The old volume is retained. Use
 `docker compose --profile two-workers up --build` for a second worker on port 8851.
 `CONSOLE_LEASE_TTL` controls lease duration (default 60 seconds).

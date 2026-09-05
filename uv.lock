@@ -860,20 +860,15 @@ wheels = [
 [[package]]
 name = "semora"
 version = "0.3.0"
-source = { editable = "../semora/packages/semora" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic-ai-slim" },
     { name = "semora-store" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "pydantic-ai-slim", specifier = ">=2.38,<3" },
-    { name = "pydantic-ai-slim", extras = ["openai"], marker = "extra == 'openai'", specifier = ">=2.38,<3" },
-    { name = "semora-store", editable = "../semora/packages/semora-store" },
-    { name = "semora-store-pg", marker = "extra == 'postgres'", editable = "../semora/packages/semora-store-pg" },
+sdist = { url = "https://files.pythonhosted.org/packages/30/eb/c6fd6266254b41be5014a922f20216b6fc978efb5a83e6ee060796eda338/semora-0.3.0.tar.gz", hash = "sha256:2d4d7707d7e988ef87f76452ef70353f9298a5e3eb4995950e5dabdd8d723e7e", size = 28067, upload-time = "2026-09-05T12:05:44.779Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/51/c1/27860e7a2eff397614630fdc84d8ae711095388aa570a4f2b9667e4709c8/semora-0.3.0-py3-none-any.whl", hash = "sha256:539957bf73b5b46417ed153472270bdba92664e4114eb2431fb14d51cfcded47", size = 33226, upload-time = "2026-09-05T12:05:42.435Z" },
 ]
-provides-extras = ["postgres", "openai"]
 
 [[package]]
 name = "semora-console"
@@ -899,8 +894,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.38,<3" },
     { name = "python-dotenv", specifier = ">=1" },
-    { name = "semora", editable = "../semora/packages/semora" },
-    { name = "semora-store-pg", editable = "../semora/packages/semora-store-pg" },
+    { name = "semora", specifier = ">=0.3,<0.4" },
+    { name = "semora-store-pg", specifier = ">=0.3,<0.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
@@ -913,21 +908,23 @@ dev = [
 [[package]]
 name = "semora-store"
 version = "0.3.0"
-source = { editable = "../semora/packages/semora-store" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/63/84768dc9f54b82dd7e0072efa40a64ee644181ae2f2eee85d22a71a2b862/semora_store-0.3.0.tar.gz", hash = "sha256:a44edf70db98702773f831937e12208f0d17eb040cd7554c986057ab5c6aa7af", size = 7246, upload-time = "2026-09-05T12:05:45.339Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/4f/5427bd2088b4b82ce64e07a9d558c53a977344dd701542e8225d230ba887/semora_store-0.3.0-py3-none-any.whl", hash = "sha256:ee27d660a0fd4796aea7398c469668eaa7785d8bf8a30879ab2e57b6d623ee43", size = 8679, upload-time = "2026-09-05T12:05:43.308Z" },
+]
 
 [[package]]
 name = "semora-store-pg"
 version = "0.3.0"
-source = { editable = "../semora/packages/semora-store-pg" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "semora-store" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3,<4" },
-    { name = "semora-store", editable = "../semora/packages/semora-store" },
+sdist = { url = "https://files.pythonhosted.org/packages/bc/be/5d9af2442c14601ac24bbfb8a26177173f0ea98b5de12568f66828a4fc45/semora_store_pg-0.3.0.tar.gz", hash = "sha256:8270473c0fe5b5a8520ffc26dd9fc44f7d53d8ab66e8d35535866bc73b7979ea", size = 5932, upload-time = "2026-09-05T12:05:45.933Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9d/04/d032d7f5eacc88cca4c0d2704aedc727b89d6e9429a5a04ac7edc7a15d24/semora_store_pg-0.3.0-py3-none-any.whl", hash = "sha256:4a593e9143ca1811155336d58d6b371bd551cf6680c412fd6d996b25bc5d4066", size = 7260, upload-time = "2026-09-05T12:05:44.039Z" },
 ]
 
 [[package]]
