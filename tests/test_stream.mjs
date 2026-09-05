@@ -7,6 +7,7 @@ import {
   deriveVersionPhase,
   deriveVersionRows,
   describeFork,
+  editedArgs,
   getForkActionLabel,
   GUIDE,
   getEventForkRequest,
@@ -15,6 +16,7 @@ import {
   policiesAt,
   isForkRepresentative,
   nextGuideStep,
+  pendingCallArgs,
   pickInlineActionHost,
   getLaunchCopy,
   makeResultBadges,
@@ -1863,5 +1865,20 @@ assert.equal(
   getForkActionLabel({ label: "pre_tool_use", forkable: true }, one),
   "이 지점에서 분기 · 적용 pii_mask",
 );
+
+// Approving with edited arguments: the form starts from what the model asked for, and
+// only a real change travels as `args`.
+const parkedFrames = [
+  { kind: "meta", run_id: "r-1" },
+  { kind: "agent", event: { type: "tool_call", id: "c-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
+  { kind: "suspended", pending_id: "c-1" },
+];
+assert.deepEqual(pendingCallArgs(parkedFrames, "c-1"), { customer_id: "c-001", amount: "49" });
+assert.equal(pendingCallArgs(parkedFrames, "missing"), null);
+const proposed = pendingCallArgs(parkedFrames, "c-1");
+assert.equal(editedArgs(JSON.stringify(proposed, null, 2), proposed), null, "untouched → no args");
+assert.deepEqual(editedArgs('{"customer_id": "c-001", "amount": "5"}', proposed), { customer_id: "c-001", amount: "5" });
+assert.throws(() => editedArgs("not json", proposed), SyntaxError);
+assert.throws(() => editedArgs("[1]", proposed), SyntaxError, "an array is not a call's arguments");
 
 console.log("run inspector state ok");

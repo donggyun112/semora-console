@@ -190,6 +190,25 @@ export function pickInlineActionHost(chatToolNodes, callId, status) {
     .find((node) => node.dataset?.status === status) ?? null;
 }
 
+// The arguments the model proposed for the parked call, as the approval form's
+// starting text. The tool_call event is the only frame that carries them.
+export function pendingCallArgs(frames, pendingId) {
+  for (const frame of frames) {
+    const event = frame?.kind === "agent" ? frame.event : null;
+    if (event?.type === "tool_call" && event.id === pendingId) return event.input ?? {};
+  }
+  return null;
+}
+
+// null when the operator left the arguments alone; throws on JSON that is not an object.
+export function editedArgs(text, original) {
+  const args = JSON.parse(text);
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new SyntaxError("인자는 JSON 객체여야 합니다.");
+  }
+  return JSON.stringify(args) === JSON.stringify(original) ? null : args;
+}
+
 export function deriveChatView(prompt, frames) {
   const tools = [];
   const toolById = new Map();
@@ -620,7 +639,7 @@ export function createConsole({
     "rerun", "retry-run", "return-draft", "trace", "guide", "guide-note",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
-    "scenarios", "units", "compose-summary", "approval", "approve", "deny",
+    "scenarios", "units", "compose-summary", "approval", "approval-args", "approve", "deny",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
@@ -998,7 +1017,18 @@ export function createConsole({
     renderChat(scenario, chatFrames);
     const canApprove = selectedIsCurrent && selectedPhase === "suspended";
     setHidden(dom.approval, !canApprove);
-    if (canApprove) attachInlineAction(dom.approval, state.run.pendingId, "approval");
+    if (canApprove) {
+      attachInlineAction(dom.approval, state.run.pendingId, "approval");
+      const args = dom["approval-args"];
+      // Seed once per parked call; a re-render must not overwrite an edit in progress.
+      if (args.dataset.pendingId !== state.run.pendingId) {
+        args.dataset.pendingId = state.run.pendingId;
+        args.value = JSON.stringify(pendingCallArgs(state.frames, state.run.pendingId) ?? {}, null, 2);
+        args.setCustomValidity("");
+        // The card lands at the bottom of a scrolling thread; bring its buttons into view once.
+        dom.approval.scrollIntoView?.({ block: "nearest" });
+      }
+    }
     const canRecover = selectedIsCurrent && selectedPhase === "recoverable";
     setHidden(dom.recovery, !canRecover);
     if (canRecover) attachInlineAction(dom.recovery, null, "recoverable");
@@ -1235,6 +1265,18 @@ export function createConsole({
       // Whatever is selected right now, not what was selected when the call parked.
       units: [...state.run.draft.unitNames],
     };
+    if (approved) {
+      const field = dom["approval-args"];
+      try {
+        const args = editedArgs(field.value, pendingCallArgs(state.frames, state.run.pendingId));
+        if (args) body.args = args;
+        field.setCustomValidity("");
+      } catch (error) {
+        field.setCustomValidity(error.message);
+        field.reportValidity();
+        return;
+      }
+    }
     await continueRun("/api/resume", body);
   }
 

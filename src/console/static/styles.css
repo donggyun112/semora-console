@@ -543,13 +543,13 @@ button.primary:hover:not(:disabled) {
   gap: 14px;
   border: 1px solid rgba(244, 185, 66, 0.3);
   border-radius: var(--radius);
+  /* Stacked: the card is half a column wide, and the arguments editor needs the width. */
+  flex-direction: column;
+  align-items: stretch;
 }
 
-@media (max-width: 720px) {
-  .chat-tool > .inline-action {
-    flex-direction: column;
-    align-items: stretch;
-  }
+.chat-tool > .inline-action > div:last-child {
+  justify-content: flex-end;
 }
 
 .result-badges {
@@ -982,6 +982,33 @@ button.primary:hover:not(:disabled) {
   margin: 0;
   font-size: 14px;
   font-weight: 570;
+}
+
+.inline-action > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.inline-action label {
+  display: block;
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-action textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+
+.inline-action textarea:invalid {
+  border-color: #d9534f;
 }
 
 .inline-action > div:last-child {
