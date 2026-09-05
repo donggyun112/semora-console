@@ -865,7 +865,6 @@ async def fork(request: ForkRequest) -> StreamingResponse:
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await run_from_event(
             runtime,
-            _store,
             _transcript,
             event_id=request.event_id,
             edge=request.edge,

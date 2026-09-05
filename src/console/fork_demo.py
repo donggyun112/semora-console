@@ -13,8 +13,6 @@ from pydantic_ai.messages import (
     ToolCallPart,
     UserPromptPart,
 )
-from semora import Continue, ControlPlane
-from semora.effects import step_key
 from semora.runtime import unanswered_tool_calls
 from semora.transcript import marker_entry
 
@@ -219,22 +217,6 @@ def branch_snapshot(branch, run_id, conversation_id, origin_id, messages):
     }
 
 
-class Rejournal:
-    """Skip only gates whose effects were copied from immutable completed records."""
-
-    def __init__(self, controls, recorded):
-        self.inner = controls or ControlPlane()
-        self.recorded = recorded
-
-    async def pre_tool_use(self, ctx, call):
-        if call.tool_call_id in self.recorded:
-            return Continue()
-        return await self.inner.pre_tool_use(ctx, call)
-
-    def __getattr__(self, name):
-        return getattr(self.inner, name)
-
-
 def resume_history(history):
     """Expose remaining batch calls as the final native response Pydantic AI resumes.
 
@@ -270,7 +252,6 @@ def resume_history(history):
 
 async def run_from_event(
     runtime,
-    store,
     transcript,
     *,
     event_id,
@@ -297,21 +278,6 @@ async def run_from_event(
             if not history[-1].parts:
                 history.pop()
         prompt = coordinate.prompt
-    recorded = set()
-    for message in history:
-        for call in message.parts:
-            if not isinstance(call, ToolCallPart):
-                continue
-            key = step_key(call.tool_call_id)
-            previous = await store.read(coordinate.from_run_id, key)
-            if previous.status == "running":
-                await store.start(run_id, key)
-            elif previous.status == "done":
-                await store.start(run_id, key)
-                await store.finish_effect(run_id, key, previous.value)
-                recorded.add(call.tool_call_id)
-    if rejournal:
-        controls = Rejournal(controls, recorded)
     observed = ObservedControls(
         runtime,
         run_id,
@@ -320,12 +286,18 @@ async def run_from_event(
         aborted=aborted,
         prompt_id=coordinate.origin_id,
     )
-    result = await runtime.engine.run(
+    # semora copies the source's finished effects into the branch's ledger so they replay,
+    # and carries an unreported one over as doubt. Without rejournal the branch's gate is asked
+    # about each copied effect first; with it, only the journal sees them.
+    result = await runtime.engine.fork(
+        coordinate.from_run_id,
+        None,
         run_id,
         agent,
         prompt,
+        history=history,
+        regate=not rejournal,
         conversation_id=conversation_id,
-        message_history=history,
         controls=observed,
     )
     await observed.project_missing(result)
