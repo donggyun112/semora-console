@@ -1056,7 +1056,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .policy-drawer {
-  width: min(720px, 92vw);
+  width: min(480px, 92vw);
   max-width: none;
   height: 100dvh;
   max-height: none;
@@ -1098,33 +1098,15 @@ button.primary:hover:not(:disabled) {
 }
 
 .policy-layout {
-  display: grid;
-  grid-template-columns: minmax(190px, 0.75fr) minmax(300px, 1.25fr);
-  min-width: 0;
-}
-
-.policy-layout > section {
   min-width: 0;
   padding: 24px 26px 32px;
 }
 
-.policy-layout > section + section {
-  border-left: 1px solid var(--line);
-}
-
-.scenario-radio,
 .unit-toggle {
   display: flex;
   gap: 10px;
   min-width: 0;
   cursor: pointer;
-}
-
-.scenario-radio {
-  align-items: center;
-  padding: 8px 0;
-  color: #b8c1cd;
-  font-size: 13px;
 }
 
 .unit-toggle {
@@ -1140,8 +1122,7 @@ button.primary:hover:not(:disabled) {
 }
 
 .unit-toggle strong,
-.unit-toggle small,
-.scenario-radio span {
+.unit-toggle small {
   overflow-wrap: anywhere;
 }
 
@@ -1390,16 +1371,7 @@ button.primary:hover:not(:disabled) {
   }
 
   .policy-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .policy-layout > section {
     padding: 22px 20px;
-  }
-
-  .policy-layout > section + section {
-    border-top: 1px solid var(--line);
-    border-left: 0;
   }
 }
 

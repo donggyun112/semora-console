@@ -196,8 +196,8 @@ def test_static_shell_is_run_inspector_with_contextual_drawers():
         "outcome-strip", "rerun", "retry-run",
         "return-draft", "trace", "details-drawer", "details-close",
         "details-copy", "details-title", "details-body", "steer-form",
-        "steer-text", "policy-drawer", "policy-close", "scenarios", "units",
-        "compose-summary", "approval", "approve", "deny", "recovery",
+        "steer-text", "policy-drawer", "policy-close", "units",
+        "compose-summary", "approval", "approval-args", "approve", "deny", "recovery",
         "recover", "run-error", "boot-error", "boot-retry",
     }
     assert required <= set(shell.ids)

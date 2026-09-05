@@ -639,7 +639,7 @@ export function createConsole({
     "rerun", "retry-run", "return-draft", "trace", "guide", "guide-note",
     "details-drawer", "details-close", "details-copy", "details-title",
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
-    "scenarios", "units", "compose-summary", "approval", "approval-args", "approve", "deny",
+    "units", "compose-summary", "approval", "approval-args", "approve", "deny",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
@@ -1062,23 +1062,6 @@ export function createConsole({
     const config = visibleConfig();
     const readOnly = ACTIVE_PHASES.has(state.run.phase);
     const policyReadOnly = !canEditPolicy(state.run);
-    dom.scenarios.replaceChildren();
-    for (const scenario of state.scenarios) {
-      const label = documentRef.createElement("label");
-      label.className = "scenario-radio";
-      const input = documentRef.createElement("input");
-      input.type = "radio";
-      input.name = "scenario";
-      input.value = scenario.id;
-      input.checked = config?.scenarioId === scenario.id;
-      input.disabled = readOnly;
-      input.addEventListener("change", () => chooseScenario(scenario.id));
-      const text = documentRef.createElement("span");
-      text.textContent = scenario.title;
-      label.append(input, text);
-      dom.scenarios.append(label);
-    }
-
     dom.units.replaceChildren();
     const groups = new Map();
     for (const unit of state.unitsMeta.values()) {
