@@ -103,6 +103,27 @@ def test_approval_survives_process_cache_loss(monkeypatch):
         )
 
 
+def test_approval_may_replace_the_arguments(monkeypatch):
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        initial = start(client, units=["approval"])
+        resumed = frames(
+            client.post(
+                "/api/resume",
+                json={
+                    "run_id": get(initial, "meta")["run_id"],
+                    "pending_id": get(initial, "suspended")["pending_id"],
+                    "approved": True,
+                    "args": {"customer_id": "c-001", "amount": "5"},
+                },
+            )
+        )
+        gate = next(row for row in resumed if row.get("type") == "pre_tool_use")
+        assert gate["payload"]["input"] == {"customer_id": "c-001", "amount": "5"}
+        assert '"amount": "5"' in results(resumed)[0]["result"]["text"], "and they ran"
+        assert results(resumed)[0]["result"]["execution_count"] == 1
+
+
 def test_approval_revalidates_current_policy(monkeypatch):
     install(
         monkeypatch,

@@ -135,6 +135,9 @@ class ResumeRequest(BaseModel):
     run_id: str
     pending_id: str
     approved: bool
+    args: dict[str, Any] | None = None
+    """Approve with these arguments instead of the model's. semora validates them, runs them,
+    and hands them to `on_resume` as the call; the original request is kept beside them."""
     units: list[str] | None = None
     """The policy in force at the moment of the decision. A suspension's window is open
     ended, so the operator may have changed it since the call parked."""
@@ -893,11 +896,13 @@ async def fork(request: ForkRequest) -> StreamingResponse:
 async def resume(request: ResumeRequest) -> StreamingResponse:
     """Approve or deny a suspended call and continue the run."""
     session = await _session(request.run_id)
-    answer = (
+    answer: dict[str, Any] = (
         {"type": "text", "text": "approved by the human"}
         if request.approved
         else {"type": "error", "message": "denied by the human"}
     )
+    if request.approved and request.args is not None:
+        answer["args"] = request.args
 
     session["aborted"] = False
     if request.units is not None:
