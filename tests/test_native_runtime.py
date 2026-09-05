@@ -245,6 +245,57 @@ def test_tool_fork_rejournals_raw_result_without_reexecution(monkeypatch):
         assert results(forked)[0]["result"]["execution_count"] == 1
 
 
+def test_every_entry_hands_semora_the_session(monkeypatch):
+    # semora scopes its ledger through ExecutionContext. A bare run id left session_id
+    # empty, so a replayed call could not be tied to the session whose effects it shared.
+    from semora import AgentRuntime as Engine
+    from semora_store import ExecutionContext
+
+    seen: list[tuple[str, object]] = []
+    for name in ("run", "resume", "fork"):
+        original = getattr(Engine, name)
+
+        async def spy(self, first, *args, _name=name, _original=original, **kwargs):
+            seen.append((_name, first))
+            return await _original(self, first, *args, **kwargs)
+
+        monkeypatch.setattr(Engine, name, spy)
+
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        rows = start(client, units=["approval"], operator="Alice")
+        meta = get(rows, "meta")
+        assert meta["session_id"] == "session:alice:charge"
+        resumed = frames(
+            client.post(
+                "/api/resume",
+                json={
+                    "run_id": meta["run_id"],
+                    "pending_id": get(rows, "suspended")["pending_id"],
+                    "approved": True,
+                },
+            )
+        )
+        assert get(resumed, "outcome")["outcome"]["stop_reason"] == "completed"
+
+    install(monkeypatch, READ)
+    with TestClient(server.app) as client:
+        rows = start(client, "fork_masking", ["pii_mask"], operator="Alice")
+        gate = next(row for row in rows if row.get("type") == "pre_tool_use")
+        forked = frames(
+            client.post(
+                "/api/fork",
+                json={"run_id": get(rows, "meta")["run_id"], "event_id": gate["event_id"], "edge": "before", "units": []},
+            )
+        )
+        assert get(forked, "meta")["session_id"] == "session:alice:fork_masking"
+
+    assert [name for name, _ in seen] == ["run", "resume", "run", "fork"]
+    for name, first in seen:
+        assert isinstance(first, ExecutionContext), (name, first)
+        assert first.session_id in {"session:alice:charge", "session:alice:fork_masking"}, name
+
+
 def test_fork_changed_gate_revalidates_recorded_effect(monkeypatch):
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:

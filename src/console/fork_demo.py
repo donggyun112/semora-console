@@ -15,6 +15,7 @@ from pydantic_ai.messages import (
 )
 from semora.runtime import unanswered_tool_calls
 from semora.transcript import marker_entry
+from semora_store import ExecutionContext
 
 from .runtime import ObservedControls
 
@@ -263,6 +264,7 @@ async def run_from_event(
     on_event=None,
     aborted=None,
     rejournal=False,
+    session_id=None,
 ):
     checkpoint = await read_event_checkpoint(transcript, conversation_id, event_id)
     coordinate = checkpoint.before if edge == "before" else checkpoint.after
@@ -289,10 +291,11 @@ async def run_from_event(
     # semora copies the source's finished effects into the branch's ledger so they replay,
     # and carries an unreported one over as doubt. Without rejournal the branch's gate is asked
     # about each copied effect first; with it, only the journal sees them.
+    # Both ends of the fork belong to the same session: the branch inherits the source's.
     result = await runtime.engine.fork(
-        coordinate.from_run_id,
+        ExecutionContext(run_id=coordinate.from_run_id, session_id=session_id),
         None,
-        run_id,
+        ExecutionContext(run_id=run_id, session_id=session_id),
         agent,
         prompt,
         history=history,

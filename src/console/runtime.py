@@ -321,9 +321,11 @@ class ConsoleRuntime:
         aborted=None,
         **options,
     ):
+        # `run_id` may be an ExecutionContext carrying the session; the observer keys its
+        # own ledger reads and checkpoints by the bare run id.
         observed = ObservedControls(
             self,
-            run_id,
+            getattr(run_id, "run_id", run_id),
             controls,
             on_event,
             aborted=aborted,

@@ -38,7 +38,7 @@ from semora import AgentSuspended, new_run_id
 from semora.contracts import PendingInput
 from semora.dispatch import Answer, Prompt, Recover
 from semora.transcript import SCHEMA_VERSION, entry_id
-from semora_store import Contended, Fenced, Indeterminate
+from semora_store import Contended, ExecutionContext, Fenced, Indeterminate
 
 from .dormancy import dormant_reason
 from .fork_demo import (
@@ -170,6 +170,16 @@ def _session_id(operator: str, scenario_id: str) -> str:
     return f"session:{who}:{scenario_id}" if who else f"session:{scenario_id}"
 
 
+def _execution(run_id: str, session_id: str | None) -> ExecutionContext:
+    """The run as semora sees it: its id, plus the session whose effects it shares.
+
+    Semora's ledger and transcript are scoped through this context. Handing it the bare
+    run id left ``session_id`` empty, so nothing downstream could tell which session a
+    replayed call belonged to.
+    """
+    return ExecutionContext(run_id=run_id, session_id=session_id)
+
+
 def _session_step(session_id: str) -> Any:
     """A leased business step for the session, taken and released per effect.
 
@@ -298,13 +308,13 @@ def _frame(kind: str, **payload: Any) -> str:
 async def _publish_source_branch(
     runtime: AgentRuntime,
     *,
-    run_id: str,
+    execution: ExecutionContext,
     conversation_id: str,
     origin_id: str,
 ) -> None:
     """Expose the completed source lineage so the UI can compare it with a fork."""
-    history = await runtime.committed_history(run_id, conversation_id)
-    snapshot = branch_snapshot("source", run_id, conversation_id, origin_id, history)
+    history = await runtime.committed_history(execution, conversation_id)
+    snapshot = branch_snapshot("source", execution.run_id, conversation_id, origin_id, history)
     await runtime.events.publish("branch_snapshot", **snapshot)
 
 
@@ -637,6 +647,8 @@ async def _stream(
             lease_ttl=LEASE_TTL,
         )
         meta = {"kind": "meta", "run_id": run_id, "units": selected}
+        if session is not None and session.get("session_id"):
+            meta["session_id"] = session["session_id"]
         if session is not None and session.get("fork_parent"):
             meta.update(
                 {
@@ -785,8 +797,9 @@ async def run(request: RunRequest) -> StreamingResponse:
         _store.arm(session_id if crash_at == "effect" else run_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
+        execution = _execution(run_id, session_id)
         outcome = await runtime.dispatch(
-            run_id,
+            execution,
             agent,
             Prompt(scenario["prompt"], prompt_id=prompt_id),
             conversation_id=conversation_id,
@@ -796,7 +809,7 @@ async def run(request: RunRequest) -> StreamingResponse:
         )
         await _publish_source_branch(
             runtime,
-            run_id=run_id,
+            execution=execution,
             conversation_id=conversation_id,
             origin_id=prompt_id,
         )
@@ -872,6 +885,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             event_id=request.event_id,
             edge=request.edge,
             run_id=fork_run_id,
+            session_id=source.get("session_id"),
             conversation_id=source["conversation_id"],
             agent=source["agent"],
             controls=compose_controls(fork_units),
@@ -913,7 +927,7 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await runtime.dispatch(
-            request.run_id,
+            _execution(request.run_id, session.get("session_id")),
             session["agent"],
             Answer(request.pending_id, answer),
             conversation_id=session["conversation_id"],
@@ -940,7 +954,7 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         # make a failed round a transcript fact — so the history a host could hand over
         # is empty and the durable model step is what reconstructs the round.
         return await runtime.dispatch(
-            request.run_id,
+            _execution(request.run_id, session.get("session_id")),
             session["agent"],
             Recover(),
             conversation_id=session["conversation_id"],
@@ -1024,7 +1038,7 @@ async def steer(request: SteerRequest) -> dict[str, Any]:
     # the run to the new prompt. A steer is a note added to the queue, never a decision
     # taken on the operator's behalf about the call in front of them.
     await runtime.submit(
-        request.run_id,
+        _execution(request.run_id, session.get("session_id")),
         PendingInput("user_steer", UserPromptPart(text)),
         input_mode="headless",
     )
