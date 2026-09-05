@@ -34,7 +34,7 @@ async def test_suspend_survives_restart_and_runs_once():
 
     store, transcript, closer = await make_store()
     try:
-        run_id = "durable-test-1"
+        branch_id = "durable-test-1"
         tools = DemoTools()
         controls = compose_controls(["approval"])
         agent = Agent(openrouter_model(), tools=tools.native_tools(), system_prompt=SYSTEM_PROMPT)
@@ -43,7 +43,7 @@ async def test_suspend_survives_restart_and_runs_once():
         # First runtime: dispatch until the irreversible charge suspends.
         with pytest.raises(AgentSuspended) as parked:
             await AgentRuntime(execution_store=store, transcript=transcript).dispatch(
-                run_id,
+                branch_id,
                 agent,
                 Prompt("charge_card 도구로 c-001에게 49 달러를 청구해."),
                 controls=controls,
@@ -52,7 +52,7 @@ async def test_suspend_survives_restart_and_runs_once():
 
         # Fresh runtime over the SAME stores = restart. Dispatch an answer by id.
         outcome = await AgentRuntime(execution_store=store, transcript=transcript).dispatch(
-            run_id,
+            branch_id,
             agent,
             Answer(pending_id, {"type": "text", "text": "approved by the human"}),
             controls=controls,

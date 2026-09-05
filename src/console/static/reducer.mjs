@@ -24,7 +24,7 @@ function makeRow(sequence, kind, label, summary, options = {}) {
     // The coordinate that makes this boundary again instead of restoring it, for when the
     // operator changed a policy that only has something to say while the tool runs.
     rebuild: options.rebuild ?? coordinateFrame?.rebuild ?? null,
-    runId: options.runId ?? null,
+    branchId: options.branchId ?? null,
     callId: options.callId ?? coordinateFrame?.call_id ?? coordinateFrame?.payload?.call_id ?? null,
   };
 }
@@ -145,11 +145,11 @@ export function reduceFrames(frames) {
   const restored = new Map();
   let sequence = 0;
   let openText = null;
-  let currentRunId = null;
+  let currentBranchId = null;
 
   const append = (kind, label, summary, options = {}) => {
     const row = makeRow(sequence, kind, label, summary, {
-      runId: currentRunId,
+      branchId: currentBranchId,
       ...options,
     });
     sequence += 1;
@@ -171,7 +171,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "meta") {
-      currentRunId = frame.run_id ?? currentRunId;
+      currentBranchId = frame.branch_id ?? currentBranchId;
       openText = null;
       continue;
     }

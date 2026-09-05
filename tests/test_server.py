@@ -438,7 +438,7 @@ def test_event_details_overlay_does_not_widen_the_trace_column():
 
 def test_steer_unknown_run_is_404():
     with TestClient(app) as c:
-        r = c.post("/api/steer", json={"run_id": "run-missing", "text": "기록하라"})
+        r = c.post("/api/steer", json={"branch_id": "run-missing", "text": "기록하라"})
         assert r.status_code == 404
 
 def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
@@ -453,12 +453,12 @@ def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
     }
     try:
         with TestClient(app) as c:
-            waiting = c.post("/api/steer", json={"run_id": "run-steer", "text": "기록하라"})
+            waiting = c.post("/api/steer", json={"branch_id": "run-steer", "text": "기록하라"})
             assert waiting.status_code == 200, waiting.text
             assert waiting.json()["admits"] == "on_resume"
 
             server._sessions["run-steer"]["terminal"] = True
-            done = c.post("/api/steer", json={"run_id": "run-steer", "text": "기록하라"})
+            done = c.post("/api/steer", json={"branch_id": "run-steer", "text": "기록하라"})
             assert done.status_code == 409
     finally:
         server._sessions.pop("run-steer", None)
@@ -476,14 +476,14 @@ def test_crash_with_approval_is_the_pre_park_seam():
 
 def test_recover_unknown_run_is_404():
     with TestClient(app) as c:
-        r = c.post("/api/recover", json={"run_id": "run-missing"})
+        r = c.post("/api/recover", json={"branch_id": "run-missing"})
     assert r.status_code == 404
 
 def test_fork_rejects_unknown_source():
     with TestClient(app) as client:
         response = client.post(
             "/api/fork",
-            json={"run_id": "missing", "event_id": "event-missing", "units": []},
+            json={"branch_id": "missing", "event_id": "event-missing", "units": []},
         )
     assert response.status_code == 404
 
@@ -500,17 +500,17 @@ def test_fork_rejects_inflight_source():
     server._sessions.update(cases)
     try:
         with TestClient(app) as client:
-            for run_id in cases:
+            for branch_id in cases:
                 before = set(server._sessions)
                 response = client.post(
                     "/api/fork",
-                    json={"run_id": run_id, "event_id": "event-selected", "units": []},
+                    json={"branch_id": branch_id, "event_id": "event-selected", "units": []},
                 )
                 assert response.status_code == 409
                 assert set(server._sessions) == before
     finally:
-        for run_id in cases:
-            server._sessions.pop(run_id, None)
+        for branch_id in cases:
+            server._sessions.pop(branch_id, None)
 
 def test_fork_rejects_an_event_owned_by_another_version():
     source_id = "run-owner-source"
@@ -530,7 +530,7 @@ def test_fork_rejects_an_event_owned_by_another_version():
         with TestClient(app) as client:
             response = client.post(
                 "/api/fork",
-                json={"run_id": source_id, "event_id": "event-sibling", "units": []},
+                json={"branch_id": source_id, "event_id": "event-sibling", "units": []},
             )
         assert response.status_code == 404
         assert "does not belong" in response.json()["detail"]
@@ -555,7 +555,7 @@ def test_fork_rejects_an_observation_only_event():
         with TestClient(app) as client:
             response = client.post(
                 "/api/fork",
-                json={"run_id": source_id, "event_id": "event-tool", "units": []},
+                json={"branch_id": source_id, "event_id": "event-tool", "units": []},
             )
         assert response.status_code == 409
         assert "not an exact restore point" in response.json()["detail"]
@@ -581,7 +581,7 @@ def test_fork_rejects_the_wrong_edge_for_an_exact_restore_point():
             response = client.post(
                 "/api/fork",
                 json={
-                    "run_id": source_id,
+                    "branch_id": source_id,
                     "event_id": "event-input",
                     "edge": "after",
                     "units": [],
@@ -594,7 +594,7 @@ def test_fork_rejects_the_wrong_edge_for_an_exact_restore_point():
 
 def test_abort_unknown_run_is_404():
     with TestClient(app) as c:
-        r = c.post("/api/abort", json={"run_id": "run-missing"})
+        r = c.post("/api/abort", json={"branch_id": "run-missing"})
         assert r.status_code == 404
 
 def test_abort_flags_existing_session():
@@ -604,7 +604,7 @@ def test_abort_flags_existing_session():
     }
     try:
         with TestClient(app) as c:
-            r = c.post("/api/abort", json={"run_id": "run-test"})
+            r = c.post("/api/abort", json={"branch_id": "run-test"})
         assert r.status_code == 200 and r.json()["ok"] is True
         assert _is_aborted("run-test") is True
     finally:
@@ -613,7 +613,7 @@ def test_abort_flags_existing_session():
 def test_a_run_nobody_kept_is_not_offered_back():
     """A wiped ledger has to say so, or the console restores a run that does not exist."""
     with TestClient(app) as client:
-        assert client.get("/api/runs/run-nothing-here/frames").status_code == 404
+        assert client.get("/api/branches/run-nothing-here/frames").status_code == 404
 
 def test_units_carry_the_framework_rerun_table():
     """The page learns which control points a branch re-runs from the framework, not from a

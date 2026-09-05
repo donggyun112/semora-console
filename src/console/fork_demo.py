@@ -35,7 +35,7 @@ RERUNS = {
 
 @dataclass(frozen=True)
 class Coordinate:
-    from_run_id: str
+    from_branch_id: str
     history: list[dict[str, Any]]
     boundary: str
     call_id: str | None = None
@@ -62,10 +62,10 @@ async def read_event_checkpoint(transcript, conversation_id, event_id):
 
 class EventCheckpointProjector:
     def __init__(
-        self, transcript, *, run_id, conversation_id, origin_runs, default_origin_id
+        self, transcript, *, branch_id, conversation_id, origin_runs, default_origin_id
     ):
         self.transcript = transcript
-        self.run_id = run_id
+        self.branch_id = branch_id
         self.conversation_id = conversation_id
         self.origin_id = default_origin_id
         self.scope = uuid.uuid4().hex
@@ -106,12 +106,12 @@ class EventCheckpointProjector:
                 point = entry.get("coordinate") or {}
                 if (
                     entry.get("type") == "console_checkpoint"
-                    and point.get("from_run_id") == self.run_id
+                    and point.get("from_branch_id") == self.branch_id
                     and point.get("boundary") == "tool"
                 ):
                     call_id = point["call_id"]
                     self.gates.setdefault(call_id, []).append(
-                        (entry["event_id"], f"{self.run_id}:tool:{call_id}")
+                        (entry["event_id"], f"{self.branch_id}:tool:{call_id}")
                     )
         frame = copy.deepcopy(frame)
         payload = frame.get("payload") or {}
@@ -137,7 +137,7 @@ class EventCheckpointProjector:
             ModelMessagesTypeAdapter.validate_python(coordinate["history"])
         ):
             resumes = "pre_tool_use"
-        seam = f"{self.run_id}:{boundary}:{call_id or event_id}" if boundary else None
+        seam = f"{self.branch_id}:{boundary}:{call_id or event_id}" if boundary else None
         if coordinate:
             await self.transcript.append(
                 marker_entry(
@@ -190,7 +190,7 @@ class EventCheckpointProjector:
         }
 
 
-def branch_snapshot(branch, run_id, conversation_id, origin_id, messages):
+def branch_snapshot(branch, branch_id, conversation_id, origin_id, messages):
     shown = []
     for index, message in enumerate(messages):
         content = "".join(
@@ -201,7 +201,7 @@ def branch_snapshot(branch, run_id, conversation_id, origin_id, messages):
         if content:
             shown.append(
                 {
-                    "id": f"{run_id}:{index}",
+                    "id": f"{branch_id}:{index}",
                     "role": "assistant"
                     if isinstance(message, ModelResponse)
                     else "user",
@@ -210,7 +210,7 @@ def branch_snapshot(branch, run_id, conversation_id, origin_id, messages):
             )
     return {
         "branch": branch,
-        "run_id": run_id,
+        "branch_id": branch_id,
         "conversation_id": conversation_id,
         "origin_id": origin_id,
         "active": True,
@@ -257,7 +257,7 @@ async def run_from_event(
     *,
     event_id,
     edge,
-    run_id,
+    branch_id,
     conversation_id,
     agent,
     controls,
@@ -280,7 +280,7 @@ async def run_from_event(
                 history.pop()
         prompt = coordinate.prompt
     # Both ends of the fork are branches of the same conversation.
-    branch = ExecutionContext(branch_id=run_id, conversation_id=conversation_id)
+    branch = ExecutionContext(branch_id=branch_id, conversation_id=conversation_id)
     observed = ObservedControls(
         runtime,
         branch,
@@ -293,7 +293,7 @@ async def run_from_event(
     # and carries an unreported one over as doubt. Without rejournal the branch's gate is asked
     # about each copied effect first; with it, only the journal sees them.
     result = await runtime.engine.fork(
-        ExecutionContext(branch_id=coordinate.from_run_id, conversation_id=conversation_id),
+        ExecutionContext(branch_id=coordinate.from_branch_id, conversation_id=conversation_id),
         None,
         branch,
         agent,
@@ -308,7 +308,7 @@ async def run_from_event(
         "branch_snapshot",
         **branch_snapshot(
             "fork",
-            run_id,
+            branch_id,
             conversation_id,
             coordinate.origin_id or event_id,
             result.all_messages(),

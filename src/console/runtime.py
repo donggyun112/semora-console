@@ -35,8 +35,7 @@ class ObservedControls:
             if isinstance(execution, ExecutionContext)
             else ExecutionContext(branch_id=execution)
         )
-        # The console's run id is semora's branch id.
-        self.run_id = self.execution.branch_id
+        self.branch_id = self.execution.branch_id
         # The ledger as semora writes it for this branch: its conversation's view. Reading the
         # bare store would miss every record the branch made.
         self.store = runtime.store.for_execution(self.execution)
@@ -86,7 +85,7 @@ class ObservedControls:
                 ctx = Ctx(turn=0, messages=history)
                 await self._announce(ctx, call)
                 record = await self.store.read(
-                    self.run_id, f"tool:{part.tool_call_id}"
+                    self.branch_id, f"tool:{part.tool_call_id}"
                 )
                 executed = record.status == "done"
                 result = copy.deepcopy(part.content)
@@ -128,7 +127,7 @@ class ObservedControls:
             history.append(ModelRequest(additions))
         return {
             "history": to_jsonable_python(history),
-            "from_run_id": self.run_id,
+            "from_branch_id": self.branch_id,
             **extra,
         }
 
@@ -224,7 +223,7 @@ class ObservedControls:
 
     async def pre_tool_use(self, ctx, call):
         if (
-            await self.store.read(self.run_id, f"tool:{call.tool_call_id}")
+            await self.store.read(self.branch_id, f"tool:{call.tool_call_id}")
         ).status == "done":
             self.replayed.add(call.tool_call_id)
         await self._announce(ctx, call)
@@ -321,7 +320,7 @@ class ConsoleRuntime:
 
     async def dispatch(
         self,
-        run_id,
+        branch_id,
         agent,
         command,
         *,
@@ -332,14 +331,14 @@ class ConsoleRuntime:
     ):
         observed = ObservedControls(
             self,
-            run_id,
+            branch_id,
             controls,
             on_event,
             aborted=aborted,
             prompt_id=getattr(command, "prompt_id", None),
         )
         outcome = await self.engine.dispatch(
-            run_id, agent, command, controls=observed, **options
+            branch_id, agent, command, controls=observed, **options
         )
         await observed.project_missing(outcome)
         return {
@@ -348,8 +347,8 @@ class ConsoleRuntime:
             "output": outcome.output,
         }
 
-    async def committed_history(self, run_id, conversation_id):
-        return await self.engine.committed_history(run_id, conversation_id)
+    async def committed_history(self, branch_id, conversation_id):
+        return await self.engine.committed_history(branch_id, conversation_id)
 
-    async def submit(self, run_id, item, **options):
-        return await self.engine.submit(run_id, item)
+    async def submit(self, branch_id, item, **options):
+        return await self.engine.submit(branch_id, item)

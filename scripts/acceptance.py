@@ -47,8 +47,8 @@ def units(fs, verdict=None):
     return [f for f in fs if f["kind"] == "unit" and (verdict is None or f["verdict"] == verdict)]
 
 
-def run_id(fs):
-    return next(f["run_id"] for f in fs if f["kind"] == "meta")
+def branch_id(fs):
+    return next(f["branch_id"] for f in fs if f["kind"] == "meta")
 
 
 def pending(fs):
@@ -89,7 +89,7 @@ def c_parallel_crash_recover():
     fs = stream("/api/run", {"scenario_id": "parallel_crash", "units": []})
     if not any(f["kind"] == "recoverable" for f in fs):
         return False, f"no recoverable frame: calls={tool_calls(fs)}"
-    fs2 = stream("/api/recover", {"run_id": run_id(fs)})
+    fs2 = stream("/api/recover", {"branch_id": branch_id(fs)})
     charged = [r for r in results(fs2) if "charged" in str(r.get("text", ""))]
     counts = [r.get("execution_count") for r in charged]
     return len(charged) == 3 and counts == [1, 1, 1], f"exec={counts}"
@@ -100,7 +100,7 @@ def c_approval_resume():
     pend = pending(fs)
     if not pend:
         return False, "no suspend"
-    fs2 = stream("/api/resume", {"run_id": run_id(fs), "pending_id": pend, "approved": True})
+    fs2 = stream("/api/resume", {"branch_id": branch_id(fs), "pending_id": pend, "approved": True})
     charged = [r for r in results(fs2) if "charged" in str(r.get("text", ""))]
     return (bool(charged) and charged[0].get("execution_count") == 1), f"exec={charged[:1]}"
 
@@ -183,7 +183,7 @@ def c_fork():
     forked = stream(
         "/api/fork",
         {
-            "run_id": source_meta["run_id"],
+            "branch_id": source_meta["branch_id"],
             "event_id": event_id,
             "edge": "before",
             "units": [],
@@ -208,14 +208,14 @@ def c_rejournal():
     pend = pending(fs)
     if not pend:
         return False, "no suspend"
-    fs2 = stream("/api/resume", {"run_id": run_id(fs), "pending_id": pend, "approved": True, "units": on})
+    fs2 = stream("/api/resume", {"branch_id": branch_id(fs), "pending_id": pend, "approved": True, "units": on})
     masked = any(r.get("redacted_by") == "pii_mask" for r in results(fs2))
     rebuild = next((f["rebuild"] for f in reversed(fs2) if f.get("rebuild")), None)
     if not rebuild or not rebuild.get("rejournal_at"):
         return False, f"no rejournal coordinate: masked={masked}, rebuild={rebuild}"
     fs3 = stream(
         "/api/fork",
-        {"run_id": run_id(fs), "event_id": rebuild["event_id"], "edge": rebuild["edge"],
+        {"branch_id": branch_id(fs), "event_id": rebuild["event_id"], "edge": rebuild["edge"],
          "units": ["approval"], "rejournal": True},
     )
     asked_again = any(f["kind"] == "suspended" for f in fs3)

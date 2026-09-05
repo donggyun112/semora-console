@@ -35,9 +35,9 @@ class SimulatedWorkerCrash(ControlSignal):
     result and the run would never look interrupted at all.
     """
 
-    def __init__(self, run_id: str, step: str) -> None:
+    def __init__(self, branch_id: str, step: str) -> None:
         super().__init__(f"워커 장애 {step}")
-        self.run_id = run_id
+        self.branch_id = branch_id
         self.step = step
 
 
@@ -68,9 +68,9 @@ class FaultInjectingSteps:
         del self._armed[watched_id]
         return True
 
-    def consume_gate(self, run_id: str) -> bool:
+    def consume_gate(self, branch_id: str) -> bool:
         """True once: crash at ``pre_tool_use`` before any park is written."""
-        return self._fires(run_id, "gate")
+        return self._fires(branch_id, "gate")
 
     def for_execution(self, context: Any) -> FaultInjectingSteps:
         """Keep the crash hook when the runtime scopes the ledger.
@@ -85,29 +85,29 @@ class FaultInjectingSteps:
         child._armed = self._armed
         return child
 
-    async def finish_effect(self, run_id: str, key: str, value: Any, token: int = 0) -> None:
+    async def finish_effect(self, branch_id: str, key: str, value: Any, token: int = 0) -> None:
         step = str(key)
         if step.startswith(_BOOKKEEPING):
-            await self._inner.finish_effect(run_id, key, value, token)
+            await self._inner.finish_effect(branch_id, key, value, token)
             return
         # Before delegating: the charge left and its record never lands.
-        if step.startswith("charge:") and self._fires(run_id, "effect"):
-            raise SimulatedWorkerCrash(run_id, step)
-        await self._inner.finish_effect(run_id, key, value, token)
+        if step.startswith("charge:") and self._fires(branch_id, "effect"):
+            raise SimulatedWorkerCrash(branch_id, step)
+        await self._inner.finish_effect(branch_id, key, value, token)
         # After delegating: the effect is recorded, and recovery has nothing to decide.
-        if self._fires(run_id, "commit"):
-            raise SimulatedWorkerCrash(run_id, step)
+        if self._fires(branch_id, "commit"):
+            raise SimulatedWorkerCrash(branch_id, step)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
 
-def crash_before_approval(run_id: str, store: FaultInjectingSteps):
+def crash_before_approval(branch_id: str, store: FaultInjectingSteps):
     """``pre_tool_use`` stage: die after the tool_call event, before Suspend parks."""
 
     async def stage(_ctx: Any, call: Any) -> Any:
-        if store.consume_gate(run_id):
-            raise SimulatedWorkerCrash(run_id, call.tool_call_id)
+        if store.consume_gate(branch_id):
+            raise SimulatedWorkerCrash(branch_id, call.tool_call_id)
         return Continue()
 
     return stage

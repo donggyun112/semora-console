@@ -15,11 +15,11 @@ from console.session import session_step
 from console.tools import INJECT_NOTE, DemoTools
 
 
-def session_on(log: MemorySteps, run_id: str = "session:test"):
+def session_on(log: MemorySteps, branch_id: str = "session:test"):
     """A session step handle: one attempt per effect, as the console builds it."""
 
     async def run(step, fn):
-        return await session_step(log, run_id)(step, fn)
+        return await session_step(log, branch_id)(step, fn)
 
     return run
 

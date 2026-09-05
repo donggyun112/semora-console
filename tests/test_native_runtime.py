@@ -67,7 +67,7 @@ def test_native_run_emits_result_and_keeps_frames(monkeypatch):
         rows = start(client)
         assert get(rows, "outcome")["outcome"]["stop_reason"] == "completed"
         assert results(rows)[0]["result"]["execution_count"] == 1
-        stored = client.get(f"/api/runs/{get(rows, 'meta')['run_id']}/frames").json()
+        stored = client.get(f"/api/branches/{get(rows, 'meta')['branch_id']}/frames").json()
         assert stored["frames"] == rows
 
 
@@ -82,7 +82,7 @@ def test_a_tool_record_lives_in_the_conversation_ledger(monkeypatch):
         rows = start(client)
         meta = get(rows, "meta")
         assert results(rows)[0]["result"]["execution"]["replayed"] is False
-    branch, conversation = meta["run_id"], meta["conversation_id"]
+    branch, conversation = meta["branch_id"], meta["conversation_id"]
     inside = server._store.for_execution(
         ExecutionContext(branch_id=branch, conversation_id=conversation)
     )
@@ -106,20 +106,20 @@ def test_approval_survives_process_cache_loss(monkeypatch):
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:
         initial = start(client, units=["approval"])
-        run_id = get(initial, "meta")["run_id"]
+        branch_id = get(initial, "meta")["branch_id"]
         pending = get(initial, "suspended")["pending_id"]
         server._sessions.clear()
         resumed = frames(
             client.post(
                 "/api/resume",
-                json={"run_id": run_id, "pending_id": pending, "approved": True},
+                json={"branch_id": branch_id, "pending_id": pending, "approved": True},
             )
         )
         assert get(resumed, "outcome")["outcome"]["stop_reason"] == "completed"
         assert len(results(resumed)) == 1
         assert results(resumed)[0]["result"]["execution_count"] == 1
         assert (
-            client.get(f"/api/runs/{run_id}/frames").json()["frames"]
+            client.get(f"/api/branches/{branch_id}/frames").json()["frames"]
             == initial + resumed
         )
 
@@ -132,7 +132,7 @@ def test_approval_may_replace_the_arguments(monkeypatch):
             client.post(
                 "/api/resume",
                 json={
-                    "run_id": get(initial, "meta")["run_id"],
+                    "branch_id": get(initial, "meta")["branch_id"],
                     "pending_id": get(initial, "suspended")["pending_id"],
                     "approved": True,
                     "args": {"customer_id": "c-001", "amount": "5"},
@@ -162,7 +162,7 @@ def test_approval_revalidates_current_policy(monkeypatch):
             client.post(
                 "/api/resume",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "pending_id": get(rows, "suspended")["pending_id"],
                     "approved": True,
                     "units": ["approval", "dlp_block"],
@@ -182,7 +182,7 @@ def test_human_denial_does_not_execute(monkeypatch):
             client.post(
                 "/api/resume",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "pending_id": get(rows, "suspended")["pending_id"],
                     "approved": False,
                 },
@@ -200,7 +200,7 @@ def test_crash_recovers_recorded_round(monkeypatch, scenario, units):
         rows = start(client, scenario, units)
         get(rows, "recoverable")
         recovered = frames(
-            client.post("/api/recover", json={"run_id": get(rows, "meta")["run_id"]})
+            client.post("/api/recover", json={"branch_id": get(rows, "meta")["branch_id"]})
         )
         get(recovered, "suspended" if units else "outcome")
         if not units:
@@ -213,7 +213,7 @@ def test_unknown_effect_is_never_retried(monkeypatch):
         rows = start(client, "unknown_effect")
         get(rows, "recoverable")
         recovered = frames(
-            client.post("/api/recover", json={"run_id": get(rows, "meta")["run_id"]})
+            client.post("/api/recover", json={"branch_id": get(rows, "meta")["branch_id"]})
         )
         get(recovered, "indeterminate")
         assert not results(recovered)
@@ -229,13 +229,13 @@ def test_parallel_batch_approval_waits_for_every_answer(monkeypatch):
     )
     with TestClient(server.app) as client:
         rows = start(client, "parallel", ["approval"])
-        run_id = get(rows, "meta")["run_id"]
+        branch_id = get(rows, "meta")["branch_id"]
         for index in range(3):
             pending = get(rows, "suspended")["pending_id"]
             rows = frames(
                 client.post(
                     "/api/resume",
-                    json={"run_id": run_id, "pending_id": pending, "approved": True},
+                    json={"branch_id": branch_id, "pending_id": pending, "approved": True},
                 )
             )
             if index < 2:
@@ -253,7 +253,7 @@ def test_tool_fork_rejournals_raw_result_without_reexecution(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": gate["event_id"],
                     "edge": "before",
                     "units": [],
@@ -292,7 +292,7 @@ def test_every_entry_hands_semora_the_conversation(monkeypatch):
             client.post(
                 "/api/resume",
                 json={
-                    "run_id": meta["run_id"],
+                    "branch_id": meta["branch_id"],
                     "pending_id": get(rows, "suspended")["pending_id"],
                     "approved": True,
                 },
@@ -307,7 +307,7 @@ def test_every_entry_hands_semora_the_conversation(monkeypatch):
         forked = frames(
             client.post(
                 "/api/fork",
-                json={"run_id": get(rows, "meta")["run_id"], "event_id": gate["event_id"], "edge": "before", "units": []},
+                json={"branch_id": get(rows, "meta")["branch_id"], "event_id": gate["event_id"], "edge": "before", "units": []},
             )
         )
         source_conversation = get(rows, "meta")["conversation_id"]
@@ -331,7 +331,7 @@ def test_fork_changed_gate_revalidates_recorded_effect(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": gate["event_id"],
                     "edge": "before",
                     "units": ["approval"],
@@ -350,7 +350,7 @@ def test_after_result_fork_skips_effect(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": point["event_id"],
                     "edge": "after",
                     "units": [],
@@ -370,7 +370,7 @@ def test_input_fork_reapplies_ingress(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": point["event_id"],
                     "edge": "before",
                     "units": ["pii_mask"],
@@ -393,7 +393,7 @@ def test_parallel_crash_finishes_each_call_once(monkeypatch):
         rows = start(client, "parallel_crash")
         get(rows, "recoverable")
         recovered = frames(
-            client.post("/api/recover", json={"run_id": get(rows, "meta")["run_id"]})
+            client.post("/api/recover", json={"branch_id": get(rows, "meta")["branch_id"]})
         )
         assert len(results(recovered)) == 3
         assert all(
@@ -416,7 +416,7 @@ def test_parallel_result_coordinate_finishes_remaining_recorded_calls(monkeypatc
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": point["event_id"],
                     "edge": "after",
                     "units": [],
@@ -431,7 +431,7 @@ def test_completed_child_can_fork_again_with_same_payment_intent(monkeypatch):
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:
         rows = start(client)
-        source = get(rows, "meta")["run_id"]
+        source = get(rows, "meta")["branch_id"]
         origin = server._sessions[source]["origin_id"]
         for _ in range(2):
             point = next(row for row in rows if row.get("type") == "pre_tool_use")
@@ -439,14 +439,14 @@ def test_completed_child_can_fork_again_with_same_payment_intent(monkeypatch):
                 client.post(
                     "/api/fork",
                     json={
-                        "run_id": get(rows, "meta")["run_id"],
+                        "branch_id": get(rows, "meta")["branch_id"],
                         "event_id": point["event_id"],
                         "edge": "before",
                         "units": [],
                     },
                 )
             )
-            assert server._sessions[get(rows, "meta")["run_id"]]["origin_id"] == origin
+            assert server._sessions[get(rows, "meta")["branch_id"]]["origin_id"] == origin
             assert results(rows)[0]["result"]["execution_count"] == 1
 
 
@@ -464,7 +464,7 @@ def test_mixed_batch_fork_preserves_tool_return_names(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": gate["event_id"],
                     "edge": "before",
                     "units": [],
@@ -472,7 +472,7 @@ def test_mixed_batch_fork_preserves_tool_return_names(monkeypatch):
             )
         )
         assert [event["name"] for event in results(forked)] == ["charge_card"]
-        child = server._sessions[get(forked, "meta")["run_id"]]
+        child = server._sessions[get(forked, "meta")["branch_id"]]
         checkpoint = client.portal.call(
             read_event_checkpoint,
             server._transcript,
@@ -506,7 +506,7 @@ def test_denied_gate_can_be_forked_under_new_policy(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": gate["event_id"],
                     "edge": "before",
                     "units": [],
@@ -520,16 +520,16 @@ def test_steer_while_parked_preserves_the_approval(monkeypatch):
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:
         rows = start(client, units=["approval"])
-        run_id = get(rows, "meta")["run_id"]
+        branch_id = get(rows, "meta")["branch_id"]
         response = client.post(
-            "/api/steer", json={"run_id": run_id, "text": "기록도 남겨주세요"}
+            "/api/steer", json={"branch_id": branch_id, "text": "기록도 남겨주세요"}
         )
         assert response.json()["admits"] == "on_resume"
         resumed = frames(
             client.post(
                 "/api/resume",
                 json={
-                    "run_id": run_id,
+                    "branch_id": branch_id,
                     "pending_id": get(rows, "suspended")["pending_id"],
                     "approved": True,
                 },
@@ -613,7 +613,7 @@ def test_input_fork_can_reuse_call_id_for_a_different_tool(monkeypatch):
             client.post(
                 "/api/fork",
                 json={
-                    "run_id": get(rows, "meta")["run_id"],
+                    "branch_id": get(rows, "meta")["branch_id"],
                     "event_id": point["event_id"],
                     "edge": "before",
                     "units": [],
@@ -645,9 +645,9 @@ async def test_abort_cancels_native_model_and_discards_queued_steer(monkeypatch)
 
         consumer = asyncio.create_task(consume())
         await asyncio.wait_for(entered.wait(), 2)
-        run_id = next(iter(server._sessions))
-        await server.steer(server.SteerRequest(run_id=run_id, text="queued note"))
-        result = await server.abort(server.AbortRequest(run_id=run_id))
+        branch_id = next(iter(server._sessions))
+        await server.steer(server.SteerRequest(branch_id=branch_id, text="queued note"))
+        result = await server.abort(server.AbortRequest(branch_id=branch_id))
         assert result["dropped"] == 1
         await asyncio.wait_for(consumer, 2)
         assert get(rows, "outcome")["outcome"]["stop_reason"] == "aborted"

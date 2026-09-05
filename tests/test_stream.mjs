@@ -29,7 +29,7 @@ import {
 import {
   DEFAULT_DRAFT,
   acceptsStreamEnd,
-  attachRunId,
+  attachBranchId,
   beginFork,
   beginContinuation,
   canEditDraft,
@@ -323,40 +323,40 @@ assert.equal(rawChat.redactedBy, undefined);
 assert.deepEqual(rawChat.badges, []);
 
 const maskingForkFrames = [
-  { kind: "meta", run_id: "mask-v1", units: ["pii_mask"] },
+  { kind: "meta", branch_id: "mask-v1", units: ["pii_mask"] },
   {
-    kind: "agent", run_id: "mask-v1", event_id: "mask-call",
+    kind: "agent", branch_id: "mask-v1", event_id: "mask-call",
     event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
   },
   {
-    kind: "agent", run_id: "mask-v1", event_id: "mask-result",
+    kind: "agent", branch_id: "mask-v1", event_id: "mask-result",
     event: {
       type: "tool_result", id: "read-1", name: "read_customer",
       executed: true, result: maskedCustomer,
     },
   },
   {
-    kind: "lifecycle", run_id: "mask-v1", type: "branch_snapshot",
+    kind: "lifecycle", branch_id: "mask-v1", type: "branch_snapshot",
     payload: {
       branch: "source",
-      run_id: "mask-v1",
+      branch_id: "mask-v1",
       messages: [{ role: "user", content: "조회해줘." }],
     },
   },
   {
-    kind: "meta", run_id: "mask-v2", units: [],
+    kind: "meta", branch_id: "mask-v2", units: [],
     fork_parent: "mask-v1", fork_event_id: "mask-call", fork_edge: "before",
   },
   {
-    kind: "lifecycle", run_id: "mask-v2", type: "branch_snapshot",
+    kind: "lifecycle", branch_id: "mask-v2", type: "branch_snapshot",
     payload: {
       branch: "fork",
-      run_id: "mask-v2",
+      branch_id: "mask-v2",
       messages: [{ role: "user", content: "조회해줘." }],
     },
   },
   {
-    kind: "agent", run_id: "mask-v2", event_id: "plain-result",
+    kind: "agent", branch_id: "mask-v2", event_id: "plain-result",
     event: {
       type: "tool_result", id: "read-1", name: "read_customer",
       executed: true, result: rawCustomer,
@@ -487,7 +487,7 @@ assert.deepEqual(idle, {
   phase: "idle",
   draft: { scenarioId: "leak", unitNames: ["approval", "dlp_block"] },
   active: null,
-  runId: null,
+  branchId: null,
   pendingId: null,
   continuationBusy: false,
   stopReason: null,
@@ -507,7 +507,7 @@ const edited = updateDraft(idle, { scenarioId: "baseline", unitNames: [] });
 assert.equal(idle.draft.scenarioId, "leak");
 assert.deepEqual(edited.draft, { scenarioId: "baseline", unitNames: [] });
 
-const streaming = attachRunId(startRun(idle), "run-1");
+const streaming = attachBranchId(startRun(idle), "run-1");
 assert.deepEqual(streaming.active, {
   scenarioId: "leak",
   unitNames: ["approval", "dlp_block"],
@@ -527,7 +527,7 @@ assert.equal(acceptsStreamEnd(suspended), true);
 const resuming = beginContinuation(suspended);
 assert.equal(resuming.phase, "streaming");
 assert.equal(resuming.continuationBusy, true);
-assert.equal(resuming.runId, "run-1");
+assert.equal(resuming.branchId, "run-1");
 assert.equal(resuming.pendingId, "pending-1");
 assert.throws(() => beginContinuation(resuming), /continuation already active/);
 
@@ -542,7 +542,7 @@ for (const parked of [recoverable, suspendRun(streaming, "p-1"), finishRun(strea
   const again = replayStream(parked, ["approval"]);
   assert.equal(again.phase, "streaming", `a replayed stream begins from ${parked.phase}`);
   assert.deepEqual(again.active.unitNames, ["approval"], "with the units that stream ran under");
-  assert.equal(attachRunId(again, "run-x").runId, "run-x");
+  assert.equal(attachBranchId(again, "run-x").branchId, "run-x");
 }
 assert.throws(() => replayStream(createRunState()), /no active run/);
 
@@ -552,7 +552,7 @@ assert.equal(terminal.stopReason, "completed");
 assert.equal(canStartRun(terminal), true);
 
 const forkSourceTerminal = finishRun(
-  attachRunId(
+  attachBranchId(
     startRun(updateDraft(createRunState(), {
       scenarioId: "fork_masking",
       unitNames: ["pii_mask", "dlp_block"],
@@ -564,7 +564,7 @@ const forkSourceTerminal = finishRun(
 const forking = beginFork(forkSourceTerminal);
 assert.deepEqual(forking.active.unitNames, ["pii_mask", "dlp_block"]);
 assert.equal(forking.phase, "streaming");
-assert.equal(forking.runId, null);
+assert.equal(forking.branchId, null);
 const genericForking = beginFork(terminal);
 assert.deepEqual(genericForking.active.unitNames, ["approval", "dlp_block"]);
 assert.equal(genericForking.phase, "streaming");
@@ -596,7 +596,7 @@ assert.deepEqual(
     forkEdge: "before",
   }),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-03",
     edge: "before",
     units: ["pii_mask", "dlp_block", "approval"],
@@ -611,7 +611,7 @@ assert.deepEqual(
     forkEdge: "after",
   }),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-03",
     edge: "after",
     units: [],
@@ -670,7 +670,7 @@ const postToolRow = {
 assert.deepEqual(
   getEventForkRequest(unmaskedMaskingTerminal, postToolRow, PLAN),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-pre",
     edge: "before",
     units: [],
@@ -683,7 +683,7 @@ const unmaskedOnly = updateDraft(forkSourceTerminal, { unitNames: ["dlp_block"] 
 assert.deepEqual(
   getEventForkRequest(unmaskedOnly, postToolRow, PLAN),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-pre",
     edge: "before",
     units: ["dlp_block"],
@@ -695,7 +695,7 @@ assert.deepEqual(
 assert.deepEqual(
   getEventForkRequest(forkSourceTerminal, postToolRow, PLAN),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-post",
     edge: "after",
     units: ["pii_mask", "dlp_block"],
@@ -755,7 +755,7 @@ assert.deepEqual(
     forkEdge: "after",
   }),
   {
-    run_id: "run-b",
+    branch_id: "run-b",
     event_id: "event-post",
     edge: "after",
     units: [],
@@ -775,7 +775,7 @@ assert.deepEqual(
     forkEdge: "before",
   }),
   {
-    run_id: "run-1",
+    branch_id: "run-1",
     event_id: "event-generic",
     edge: "before",
     units: ["rate_cap"],
@@ -784,18 +784,18 @@ assert.deepEqual(
   "completed runs expose event forks for every scenario",
 );
 const secondVersion = finishRun(
-  attachRunId(beginFork(editedGenericTerminal), "run-2"),
+  attachBranchId(beginFork(editedGenericTerminal), "run-2"),
   "completed",
 );
 assert.deepEqual(
   getEventForkRequest(secondVersion, {
     eventId: "event-from-v1",
-    runId: "run-1",
+    branchId: "run-1",
     forkable: true,
     forkEdge: "before",
   }, true),
   {
-    run_id: "run-1",
+    branch_id: "run-1",
     event_id: "event-from-v1",
     edge: "before",
     units: ["rate_cap"],
@@ -807,21 +807,21 @@ assert.deepEqual(
 assert.deepEqual(
   deriveBranchView([
     { kind: "lifecycle", type: "branch_snapshot", payload: {
-      branch: "source", run_id: "run-b", active: true,
+      branch: "source", branch_id: "run-b", active: true,
       messages: [{ role: "user", content: "ssn is ***" }],
     } },
     { kind: "lifecycle", type: "branch_snapshot", payload: {
-      branch: "fork", run_id: "run-c", active: true,
+      branch: "fork", branch_id: "run-c", active: true,
       messages: [{ role: "user", content: "ssn is 123-45" }],
     } },
   ]),
   [
     {
-      branch: "source", runId: "run-b", active: false,
+      branch: "source", branchId: "run-b", active: false,
       messages: [{ role: "user", content: "ssn is ***" }],
     },
     {
-      branch: "fork", runId: "run-c", active: true,
+      branch: "fork", branchId: "run-c", active: true,
       messages: [{ role: "user", content: "ssn is 123-45" }],
     },
   ],
@@ -890,7 +890,7 @@ const blockedInput = {
   body: "secret",
 };
 const traceFrames = [
-  { kind: "meta", run_id: "run-1" },
+  { kind: "meta", branch_id: "run-1" },
   {
     kind: "lifecycle",
     type: "pre_tool_use",
@@ -1096,38 +1096,38 @@ assert.deepEqual(
 );
 
 const branchedRows = reduceFrames([
-  { kind: "meta", run_id: "run-source" },
+  { kind: "meta", branch_id: "run-source" },
   { kind: "lifecycle", type: "session_start", event_id: "source-event", payload: {} },
-  { kind: "meta", run_id: "run-fork" },
+  { kind: "meta", branch_id: "run-fork" },
   { kind: "lifecycle", type: "session_start", event_id: "fork-event", payload: {} },
 ]);
 assert.deepEqual(
-  branchedRows.map(({ eventId, runId }) => ({ eventId, runId })),
+  branchedRows.map(({ eventId, branchId }) => ({ eventId, branchId })),
   [
-    { eventId: "source-event", runId: "run-source" },
-    { eventId: "fork-event", runId: "run-fork" },
+    { eventId: "source-event", branchId: "run-source" },
+    { eventId: "fork-event", branchId: "run-fork" },
   ],
   "trace rows retain the run boundary needed to separate source and fork branches",
 );
 
 const versionFrames = [
-  { kind: "meta", run_id: "run-source" },
-  { kind: "lifecycle", type: "session_start", run_id: "run-source" },
-  { kind: "meta", run_id: "run-fork" },
-  { kind: "lifecycle", type: "session_start", run_id: "run-fork" },
+  { kind: "meta", branch_id: "run-source" },
+  { kind: "lifecycle", type: "session_start", branch_id: "run-source" },
+  { kind: "meta", branch_id: "run-fork" },
+  { kind: "lifecycle", type: "session_start", branch_id: "run-fork" },
 ];
 assert.deepEqual(deriveRunVersions(versionFrames), [
-  { runId: "run-source", number: 1, label: "v1 · 원본" },
-  { runId: "run-fork", number: 2, label: "v2 · 분기" },
+  { branchId: "run-source", number: 1, label: "v1 · 원본" },
+  { branchId: "run-fork", number: 2, label: "v2 · 분기" },
 ]);
 assert.deepEqual(
   deriveRunVersions([
-    { kind: "meta", run_id: "run-masked", units: ["pii_mask"] },
-    { kind: "meta", run_id: "run-plain", units: [] },
+    { kind: "meta", branch_id: "run-masked", units: ["pii_mask"] },
+    { kind: "meta", branch_id: "run-plain", units: [] },
   ]),
   [
-    { runId: "run-masked", number: 1, label: "v1 · 원본 · pii_mask" },
-    { runId: "run-plain", number: 2, label: "v2 · 분기 · 정책 없음" },
+    { branchId: "run-masked", number: 1, label: "v1 · 원본 · pii_mask" },
+    { branchId: "run-plain", number: 2, label: "v2 · 분기 · 정책 없음" },
   ],
   "version labels expose the masking policy that produced each run",
 );
@@ -1141,7 +1141,7 @@ assert.equal(
     ...versionFrames.slice(0, 2),
     {
       kind: "outcome",
-      run_id: "run-source",
+      branch_id: "run-source",
       outcome: { stop_reason: "completed" },
     },
   ], "streaming"),
@@ -1154,8 +1154,8 @@ assert.equal(
 for (const kind of ["indeterminate", "fenced", "contended"]) {
   assert.equal(
     deriveVersionPhase([
-      { kind: "meta", run_id: "run-x" },
-      { kind, run_id: "run-x", message: "..." },
+      { kind: "meta", branch_id: "run-x" },
+      { kind, branch_id: "run-x", message: "..." },
     ]),
     "error",
     `${kind} ends the run`,
@@ -1163,49 +1163,49 @@ for (const kind of ["indeterminate", "fenced", "contended"]) {
 }
 
 const versionedTraceFrames = [
-  { kind: "meta", run_id: "run-v1", units: ["dlp_block"] },
+  { kind: "meta", branch_id: "run-v1", units: ["dlp_block"] },
   {
-    kind: "lifecycle", run_id: "run-v1", event_id: "v1-session",
+    kind: "lifecycle", branch_id: "run-v1", event_id: "v1-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "lifecycle", run_id: "run-v1", event_id: "v1-submit",
+    kind: "lifecycle", branch_id: "run-v1", event_id: "v1-submit",
     type: "user_prompt_submit", payload: { kind: "user_prompt" },
   },
   {
-    kind: "lifecycle", run_id: "run-v1", event_id: "v1-context",
+    kind: "lifecycle", branch_id: "run-v1", event_id: "v1-context",
     type: "context_injected", payload: { kind: "user_prompt" },
   },
   {
-    kind: "agent", run_id: "run-v1", event_id: "v1-send",
+    kind: "agent", branch_id: "run-v1", event_id: "v1-send",
     event: { type: "tool_call", id: "send-v1", name: "send_email", input: {} },
   },
   {
-    kind: "unit", run_id: "run-v1", event_id: "v1-deny",
+    kind: "unit", branch_id: "run-v1", event_id: "v1-deny",
     unit: "dlp_block", verdict: "deny", message: "거부",
   },
   {
-    kind: "meta", run_id: "run-v2", units: [],
+    kind: "meta", branch_id: "run-v2", units: [],
     fork_parent: "run-v1", fork_event_id: "v1-send", fork_edge: "before",
   },
   {
-    kind: "lifecycle", run_id: "run-v2", event_id: "v2-session",
+    kind: "lifecycle", branch_id: "run-v2", event_id: "v2-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "lifecycle", run_id: "run-v2", event_id: "v2-submit",
+    kind: "lifecycle", branch_id: "run-v2", event_id: "v2-submit",
     type: "user_prompt_submit", payload: { kind: "user_prompt" },
   },
   {
-    kind: "lifecycle", run_id: "run-v2", event_id: "v2-context",
+    kind: "lifecycle", branch_id: "run-v2", event_id: "v2-context",
     type: "context_injected", payload: { kind: "user_prompt" },
   },
   {
-    kind: "agent", run_id: "run-v2", event_id: "v2-send",
+    kind: "agent", branch_id: "run-v2", event_id: "v2-send",
     event: { type: "tool_call", id: "send-v2", name: "send_email", input: {} },
   },
   {
-    kind: "agent", run_id: "run-v2", event_id: "v2-result",
+    kind: "agent", branch_id: "run-v2", event_id: "v2-result",
     event: { type: "tool_result", id: "send-v2", name: "send_email", executed: true },
   },
 ];
@@ -1228,21 +1228,21 @@ assert.deepEqual(
 );
 
 const restoredToolRows = reduceFrames([
-  { kind: "meta", run_id: "run-tools" },
+  { kind: "meta", branch_id: "run-tools" },
   {
-    kind: "agent", run_id: "run-tools", event_id: "event-request",
+    kind: "agent", branch_id: "run-tools", event_id: "event-request",
     event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
   },
   {
-    kind: "lifecycle", run_id: "run-tools", event_id: "event-pre",
+    kind: "lifecycle", branch_id: "run-tools", event_id: "event-pre",
     type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
   },
   {
-    kind: "lifecycle", run_id: "run-tools", event_id: "event-post",
+    kind: "lifecycle", branch_id: "run-tools", event_id: "event-post",
     type: "post_tool_use", payload: { call_id: "read-1", name: "read_customer" },
   },
   {
-    kind: "agent", run_id: "run-tools", event_id: "event-result",
+    kind: "agent", branch_id: "run-tools", event_id: "event-result",
     event: { type: "tool_result", id: "read-1", name: "read_customer", executed: true },
     restore_updates: [
       { event_id: "event-request", restore_edge: "after", boundary: "tool" },
@@ -1250,7 +1250,7 @@ const restoredToolRows = reduceFrames([
     ],
   },
   {
-    kind: "lifecycle", run_id: "run-tools", event_id: "event-context",
+    kind: "lifecycle", branch_id: "run-tools", event_id: "event-context",
     type: "context_injected", payload: { kind: "tool_result", origin_id: "read-1" },
     forkable: true, restore_edge: "after", boundary: "result",
     restore_updates: [
@@ -1284,33 +1284,33 @@ assert.equal(
 );
 
 const leafVersionFrames = [
-  { kind: "meta", run_id: "leaf-v1" },
+  { kind: "meta", branch_id: "leaf-v1" },
   {
-    kind: "lifecycle", run_id: "leaf-v1", event_id: "leaf-session",
+    kind: "lifecycle", branch_id: "leaf-v1", event_id: "leaf-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "agent", run_id: "leaf-v1", event_id: "leaf-request",
+    kind: "agent", branch_id: "leaf-v1", event_id: "leaf-request",
     event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
   },
   {
-    kind: "lifecycle", run_id: "leaf-v1", event_id: "leaf-pre",
+    kind: "lifecycle", branch_id: "leaf-v1", event_id: "leaf-pre",
     type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
   },
   {
-    kind: "meta", run_id: "leaf-v2", fork_parent: "leaf-v1",
+    kind: "meta", branch_id: "leaf-v2", fork_parent: "leaf-v1",
     fork_event_id: "leaf-pre", fork_edge: "before", fork_mode: "leaf",
   },
   {
-    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-session",
+    kind: "lifecycle", branch_id: "leaf-v2", event_id: "leaf-child-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-pre",
+    kind: "lifecycle", branch_id: "leaf-v2", event_id: "leaf-child-pre",
     type: "pre_tool_use", payload: { call_id: "read-1", name: "read_customer" },
   },
   {
-    kind: "lifecycle", run_id: "leaf-v2", event_id: "leaf-child-post",
+    kind: "lifecycle", branch_id: "leaf-v2", event_id: "leaf-child-post",
     type: "post_tool_use", payload: { call_id: "read-1", name: "read_customer" },
   },
 ];
@@ -1320,9 +1320,9 @@ assert.deepEqual(
   "a leaf continuation keeps the parent prefix and does not trim its shorter child stream",
 );
 
-const chargeCall = (runId, eventId, callId, customerId) => ({
+const chargeCall = (branchId, eventId, callId, customerId) => ({
   kind: "agent",
-  run_id: runId,
+  branch_id: branchId,
   event_id: eventId,
   event: {
     type: "tool_call",
@@ -1331,24 +1331,24 @@ const chargeCall = (runId, eventId, callId, customerId) => ({
     input: { customer_id: customerId, amount: "10" },
   },
 });
-const chargePre = (runId, eventId, callId) => ({
+const chargePre = (branchId, eventId, callId) => ({
   kind: "lifecycle",
-  run_id: runId,
+  branch_id: branchId,
   event_id: eventId,
   type: "pre_tool_use",
   payload: { call_id: callId, name: "charge_card" },
 });
-const chargePost = (runId, eventId, callId) => ({
+const chargePost = (branchId, eventId, callId) => ({
   kind: "lifecycle",
-  run_id: runId,
+  branch_id: branchId,
   event_id: eventId,
   type: "post_tool_use",
   payload: { call_id: callId, name: "charge_card" },
 });
 const replayedSplitFrames = [
-  { kind: "meta", run_id: "pay-v1" },
+  { kind: "meta", branch_id: "pay-v1" },
   {
-    kind: "lifecycle", run_id: "pay-v1", event_id: "pay-session",
+    kind: "lifecycle", branch_id: "pay-v1", event_id: "pay-session",
     type: "session_start", payload: {},
   },
   chargeCall("pay-v1", "pay-v1-c1", "c-001", "c-001"),
@@ -1358,11 +1358,11 @@ const replayedSplitFrames = [
   chargeCall("pay-v1", "pay-v1-c3", "c-003", "c-003"),
   chargePre("pay-v1", "pay-v1-c3-pre", "c-003"),
   {
-    kind: "meta", run_id: "pay-v2", fork_parent: "pay-v1",
+    kind: "meta", branch_id: "pay-v2", fork_parent: "pay-v1",
     fork_event_id: "pay-v1-c2-pre", fork_edge: "before", fork_mode: "leaf",
   },
   {
-    kind: "lifecycle", run_id: "pay-v2", event_id: "pay-v2-session",
+    kind: "lifecycle", branch_id: "pay-v2", event_id: "pay-v2-session",
     type: "session_start", payload: {},
   },
   chargeCall("pay-v2", "pay-v2-c1", "c-001", "c-001"),
@@ -1394,25 +1394,25 @@ assert.deepEqual(
   "forking at event 2 keeps 1 shared and puts 2 and 3 on the branch, dropping the child's replay of 1",
 );
 
-const chargePerm = (runId, eventId, callId) => ({
+const chargePerm = (branchId, eventId, callId) => ({
   kind: "lifecycle",
-  run_id: runId,
+  branch_id: branchId,
   event_id: eventId,
   type: "permission_request",
   payload: { call_id: callId, name: "charge_card" },
 });
 const parallelCrashForkFrames = [
-  { kind: "meta", run_id: "par-v1" },
+  { kind: "meta", branch_id: "par-v1" },
   {
-    kind: "lifecycle", run_id: "par-v1", event_id: "par-session",
+    kind: "lifecycle", branch_id: "par-v1", event_id: "par-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "lifecycle", run_id: "par-v1", event_id: "par-submit",
+    kind: "lifecycle", branch_id: "par-v1", event_id: "par-submit",
     type: "user_prompt_submit", payload: { kind: "user_prompt" },
   },
   {
-    kind: "lifecycle", run_id: "par-v1", event_id: "par-context",
+    kind: "lifecycle", branch_id: "par-v1", event_id: "par-context",
     type: "context_injected", payload: { kind: "user_prompt" },
   },
   chargeCall("par-v1", "par-v1-c1", "c-001", "c-001"),
@@ -1421,17 +1421,17 @@ const parallelCrashForkFrames = [
   chargePre("par-v1", "par-v1-c1-pre", "c-001"),
   chargePre("par-v1", "par-v1-c2-pre", "c-002"),
   {
-    kind: "recoverable", run_id: "par-v1", event_id: "par-crash",
+    kind: "recoverable", branch_id: "par-v1", event_id: "par-crash",
     step: "c-002", message: "워커 장애",
   },
   chargePre("par-v1", "par-v1-c2-pre2", "c-002"),
   chargePre("par-v1", "par-v1-c3-pre", "c-003"),
   {
-    kind: "meta", run_id: "par-v2", fork_parent: "par-v1",
+    kind: "meta", branch_id: "par-v2", fork_parent: "par-v1",
     fork_event_id: "par-v1-c3-pre", fork_edge: "before", fork_mode: "leaf",
   },
   {
-    kind: "lifecycle", run_id: "par-v2", event_id: "par-v2-session",
+    kind: "lifecycle", branch_id: "par-v2", event_id: "par-v2-session",
     type: "session_start", payload: {},
   },
   chargeCall("par-v2", "par-v2-c1", "c-001", "c-001"),
@@ -1467,45 +1467,45 @@ assert.deepEqual(
 );
 
 const versionedChatFrames = [
-  { kind: "meta", run_id: "chat-v1" },
+  { kind: "meta", branch_id: "chat-v1" },
   {
-    kind: "agent", run_id: "chat-v1", event_id: "chat-read-request",
+    kind: "agent", branch_id: "chat-v1", event_id: "chat-read-request",
     event: { type: "tool_call", id: "read-1", name: "read_customer", input: {} },
   },
   {
-    kind: "agent", run_id: "chat-v1", event_id: "chat-read-result",
+    kind: "agent", branch_id: "chat-v1", event_id: "chat-read-result",
     event: { type: "tool_result", id: "read-1", name: "read_customer", executed: true },
   },
   {
-    kind: "agent", run_id: "chat-v1", event_id: "chat-send-request",
+    kind: "agent", branch_id: "chat-v1", event_id: "chat-send-request",
     event: { type: "tool_call", id: "send-1", name: "send_email", input: {} },
   },
   {
-    kind: "lifecycle", run_id: "chat-v1", event_id: "chat-send-pre",
+    kind: "lifecycle", branch_id: "chat-v1", event_id: "chat-send-pre",
     type: "pre_tool_use", payload: { call_id: "send-1", name: "send_email" },
   },
   {
-    kind: "lifecycle", run_id: "chat-v1", event_id: "chat-send-post",
+    kind: "lifecycle", branch_id: "chat-v1", event_id: "chat-send-post",
     type: "post_tool_use", payload: { call_id: "send-1", name: "send_email" },
   },
   {
-    kind: "agent", run_id: "chat-v1", event_id: "chat-send-result",
+    kind: "agent", branch_id: "chat-v1", event_id: "chat-send-result",
     event: { type: "tool_result", id: "send-1", name: "send_email", executed: true },
   },
   {
-    kind: "agent", run_id: "chat-v1", event_id: "chat-old-text",
+    kind: "agent", branch_id: "chat-v1", event_id: "chat-old-text",
     event: { type: "text", text: "이전 응답" },
   },
   {
-    kind: "meta", run_id: "chat-v2", fork_parent: "chat-v1",
+    kind: "meta", branch_id: "chat-v2", fork_parent: "chat-v1",
     fork_event_id: "chat-send-post", fork_edge: "after", fork_mode: "leaf",
   },
   {
-    kind: "lifecycle", run_id: "chat-v2", event_id: "chat-child-session",
+    kind: "lifecycle", branch_id: "chat-v2", event_id: "chat-child-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "agent", run_id: "chat-v2", event_id: "chat-new-text",
+    kind: "agent", branch_id: "chat-v2", event_id: "chat-new-text",
     event: { type: "text", text: "새 응답" },
   },
 ];
@@ -1537,35 +1537,35 @@ assert.deepEqual(
 const nestedVersionedChatFrames = [
   ...versionedChatFrames,
   {
-    kind: "agent", run_id: "chat-v2", event_id: "chat-audit-request",
+    kind: "agent", branch_id: "chat-v2", event_id: "chat-audit-request",
     event: { type: "tool_call", id: "audit-1", name: "write_audit", input: {} },
   },
   {
-    kind: "lifecycle", run_id: "chat-v2", event_id: "chat-audit-pre",
+    kind: "lifecycle", branch_id: "chat-v2", event_id: "chat-audit-pre",
     type: "pre_tool_use", payload: { call_id: "audit-1", name: "write_audit" },
   },
   {
-    kind: "agent", run_id: "chat-v2", event_id: "chat-audit-old-result",
+    kind: "agent", branch_id: "chat-v2", event_id: "chat-audit-old-result",
     event: { type: "tool_result", id: "audit-1", name: "write_audit", executed: false },
   },
   {
-    kind: "meta", run_id: "chat-v3", fork_parent: "chat-v2",
+    kind: "meta", branch_id: "chat-v3", fork_parent: "chat-v2",
     fork_event_id: "chat-audit-pre", fork_edge: "before", fork_mode: "leaf",
   },
   {
-    kind: "lifecycle", run_id: "chat-v3", event_id: "chat-v3-session",
+    kind: "lifecycle", branch_id: "chat-v3", event_id: "chat-v3-session",
     type: "session_start", payload: {},
   },
   {
-    kind: "lifecycle", run_id: "chat-v3", event_id: "chat-audit-new-post",
+    kind: "lifecycle", branch_id: "chat-v3", event_id: "chat-audit-new-post",
     type: "post_tool_use", payload: { call_id: "audit-1", name: "write_audit" },
   },
   {
-    kind: "agent", run_id: "chat-v3", event_id: "chat-audit-new-result",
+    kind: "agent", branch_id: "chat-v3", event_id: "chat-audit-new-result",
     event: { type: "tool_result", id: "audit-1", name: "write_audit", executed: true },
   },
   {
-    kind: "agent", run_id: "chat-v3", event_id: "chat-final-text",
+    kind: "agent", branch_id: "chat-v3", event_id: "chat-final-text",
     event: { type: "text", text: "최종 응답" },
   },
 ];
@@ -1869,7 +1869,7 @@ assert.equal(
 // Approving with edited arguments: the form starts from what the model asked for, and
 // only a real change travels as `args`.
 const parkedFrames = [
-  { kind: "meta", run_id: "r-1" },
+  { kind: "meta", branch_id: "r-1" },
   { kind: "agent", event: { type: "tool_call", id: "c-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
   { kind: "suspended", pending_id: "c-1" },
 ];

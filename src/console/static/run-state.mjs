@@ -26,7 +26,7 @@ export function createRunState() {
     phase: "idle",
     draft: copyConfig(DEFAULT_DRAFT),
     active: null,
-    runId: null,
+    branchId: null,
     pendingId: null,
     continuationBusy: false,
     stopReason: null,
@@ -40,7 +40,7 @@ export const canEditPolicy = (state) => POLICY_EDITABLE.has(state.phase);
 // The queue is durable, so a steer is worth taking whenever the run can still drain —
 // a parked run admits it on resume. Only a finished run has nothing left to drain.
 export const canSteer = (state) =>
-  ACTIVE_PHASES.has(state.phase) && Boolean(state.runId);
+  ACTIVE_PHASES.has(state.phase) && Boolean(state.branchId);
 export const acceptsStreamEnd = (state) => ENDABLE.has(state.phase);
 
 export function updateDraft(state, patch) {
@@ -63,7 +63,7 @@ export function startRun(state) {
     ...state,
     phase: "streaming",
     active: copyConfig(state.draft),
-    runId: null,
+    branchId: null,
     pendingId: null,
     continuationBusy: false,
     stopReason: null,
@@ -71,9 +71,9 @@ export function startRun(state) {
   };
 }
 
-export function attachRunId(state, runId) {
+export function attachBranchId(state, branchId) {
   if (state.phase !== "streaming") throw new Error("run id outside stream");
-  return { ...state, runId };
+  return { ...state, branchId };
 }
 
 export function suspendRun(state, pendingId) {
@@ -99,7 +99,7 @@ export function beginContinuation(state) {
   if (state.continuationBusy || state.phase === "streaming") {
     throw new Error("continuation already active");
   }
-  if (!["suspended", "recoverable"].includes(state.phase) || !state.runId) {
+  if (!["suspended", "recoverable"].includes(state.phase) || !state.branchId) {
     throw new Error("no parked run");
   }
   return { ...state, phase: "streaming", continuationBusy: true };
@@ -126,7 +126,7 @@ export function replayStream(state, units = null) {
 export function beginFork(state) {
   if (
     state.phase !== "terminal" ||
-    !state.runId
+    !state.branchId
   ) {
     throw new Error("no forkable source run");
   }
@@ -138,7 +138,7 @@ export function beginFork(state) {
       ...state.active,
       unitNames,
     },
-    runId: null,
+    branchId: null,
     stopReason: null,
     error: null,
   };

@@ -128,7 +128,7 @@ class RunRequest(BaseModel):
 class ResumeRequest(BaseModel):
     """An operator decision for a suspended call."""
 
-    run_id: str
+    branch_id: str
     pending_id: str
     approved: bool
     args: dict[str, Any] | None = None
@@ -142,23 +142,23 @@ class ResumeRequest(BaseModel):
 class AbortRequest(BaseModel):
     """Operator stop for the current in-flight attempt."""
 
-    run_id: str
+    branch_id: str
 
 
 class SteerRequest(BaseModel):
     """One operator nudge for the in-flight run's single steering queue."""
 
-    run_id: str
+    branch_id: str
     text: str = Field(min_length=1, max_length=200)
 
 
-def _execution(run_id: str, conversation_id: str) -> ExecutionContext:
-    """The run as semora sees it: a branch of a conversation.
+def _execution(branch_id: str, conversation_id: str) -> ExecutionContext:
+    """The branch as semora sees it, inside its conversation.
 
-    The console's run id is semora's branch id. Semora scopes its ledger by the conversation,
-    so every entry names both, or a parked or recorded branch is not found again.
+    Semora scopes its ledger by the conversation, so every entry names both, or a parked or
+    recorded branch is not found again.
     """
-    return ExecutionContext(branch_id=run_id, conversation_id=conversation_id)
+    return ExecutionContext(branch_id=branch_id, conversation_id=conversation_id)
 
 
 def _session_step(conversation_id: str) -> Any:
@@ -175,13 +175,13 @@ def _session_step(conversation_id: str) -> Any:
 class RecoverRequest(BaseModel):
     """Continue a run after the worker died mid-round."""
 
-    run_id: str
+    branch_id: str
 
 
 class ForkRequest(BaseModel):
     """Create one execution version from a completed run's observation edge."""
 
-    run_id: str
+    branch_id: str
     event_id: str
     edge: Literal["before", "after"] = "before"
     units: list[str]
@@ -195,7 +195,7 @@ _SESSION_KEY = "console:session"
 # What a later process needs to continue a run. `agent` is rebuilt from `scenario_id`,
 # and the projector's event bookkeeping is per-process, so neither is stored.
 _DURABLE_SESSION = (
-    "units", "scenario_id", "conversation_id", "origin_id", "source_run_id",
+    "units", "scenario_id", "conversation_id", "origin_id", "source_branch_id",
     "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
     "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
     # Which coordinates a fork may start from. Rebuilt only by watching a run stream, so
@@ -205,7 +205,7 @@ _DURABLE_SESSION = (
 )
 
 
-async def _remember_session(run_id: str, session: dict[str, Any]) -> None:
+async def _remember_session(branch_id: str, session: dict[str, Any]) -> None:
     """Write the run's console state to the ledger beside the runtime's own.
 
     ``_sessions`` is a cache of this, not the record. Without ``DATABASE_URL`` the ledger
@@ -213,18 +213,18 @@ async def _remember_session(run_id: str, session: dict[str, Any]) -> None:
     process that never saw the run can still resume it.
     """
     await _store.write_control(
-        run_id, _SESSION_KEY, {k: session[k] for k in _DURABLE_SESSION if k in session}
+        branch_id, _SESSION_KEY, {k: session[k] for k in _DURABLE_SESSION if k in session}
     )
 
 
-async def _session(run_id: str) -> dict[str, Any]:
+async def _session(branch_id: str) -> dict[str, Any]:
     """The live session, rehydrated from the ledger when this process never saw the run."""
-    session = _sessions.get(run_id)
+    session = _sessions.get(branch_id)
     if session is not None:
         return session
-    record = await _store.read(run_id, _SESSION_KEY)
+    record = await _store.read(branch_id, _SESSION_KEY)
     if record.status != "done" or not isinstance(record.value, dict):
-        raise HTTPException(status_code=404, detail="unknown run_id")
+        raise HTTPException(status_code=404, detail="unknown branch_id")
     stored = dict(record.value)
     forkable = stored.get("forkable_events") or {}
     session = {
@@ -240,7 +240,7 @@ async def _session(run_id: str) -> dict[str, Any]:
         ),
         "aborted": False,
     }
-    _sessions[run_id] = session
+    _sessions[branch_id] = session
     return session
 
 
@@ -259,14 +259,14 @@ def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
     return "gate" if "approval" in selected else "commit"
 
 
-def _controls(selected: list[str], run_id: str, crash_at: str | None) -> Any:
-    extra = [crash_before_approval(run_id, _store)] if crash_at == "gate" else None
+def _controls(selected: list[str], branch_id: str, crash_at: str | None) -> Any:
+    extra = [crash_before_approval(branch_id, _store)] if crash_at == "gate" else None
     return compose_controls(selected, extra_pre=extra)
 
 
-def _is_aborted(run_id: str) -> bool:
+def _is_aborted(branch_id: str) -> bool:
     """Loop kill switch: True once the operator has posted /api/abort for this run."""
-    session = _sessions.get(run_id)
+    session = _sessions.get(branch_id)
     return bool(session and session.get("aborted"))
 
 
@@ -411,16 +411,16 @@ holding in browser memory and losing on reload.
 """
 
 
-async def _keep_frame(conversation_id: str, run_id: str, sequence: int, frame: dict[str, Any]) -> None:
+async def _keep_frame(conversation_id: str, branch_id: str, sequence: int, frame: dict[str, Any]) -> None:
     """Persist one rendered frame. Unchained, so it never joins the model's branch."""
     body = {"type": CONSOLE_FRAME, "sequence": sequence, "frame": frame}
     await _transcript.append(
         {
-            "uuid": entry_id(f"{run_id}:{sequence}", body),
+            "uuid": entry_id(f"{branch_id}:{sequence}", body),
             "conversation_id": conversation_id,
             "timestamp": datetime.now(UTC).isoformat(),
             "schema_version": SCHEMA_VERSION,
-            "metadata": {"run_id": run_id},
+            "metadata": {"branch_id": branch_id},
             **body,
         }
     )
@@ -436,7 +436,7 @@ def _kept_frames(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _stream(
-    run_id: str, attempt: Any, *, selected: list[str], scenario_id: str, open_session: bool = False,
+    branch_id: str, attempt: Any, *, selected: list[str], scenario_id: str, open_session: bool = False,
 ) -> AsyncIterator[str]:
     """Run one attempt, translate events into frames, and end with a policy summary."""
     queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -452,7 +452,7 @@ async def _stream(
     # doubled the real one when it arrived.
     answered: set[str] = set()
     deferred_results: dict[str, dict[str, Any]] = {}
-    session = _sessions.get(run_id)
+    session = _sessions.get(branch_id)
     projector = None
     if session is not None and {
         "conversation_id", "origin_runs", "default_fork_origin"
@@ -461,7 +461,7 @@ async def _stream(
         if projector is None:
             projector = EventCheckpointProjector(
                 _transcript,
-                run_id=run_id,
+                branch_id=branch_id,
                 conversation_id=session["conversation_id"],
                 origin_runs=session["origin_runs"],
                 default_origin_id=session["default_fork_origin"],
@@ -472,14 +472,14 @@ async def _stream(
 
     async def put(frame: dict[str, Any]) -> None:
         nonlocal kept
-        frame = {**frame, "run_id": run_id}
+        frame = {**frame, "branch_id": branch_id}
         if projector is not None:
             frame = await projector.stamp(frame)
         if session is not None:
             _register_frame(session, frame)
             conversation_id = session.get("conversation_id")
             if conversation_id:
-                await _keep_frame(str(conversation_id), run_id, kept, frame)
+                await _keep_frame(str(conversation_id), branch_id, kept, frame)
                 kept += 1
                 session["frame_sequence"] = kept
         await queue.put(frame)
@@ -627,7 +627,7 @@ async def _stream(
             owner=WORKER,
             lease_ttl=LEASE_TTL,
         )
-        meta = {"kind": "meta", "run_id": run_id, "units": selected}
+        meta = {"kind": "meta", "branch_id": branch_id, "units": selected}
         if session is not None:
             meta["conversation_id"] = session["conversation_id"]
         if session is not None and session.get("fork_parent"):
@@ -646,10 +646,10 @@ async def _stream(
             outcome = await attempt(runtime, on_event)
             reason = outcome.get("stop_reason") if isinstance(outcome, dict) else "completed"
             await runtime.events.session_end(str(reason or "completed"))
-            completed = _sessions.get(run_id)
+            completed = _sessions.get(branch_id)
             if completed is not None:
                 completed["terminal"] = True
-                await _remember_session(run_id, completed)
+                await _remember_session(branch_id, completed)
             # A result that never entered context still deserves its row.
             for call_id, held in list(deferred_results.items()):
                 if call_id not in answered:
@@ -695,8 +695,8 @@ async def _stream(
                 }
             )
         except asyncio.CancelledError:
-            await runtime.events.session_end("aborted" if _is_aborted(run_id) else "cancelled")
-            if _is_aborted(run_id):
+            await runtime.events.session_end("aborted" if _is_aborted(branch_id) else "cancelled")
+            if _is_aborted(branch_id):
                 await put({"kind": "outcome", "outcome": {"stop_reason": "aborted"}})
             raise
         except Exception as failure:  # noqa: BLE001 - surface any failure as a frame
@@ -704,7 +704,7 @@ async def _stream(
             await put({"kind": "error", "message": str(failure)})
         finally:
             if session is not None:
-                await _remember_session(run_id, session)
+                await _remember_session(branch_id, session)
             await queue.put(None)
 
     task = asyncio.create_task(run_attempt())
@@ -751,42 +751,42 @@ async def run(request: RunRequest) -> StreamingResponse:
     if scenario is None:
         raise HTTPException(status_code=404, detail="unknown scenario_id")
     # Time-ordered, so a ledger row sorts by when the run started rather than by chance.
-    run_id = new_branch_id()
+    branch_id = new_branch_id()
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
-    prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
+    prompt_id = f"{branch_id}:prompt:{uuid.uuid4().hex[:8]}"
     # The conversation is the session, as it is for Pydantic AI: one thread of resumes,
     # recoveries and forks. Business effects and semora's ledger are both filed under it.
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
     agent = _new_agent(conversation_id, intent=prompt_id)
-    origin_runs = {prompt_id: run_id}
-    _sessions[run_id] = {
+    origin_runs = {prompt_id: branch_id}
+    _sessions[branch_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
-        "source_run_id": run_id,
+        "source_branch_id": branch_id,
         "origin_runs": origin_runs,
         "default_fork_origin": prompt_id,
         "event_ids": set(),
         "forkable_events": {},
         "terminal": False,
     }
-    await _remember_session(run_id, _sessions[run_id])
+    await _remember_session(branch_id, _sessions[branch_id])
     if crash_at is not None:
         # The effect seam watches the conversation, because that is where a charge is a step.
         # The others watch the agent run they interrupt.
-        _store.arm(conversation_id if crash_at == "effect" else run_id, at=crash_at)
+        _store.arm(conversation_id if crash_at == "effect" else branch_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        execution = _execution(run_id, conversation_id)
+        execution = _execution(branch_id, conversation_id)
         outcome = await runtime.dispatch(
             execution,
             agent,
             Prompt(scenario["prompt"], prompt_id=prompt_id),
             conversation_id=conversation_id,
-            controls=_controls(selected, run_id, crash_at),
+            controls=_controls(selected, branch_id, crash_at),
             on_event=on_event,
-            aborted=lambda: _is_aborted(run_id),
+            aborted=lambda: _is_aborted(branch_id),
         )
         await _publish_source_branch(
             runtime,
@@ -797,7 +797,7 @@ async def run(request: RunRequest) -> StreamingResponse:
         return outcome
 
     return StreamingResponse(
-        _stream(run_id, attempt, selected=selected, scenario_id=request.scenario_id, open_session=True),
+        _stream(branch_id, attempt, selected=selected, scenario_id=request.scenario_id, open_session=True),
         media_type="application/x-ndjson",
     )
 
@@ -805,7 +805,7 @@ async def run(request: RunRequest) -> StreamingResponse:
 @app.post("/api/fork")
 async def fork(request: ForkRequest) -> StreamingResponse:
     """Re-run a completed scenario from the selected durable event coordinate."""
-    source = await _session(request.run_id)
+    source = await _session(request.branch_id)
     if not source.get("terminal"):
         raise HTTPException(status_code=409, detail="run is not forkable")
     if request.event_id not in source.get("event_ids", set()):
@@ -826,15 +826,15 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
     coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
-    fork_run_id = new_branch_id()
+    fork_branch_id = new_branch_id()
     fork_units = [name for name in request.units if name in UNITS_BY_NAME]
     fork_mode = "input" if coordinate.origin_id is not None else "leaf"
     child_origin_runs = dict(source["origin_runs"])
     if coordinate.origin_id is not None:
-        child_origin_runs[coordinate.origin_id] = fork_run_id
-    source["forked_to"] = fork_run_id
-    source.setdefault("fork_children", []).append(fork_run_id)
-    _sessions[fork_run_id] = {
+        child_origin_runs[coordinate.origin_id] = fork_branch_id
+    source["forked_to"] = fork_branch_id
+    source.setdefault("fork_children", []).append(fork_branch_id)
+    _sessions[fork_branch_id] = {
         "units": fork_units,
         "agent": source["agent"],
         "scenario_id": source["scenario_id"],
@@ -843,10 +843,10 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "crash_at": None,
         "conversation_id": source["conversation_id"],
         "origin_id": source["origin_id"],
-        "source_run_id": request.run_id,
+        "source_branch_id": request.branch_id,
         "origin_runs": child_origin_runs,
         "default_fork_origin": coordinate.origin_id,
-        "fork_parent": request.run_id,
+        "fork_parent": request.branch_id,
         "fork_event_id": request.event_id,
         "fork_edge": request.edge,
         "fork_mode": fork_mode,
@@ -856,7 +856,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "terminal": False,
     }
 
-    await _remember_session(fork_run_id, _sessions[fork_run_id])
+    await _remember_session(fork_branch_id, _sessions[fork_branch_id])
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await run_from_event(
@@ -864,18 +864,18 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             _transcript,
             event_id=request.event_id,
             edge=request.edge,
-            run_id=fork_run_id,
+            branch_id=fork_branch_id,
             conversation_id=source["conversation_id"],
             agent=source["agent"],
             controls=compose_controls(fork_units),
             on_event=on_event,
-            aborted=lambda: _is_aborted(fork_run_id),
+            aborted=lambda: _is_aborted(fork_branch_id),
             rejournal=request.rejournal,
         )
 
     return StreamingResponse(
         _stream(
-            fork_run_id,
+            fork_branch_id,
             attempt,
             selected=fork_units,
             scenario_id=source["scenario_id"],
@@ -888,7 +888,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
 @app.post("/api/resume")
 async def resume(request: ResumeRequest) -> StreamingResponse:
     """Approve or deny a suspended call and continue the run."""
-    session = await _session(request.run_id)
+    session = await _session(request.branch_id)
     answer: dict[str, Any] = (
         {"type": "text", "text": "approved by the human"}
         if request.approved
@@ -900,23 +900,23 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
     session["aborted"] = False
     if request.units is not None:
         session["units"] = [name for name in request.units if name in UNITS_BY_NAME]
-        await _remember_session(request.run_id, session)
+        await _remember_session(request.branch_id, session)
     if session.get("crash") and session.get("crash_at") != "gate":
-        _store.arm(request.run_id, at="commit")
+        _store.arm(request.branch_id, at="commit")
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await runtime.dispatch(
-            _execution(request.run_id, session["conversation_id"]),
+            _execution(request.branch_id, session["conversation_id"]),
             session["agent"],
             Answer(request.pending_id, answer),
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
-            aborted=lambda: _is_aborted(request.run_id),
+            aborted=lambda: _is_aborted(request.branch_id),
         )
 
     return StreamingResponse(
-        _stream(request.run_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
+        _stream(request.branch_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
         media_type="application/x-ndjson",
     )
 
@@ -924,7 +924,7 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
 @app.post("/api/recover")
 async def recover(request: RecoverRequest) -> StreamingResponse:
     """Finish a run whose worker died after a tool_call, before or after the effect."""
-    session = await _session(request.run_id)
+    session = await _session(request.branch_id)
     session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
@@ -933,22 +933,22 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         # make a failed round a transcript fact — so the history a host could hand over
         # is empty and the durable model step is what reconstructs the round.
         return await runtime.dispatch(
-            _execution(request.run_id, session["conversation_id"]),
+            _execution(request.branch_id, session["conversation_id"]),
             session["agent"],
             Recover(),
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
-            aborted=lambda: _is_aborted(request.run_id),
+            aborted=lambda: _is_aborted(request.branch_id),
         )
 
     return StreamingResponse(
-        _stream(request.run_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
+        _stream(request.branch_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
         media_type="application/x-ndjson",
     )
 
 
-async def _drop_queued_inputs(run_id: str) -> int:
+async def _drop_queued_inputs(branch_id: str) -> int:
     """Make anything still waiting terminal, and report how much was dropped.
 
     Order matters: an input admitted while the loop is winding down is an instruction
@@ -956,30 +956,30 @@ async def _drop_queued_inputs(run_id: str) -> int:
     whoever recovers next. Empty the queue first, then stop.
     """
     # The queue is semora's, filed under the conversation; the bare store does not see it.
-    session = await _session(run_id)
-    ledger = _store.for_execution(_execution(run_id, session["conversation_id"]))
+    session = await _session(branch_id)
+    ledger = _store.for_execution(_execution(branch_id, session["conversation_id"]))
     waiting = [
         record.input_id
-        for record in await ledger.list_inputs(run_id)
+        for record in await ledger.list_inputs(branch_id)
         if record.status in {"pending", "claimed"}
     ]
     if waiting:
-        await ledger.discard_inputs(run_id, waiting)
+        await ledger.discard_inputs(branch_id, waiting)
     return len(waiting)
 
 
-@app.get("/api/runs/{run_id}/frames")
-async def kept_frames(run_id: str) -> dict[str, Any]:
+@app.get("/api/branches/{branch_id}/frames")
+async def kept_frames(branch_id: str) -> dict[str, Any]:
     """Every frame of the conversation this run belongs to, oldest first.
 
     A fork continues its parent's conversation, so this returns the whole version chain —
     the same sequence the browser accumulates while streaming. Reloading the page replays
     it instead of starting from nothing.
     """
-    session = await _session(run_id)
+    session = await _session(branch_id)
     entries = await _transcript.read(str(session["conversation_id"]))
     return {
-        "run_id": run_id,
+        "branch_id": branch_id,
         "scenario_id": session.get("scenario_id"),
         "units": session.get("units") or [],
         "frames": _kept_frames(entries),
@@ -989,8 +989,8 @@ async def kept_frames(run_id: str) -> dict[str, Any]:
 @app.post("/api/abort")
 async def abort(request: AbortRequest) -> dict[str, Any]:
     """Drop what is queued, then trip aborted() and cancel the live attempt."""
-    session = await _session(request.run_id)
-    dropped = await _drop_queued_inputs(request.run_id)
+    session = await _session(request.branch_id)
+    dropped = await _drop_queued_inputs(request.branch_id)
     session["aborted"] = True
     task = session.get("task")
     if isinstance(task, asyncio.Task) and not task.done():
@@ -1006,7 +1006,7 @@ async def steer(request: SteerRequest) -> dict[str, Any]:
     can still take the steer — which is the point once there is more than one of them.
     Whether a live attempt happens to be here only decides how soon it lands.
     """
-    session = await _session(request.run_id)
+    session = await _session(request.branch_id)
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="empty steer")
@@ -1020,7 +1020,7 @@ async def steer(request: SteerRequest) -> dict[str, Any]:
     # the run to the new prompt. A steer is a note added to the queue, never a decision
     # taken on the operator's behalf about the call in front of them.
     await runtime.submit(
-        _execution(request.run_id, session["conversation_id"]),
+        _execution(request.branch_id, session["conversation_id"]),
         PendingInput("user_steer", UserPromptPart(text)),
         input_mode="headless",
     )

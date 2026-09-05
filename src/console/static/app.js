@@ -7,7 +7,7 @@ import {
 } from "./reducer.mjs";
 import {
   acceptsStreamEnd,
-  attachRunId,
+  attachBranchId,
   beginContinuation,
   beginFork,
   canEditDraft,
@@ -337,7 +337,7 @@ export function deriveBranchView(frames) {
     if (!payload.branch) continue;
     branches.set(payload.branch, {
       branch: payload.branch,
-      runId: payload.run_id,
+      branchId: payload.branch_id,
       active: false,
       messages: (payload.messages ?? []).map((message) => ({ ...message })),
     });
@@ -356,30 +356,30 @@ function versionPolicySuffix(units) {
 
 export function deriveRunVersions(frames) {
   const seen = new Set();
-  const runIds = [];
+  const branchIds = [];
   const unitsByRun = new Map();
   for (const frame of frames) {
-    if (frame?.kind !== "meta" || !frame.run_id || seen.has(frame.run_id)) continue;
-    seen.add(frame.run_id);
-    runIds.push(frame.run_id);
-    if (Array.isArray(frame.units)) unitsByRun.set(frame.run_id, frame.units);
+    if (frame?.kind !== "meta" || !frame.branch_id || seen.has(frame.branch_id)) continue;
+    seen.add(frame.branch_id);
+    branchIds.push(frame.branch_id);
+    if (Array.isArray(frame.units)) unitsByRun.set(frame.branch_id, frame.units);
   }
-  return runIds.map((runId, index) => ({
-    runId,
+  return branchIds.map((branchId, index) => ({
+    branchId,
     number: index + 1,
-    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}${versionPolicySuffix(unitsByRun.get(runId))}`,
+    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}${versionPolicySuffix(unitsByRun.get(branchId))}`,
   }));
 }
 
-function selectVersionChatFrames(frames, runId, ancestors = new Set()) {
-  const directFrames = frames.filter((frame) => frame?.run_id === runId);
+function selectVersionChatFrames(frames, branchId, ancestors = new Set()) {
+  const directFrames = frames.filter((frame) => frame?.branch_id === branchId);
   const meta = directFrames.find((frame) => frame?.kind === "meta");
-  const parentRunId = meta?.fork_parent;
-  if (!parentRunId || ancestors.has(runId)) return directFrames;
+  const parentBranchId = meta?.fork_parent;
+  if (!parentBranchId || ancestors.has(branchId)) return directFrames;
 
   const nextAncestors = new Set(ancestors);
-  nextAncestors.add(runId);
-  const parentFrames = selectVersionChatFrames(frames, parentRunId, nextAncestors);
+  nextAncestors.add(branchId);
+  const parentFrames = selectVersionChatFrames(frames, parentBranchId, nextAncestors);
   const forkIndex = parentFrames.findIndex(
     (frame) => frame?.event_id === meta.fork_event_id,
   );
@@ -392,10 +392,10 @@ function selectVersionChatFrames(frames, runId, ancestors = new Set()) {
   return [...parentFrames.slice(0, prefixEnd), ...currentFrames];
 }
 
-export function selectRunFrames(frames, runId, options = {}) {
-  if (!runId) return frames;
-  if (options.inheritFork) return selectVersionChatFrames(frames, runId);
-  return frames.filter((frame) => frame?.run_id === runId);
+export function selectRunFrames(frames, branchId, options = {}) {
+  if (!branchId) return frames;
+  if (options.inheritFork) return selectVersionChatFrames(frames, branchId);
+  return frames.filter((frame) => frame?.branch_id === branchId);
 }
 
 function rowFingerprint(row) {
@@ -426,21 +426,21 @@ function childBatchStart(rows) {
   return index < 0 ? 0 : index;
 }
 
-export function deriveVersionRows(frames, runId, ancestors = new Set()) {
-  const directFrames = selectRunFrames(frames, runId);
+export function deriveVersionRows(frames, branchId, ancestors = new Set()) {
+  const directFrames = selectRunFrames(frames, branchId);
   const directRows = reduceFrames(directFrames).map((row) => ({
     ...row,
-    id: `${runId ?? "run"}:${row.id}`,
+    id: `${branchId ?? "run"}:${row.id}`,
     versionOrigin: "current",
     forkStart: false,
   }));
   const meta = directFrames.find((frame) => frame?.kind === "meta");
-  const parentRunId = meta?.fork_parent;
-  if (!runId || !parentRunId || ancestors.has(runId)) return directRows;
+  const parentBranchId = meta?.fork_parent;
+  if (!branchId || !parentBranchId || ancestors.has(branchId)) return directRows;
 
   const nextAncestors = new Set(ancestors);
-  nextAncestors.add(runId);
-  const parentRows = deriveVersionRows(frames, parentRunId, nextAncestors);
+  nextAncestors.add(branchId);
+  const parentRows = deriveVersionRows(frames, parentBranchId, nextAncestors);
   const forkIndex = parentRows.findIndex((row) => row.eventId === meta.fork_event_id);
   if (forkIndex < 0) return directRows;
 
@@ -592,7 +592,7 @@ function forkTarget(runState, row, plan) {
 export function getEventForkRequest(runState, row, plan = null) {
   if (
     runState?.phase !== "terminal" ||
-    !runState?.runId ||
+    !runState?.branchId ||
     !row?.eventId ||
     !row?.forkable
   ) {
@@ -600,7 +600,7 @@ export function getEventForkRequest(runState, row, plan = null) {
   }
   const { target, rejournal } = forkTarget(runState, row, plan);
   return {
-    run_id: row.runId ?? runState.runId,
+    branch_id: row.branchId ?? runState.branchId,
     event_id: target.eventId,
     edge: target.edge,
     units: [...runState.draft.unitNames],
@@ -664,18 +664,18 @@ export function createConsole({
     restoring: false,
     policyOpener: null,
     forkEventIds: new Set(),
-    selectedVersionRunId: null,
+    selectedVersionBranchId: null,
     chatToolNodes: new Map(),
   };
 
   const RUN_KEY = "semora-console:run";
 
-  function rememberRun(runId) {
+  function rememberRun(branchId) {
     // The run id is the whole of what a reload loses: the ledger holds the run, the
     // conversation holds its frames, and the server rebuilds a session it never saw from
     // either. Only which run this browser was watching lives nowhere else.
     try {
-      if (runId) globalThis.localStorage?.setItem(RUN_KEY, runId);
+      if (branchId) globalThis.localStorage?.setItem(RUN_KEY, branchId);
       else globalThis.localStorage?.removeItem(RUN_KEY);
     } catch {
       // Storage refused: the run simply is not offered back after a reload.
@@ -849,7 +849,7 @@ export function createConsole({
   }
 
   function renderRows(selectedPhase, selectedIsCurrent) {
-    state.rows = deriveVersionRows(state.frames, state.selectedVersionRunId);
+    state.rows = deriveVersionRows(state.frames, state.selectedVersionBranchId);
     setText(dom["event-count"], `${state.rows.length} EVENTS`);
     dom.trace.replaceChildren();
     state.rows.forEach((row, index) => {
@@ -976,10 +976,10 @@ export function createConsole({
     if (!config) return;
     const scenario = scenarioById(config.scenarioId);
     setText(dom["run-title"], scenario?.title ?? config.scenarioId);
-    const frames = selectRunFrames(state.frames, state.selectedVersionRunId);
+    const frames = selectRunFrames(state.frames, state.selectedVersionBranchId);
     const selectedPhase = deriveVersionPhase(frames, state.run.phase);
     const selectedIsCurrent = (
-      !state.selectedVersionRunId || state.selectedVersionRunId === state.run.runId
+      !state.selectedVersionBranchId || state.selectedVersionBranchId === state.run.branchId
     );
     setText(dom["run-status"], PHASE_LABELS[selectedPhase]);
     const versionMeta = frames.find((frame) => frame.kind === "meta");
@@ -993,7 +993,7 @@ export function createConsole({
     renderVersions();
     const chatFrames = selectRunFrames(
       state.frames,
-      state.selectedVersionRunId,
+      state.selectedVersionBranchId,
       { inheritFork: true },
     );
     renderChat(scenario, chatFrames);
@@ -1029,10 +1029,10 @@ export function createConsole({
       button.textContent = version.label;
       button.setAttribute(
         "aria-pressed",
-        String(version.runId === state.selectedVersionRunId),
+        String(version.branchId === state.selectedVersionBranchId),
       );
       button.addEventListener("click", () => {
-        state.selectedVersionRunId = version.runId;
+        state.selectedVersionBranchId = version.branchId;
         state.selectedRowId = null;
         render();
       });
@@ -1105,9 +1105,9 @@ export function createConsole({
   function handleFrame(frame) {
     state.frames.push(frame);
     if (frame.kind === "meta") {
-      state.run = attachRunId(state.run, frame.run_id);
-      state.selectedVersionRunId = frame.run_id;
-      if (!state.restoring) rememberRun(frame.run_id);
+      state.run = attachBranchId(state.run, frame.branch_id);
+      state.selectedVersionBranchId = frame.branch_id;
+      if (!state.restoring) rememberRun(frame.branch_id);
     } else if (frame.kind === "suspended") {
       state.run = suspendRun(state.run, frame.pending_id);
     } else if (frame.kind === "recoverable") {
@@ -1198,7 +1198,7 @@ export function createConsole({
     state.rows = [];
     state.selectedRowId = null;
     state.forkEventIds.clear();
-    state.selectedVersionRunId = null;
+    state.selectedVersionBranchId = null;
     state.policyActivity.clear();
     render();
     await stream("/api/run", {
@@ -1223,7 +1223,7 @@ export function createConsole({
   async function decide(approved) {
     if (state.run.phase !== "suspended") return;
     const body = {
-      run_id: state.run.runId,
+      branch_id: state.run.branchId,
       pending_id: state.run.pendingId,
       approved,
       // Whatever is selected right now, not what was selected when the call parked.
@@ -1246,7 +1246,7 @@ export function createConsole({
 
   async function recover() {
     if (state.run.phase !== "recoverable") return;
-    await continueRun("/api/recover", { run_id: state.run.runId });
+    await continueRun("/api/recover", { branch_id: state.run.branchId });
   }
 
   function forkPlan() {
@@ -1273,13 +1273,13 @@ export function createConsole({
   }
 
   async function abort() {
-    if (!ACTIVE_PHASES.has(state.run.phase) || !state.run.runId) return;
+    if (!ACTIVE_PHASES.has(state.run.phase) || !state.run.branchId) return;
     try {
-      await post("/api/abort", { run_id: state.run.runId });
+      await post("/api/abort", { branch_id: state.run.branchId });
       if (state.run.phase !== "terminal") {
         state.frames.push({
           kind: "outcome",
-          run_id: state.run.runId,
+          branch_id: state.run.branchId,
           outcome: { stop_reason: "aborted" },
         });
         state.run = finishRun(state.run, "aborted");
@@ -1297,7 +1297,7 @@ export function createConsole({
     dom["steer-text"].value = "";
     const queued = {
       kind: "steer",
-      run_id: state.run.runId,
+      branch_id: state.run.branchId,
       status: "queued",
       source: "operator",
       text,
@@ -1305,7 +1305,7 @@ export function createConsole({
     state.frames.push(queued);
     render();
     try {
-      const response = await post("/api/steer", { run_id: state.run.runId, text });
+      const response = await post("/api/steer", { branch_id: state.run.branchId, text });
       // The server says when the loop will next drain, which is the only thing the
       // operator cannot tell from here.
       queued.admits = (await response.json())?.admits ?? null;
@@ -1322,7 +1322,7 @@ export function createConsole({
     state.frames = [];
     state.selectedRowId = null;
     state.forkEventIds.clear();
-    state.selectedVersionRunId = null;
+    state.selectedVersionBranchId = null;
     render();
   }
 
@@ -1387,11 +1387,11 @@ export function createConsole({
     // are replayed through the same handler the stream uses, so a restored approval, a
     // parked recovery and a branch point are the live ones rather than a second rendering
     // of them.
-    const runId = rememberedRun();
-    if (!runId || !canStartRun(state.run)) return;
+    const branchId = rememberedRun();
+    if (!branchId || !canStartRun(state.run)) return;
     let kept = null;
     try {
-      const response = await fetchRef(`/api/runs/${encodeURIComponent(runId)}/frames`);
+      const response = await fetchRef(`/api/branches/${encodeURIComponent(branchId)}/frames`);
       if (!response.ok) throw new Error(String(response.status));
       kept = await response.json();
     } catch {
@@ -1428,7 +1428,7 @@ export function createConsole({
       state.run = createRunState();
       state.frames = [];
       state.rows = [];
-      state.selectedVersionRunId = null;
+      state.selectedVersionBranchId = null;
     } finally {
       state.restoring = false;
     }
