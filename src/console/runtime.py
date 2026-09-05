@@ -5,7 +5,7 @@ import copy
 from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart
 from pydantic_core import to_jsonable_python
 from semora import AgentRuntime, ControlPlane, Ctx, Deny, Halt, Proceed, Suspend
-from semora.dispatch import Answer
+from semora_store import ExecutionContext
 
 
 class Events:
@@ -27,10 +27,19 @@ class ObservedControls:
     """Observe seven real policy seams; retain native message snapshots for branching."""
 
     def __init__(
-        self, runtime, run_id, controls, on_event, *, aborted=None, prompt_id=None
+        self, runtime, execution, controls, on_event, *, aborted=None, prompt_id=None
     ):
         self.runtime = runtime
-        self.run_id = run_id
+        self.execution = (
+            execution
+            if isinstance(execution, ExecutionContext)
+            else ExecutionContext(branch_id=execution)
+        )
+        # The console's run id is semora's branch id.
+        self.run_id = self.execution.branch_id
+        # The ledger as semora writes it for this branch: its conversation's view. Reading the
+        # bare store would miss every record the branch made.
+        self.store = runtime.store.for_execution(self.execution)
         self.inner = controls or ControlPlane()
         self.on_event = on_event
         self.aborted = aborted
@@ -76,7 +85,7 @@ class ObservedControls:
                     continue
                 ctx = Ctx(turn=0, messages=history)
                 await self._announce(ctx, call)
-                record = await self.runtime.store.read(
+                record = await self.store.read(
                     self.run_id, f"tool:{part.tool_call_id}"
                 )
                 executed = record.status == "done"
@@ -215,7 +224,7 @@ class ObservedControls:
 
     async def pre_tool_use(self, ctx, call):
         if (
-            await self.runtime.store.read(self.run_id, f"tool:{call.tool_call_id}")
+            await self.store.read(self.run_id, f"tool:{call.tool_call_id}")
         ).status == "done":
             self.replayed.add(call.tool_call_id)
         await self._announce(ctx, call)
@@ -321,18 +330,14 @@ class ConsoleRuntime:
         aborted=None,
         **options,
     ):
-        # `run_id` may be an ExecutionContext carrying the session; the observer keys its
-        # own ledger reads and checkpoints by the bare run id.
         observed = ObservedControls(
             self,
-            getattr(run_id, "run_id", run_id),
+            run_id,
             controls,
             on_event,
             aborted=aborted,
             prompt_id=getattr(command, "prompt_id", None),
         )
-        if isinstance(command, Answer):
-            options.pop("conversation_id", None)
         outcome = await self.engine.dispatch(
             run_id, agent, command, controls=observed, **options
         )

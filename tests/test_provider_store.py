@@ -85,9 +85,11 @@ async def test_gate_hook_fires_once_then_continues():
 @pytest.mark.asyncio
 async def test_fault_survives_for_execution_scope():
     """Runtime scopes the ledger; the crash hook must stay on that object."""
+    from semora_store import ExecutionContext
+
     store = FaultInjectingSteps(MemorySteps())
     store.arm("r1")
-    scoped = store.for_execution(object())
+    scoped = store.for_execution(ExecutionContext(branch_id="r1", conversation_id="c"))
     token = await scoped.acquire("r1", "local", 60)
     assert await scoped.start("r1", "call_1", token) is True
     try:

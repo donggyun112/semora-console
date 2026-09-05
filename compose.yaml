@@ -18,7 +18,7 @@ services:
     volumes:
       # Named, so `docker compose restart console` and even `down` keep the ledger.
       # `down -v` is the one that throws the proof away.
-      - console-ledger-v03:/var/lib/postgresql/data
+      - console-ledger-v04:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U console -d console"]
       interval: 2s
@@ -59,4 +59,4 @@ services:
         condition: service_healthy
 
 volumes:
-  console-ledger-v03:
+  console-ledger-v04:

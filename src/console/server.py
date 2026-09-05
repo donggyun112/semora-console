@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import socket
 import uuid
 from collections.abc import AsyncIterator
@@ -34,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.messages import UserPromptPart
-from semora import AgentSuspended, new_run_id
+from semora import AgentSuspended, new_branch_id
 from semora.contracts import PendingInput
 from semora.dispatch import Answer, Prompt, Recover
 from semora.transcript import SCHEMA_VERSION, entry_id
@@ -94,17 +93,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Semora Control Plane Console", lifespan=lifespan)
 
 
-def _new_agent(session_id: str, intent: str | None = None) -> Agent:
+def _new_agent(conversation_id: str, intent: str | None = None) -> Agent:
     """Create the run agent.
 
-    Its effects are steps of ``session_id`` keyed by ``intent`` — the request's origin
-    prompt id — so a recovery, a resume or a fork of one request replays its charge and a
-    new request makes its own.
+    Its business effects are steps of the conversation keyed by ``intent`` — the request's
+    origin prompt id — so a recovery, a resume or a fork of one request replays its charge
+    and a new request makes its own.
     """
     return Agent(
         name="control-plane-console",
         model=openrouter_model(),
-        tools=DemoTools(session=_session_step(session_id), intent=intent).native_tools(),
+        tools=DemoTools(session=_session_step(conversation_id), intent=intent).native_tools(),
         system_prompt=SYSTEM_PROMPT,
         model_settings={"timeout": 60},
     )
@@ -124,9 +123,6 @@ class RunRequest(BaseModel):
 
     scenario_id: str
     units: list[str] = []
-    operator: str = ""
-    """Who is driving, so their payment records are their own. Anything outside
-    [a-z0-9_-] is dropped; empty means the ledger is shared, as it was."""
 
 
 class ResumeRequest(BaseModel):
@@ -156,39 +152,24 @@ class SteerRequest(BaseModel):
     text: str = Field(min_length=1, max_length=200)
 
 
-_OPERATOR = re.compile(r"[^a-z0-9_-]")
+def _execution(run_id: str, conversation_id: str) -> ExecutionContext:
+    """The run as semora sees it: a branch of a conversation.
 
-
-def _session_id(operator: str, scenario_id: str) -> str:
-    """The run whose steps this operator's effects are.
-
-    One session per person per scenario, so a charge outlives the agent run that made it
-    without outliving the visitor who made it. On a link two people can open at once,
-    sharing this would mean the first one charges and everyone after replays it.
+    The console's run id is semora's branch id. Semora scopes its ledger by the conversation,
+    so every entry names both, or a parked or recorded branch is not found again.
     """
-    who = _OPERATOR.sub("", operator.strip().lower())[:24]
-    return f"session:{who}:{scenario_id}" if who else f"session:{scenario_id}"
+    return ExecutionContext(branch_id=run_id, conversation_id=conversation_id)
 
 
-def _execution(run_id: str, session_id: str | None) -> ExecutionContext:
-    """The run as semora sees it: its id, plus the session whose effects it shares.
-
-    Semora's ledger and transcript are scoped through this context. Handing it the bare
-    run id left ``session_id`` empty, so nothing downstream could tell which session a
-    replayed call belonged to.
-    """
-    return ExecutionContext(run_id=run_id, session_id=session_id)
-
-
-def _session_step(session_id: str) -> Any:
-    """A leased business step for the session, taken and released per effect.
+def _session_step(conversation_id: str) -> Any:
+    """A leased business step for the conversation, taken and released per effect.
 
     A fresh attempt each time rather than one held open: nothing else holds this run's
     lease, and a worker that grabbed it for the length of an agent turn would contend
     with its own tools.
     """
 
-    return session_step(_store, session_id, ttl=LEASE_TTL)
+    return session_step(_store, conversation_id, ttl=LEASE_TTL)
 
 
 class RecoverRequest(BaseModel):
@@ -214,7 +195,7 @@ _SESSION_KEY = "console:session"
 # What a later process needs to continue a run. `agent` is rebuilt from `scenario_id`,
 # and the projector's event bookkeeping is per-process, so neither is stored.
 _DURABLE_SESSION = (
-    "units", "scenario_id", "session_id", "conversation_id", "origin_id", "source_run_id",
+    "units", "scenario_id", "conversation_id", "origin_id", "source_run_id",
     "origin_runs", "default_fork_origin", "crash", "crash_at", "terminal",
     "fork_parent", "fork_event_id", "fork_edge", "fork_mode",
     # Which coordinates a fork may start from. Rebuilt only by watching a run stream, so
@@ -251,10 +232,10 @@ async def _session(run_id: str) -> dict[str, Any]:
         # event_ids is the same set of keys; it is a membership check, not a second fact.
         "event_ids": set(forkable),
         "forkable_events": dict(forkable),
-        # The session, not the scenario: a resumed run must rejoin the session whose
-        # steps its effects are, or the charge it already made is invisible to it.
+        # A resumed run must rejoin the conversation whose steps its effects are, or the
+        # charge it already made is invisible to it.
         "agent": _new_agent(
-            str(stored.get("session_id") or f"session:{stored.get('scenario_id')}"),
+            str(stored["conversation_id"]),
             intent=str(stored["origin_id"]) if stored.get("origin_id") else None,
         ),
         "aborted": False,
@@ -314,7 +295,7 @@ async def _publish_source_branch(
 ) -> None:
     """Expose the completed source lineage so the UI can compare it with a fork."""
     history = await runtime.committed_history(execution, conversation_id)
-    snapshot = branch_snapshot("source", execution.run_id, conversation_id, origin_id, history)
+    snapshot = branch_snapshot("source", execution.branch_id, conversation_id, origin_id, history)
     await runtime.events.publish("branch_snapshot", **snapshot)
 
 
@@ -647,8 +628,8 @@ async def _stream(
             lease_ttl=LEASE_TTL,
         )
         meta = {"kind": "meta", "run_id": run_id, "units": selected}
-        if session is not None and session.get("session_id"):
-            meta["session_id"] = session["session_id"]
+        if session is not None:
+            meta["conversation_id"] = session["conversation_id"]
         if session is not None and session.get("fork_parent"):
             meta.update(
                 {
@@ -770,17 +751,17 @@ async def run(request: RunRequest) -> StreamingResponse:
     if scenario is None:
         raise HTTPException(status_code=404, detail="unknown scenario_id")
     # Time-ordered, so a ledger row sorts by when the run started rather than by chance.
-    run_id = new_run_id()
+    run_id = new_branch_id()
     selected = [u for u in request.units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{run_id}:prompt:{uuid.uuid4().hex[:8]}"
-    session_id = _session_id(request.operator, request.scenario_id)
-    agent = _new_agent(session_id, intent=prompt_id)
+    # The conversation is the session, as it is for Pydantic AI: one thread of resumes,
+    # recoveries and forks. Business effects and semora's ledger are both filed under it.
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
+    agent = _new_agent(conversation_id, intent=prompt_id)
     origin_runs = {prompt_id: run_id}
     _sessions[run_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
-        "session_id": session_id,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_run_id": run_id,
@@ -792,12 +773,12 @@ async def run(request: RunRequest) -> StreamingResponse:
     }
     await _remember_session(run_id, _sessions[run_id])
     if crash_at is not None:
-        # The effect seam watches the session, because that is where a charge is a step.
+        # The effect seam watches the conversation, because that is where a charge is a step.
         # The others watch the agent run they interrupt.
-        _store.arm(session_id if crash_at == "effect" else run_id, at=crash_at)
+        _store.arm(conversation_id if crash_at == "effect" else run_id, at=crash_at)
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        execution = _execution(run_id, session_id)
+        execution = _execution(run_id, conversation_id)
         outcome = await runtime.dispatch(
             execution,
             agent,
@@ -845,7 +826,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail=str(failure)) from failure
     coordinate = checkpoint.before if request.edge == "before" else checkpoint.after
 
-    fork_run_id = new_run_id()
+    fork_run_id = new_branch_id()
     fork_units = [name for name in request.units if name in UNITS_BY_NAME]
     fork_mode = "input" if coordinate.origin_id is not None else "leaf"
     child_origin_runs = dict(source["origin_runs"])
@@ -862,7 +843,6 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "crash_at": None,
         "conversation_id": source["conversation_id"],
         "origin_id": source["origin_id"],
-        "session_id": source["session_id"],
         "source_run_id": request.run_id,
         "origin_runs": child_origin_runs,
         "default_fork_origin": coordinate.origin_id,
@@ -885,7 +865,6 @@ async def fork(request: ForkRequest) -> StreamingResponse:
             event_id=request.event_id,
             edge=request.edge,
             run_id=fork_run_id,
-            session_id=source.get("session_id"),
             conversation_id=source["conversation_id"],
             agent=source["agent"],
             controls=compose_controls(fork_units),
@@ -927,7 +906,7 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await runtime.dispatch(
-            _execution(request.run_id, session.get("session_id")),
+            _execution(request.run_id, session["conversation_id"]),
             session["agent"],
             Answer(request.pending_id, answer),
             conversation_id=session["conversation_id"],
@@ -954,7 +933,7 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         # make a failed round a transcript fact — so the history a host could hand over
         # is empty and the durable model step is what reconstructs the round.
         return await runtime.dispatch(
-            _execution(request.run_id, session.get("session_id")),
+            _execution(request.run_id, session["conversation_id"]),
             session["agent"],
             Recover(),
             conversation_id=session["conversation_id"],
@@ -976,13 +955,16 @@ async def _drop_queued_inputs(run_id: str) -> int:
     aimed at a run the operator has already killed, and it would be waiting there for
     whoever recovers next. Empty the queue first, then stop.
     """
+    # The queue is semora's, filed under the conversation; the bare store does not see it.
+    session = await _session(run_id)
+    ledger = _store.for_execution(_execution(run_id, session["conversation_id"]))
     waiting = [
         record.input_id
-        for record in await _store.list_inputs(run_id)
+        for record in await ledger.list_inputs(run_id)
         if record.status in {"pending", "claimed"}
     ]
     if waiting:
-        await _store.discard_inputs(run_id, waiting)
+        await ledger.discard_inputs(run_id, waiting)
     return len(waiting)
 
 
@@ -1038,7 +1020,7 @@ async def steer(request: SteerRequest) -> dict[str, Any]:
     # the run to the new prompt. A steer is a note added to the queue, never a decision
     # taken on the operator's behalf about the call in front of them.
     await runtime.submit(
-        _execution(request.run_id, session.get("session_id")),
+        _execution(request.run_id, session["conversation_id"]),
         PendingInput("user_steer", UserPromptPart(text)),
         input_mode="headless",
     )

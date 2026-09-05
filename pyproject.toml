@@ -5,9 +5,9 @@ description = "Operator console showcasing semora's composable control plane —
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "semora>=0.3.3,<0.4",
+  "semora>=0.4,<0.5",
   "pydantic-ai-slim[openai]>=2.38,<3",
-  "semora-store-pg>=0.3.3,<0.4",
+  "semora-store-pg>=0.4,<0.5",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "python-dotenv>=1",

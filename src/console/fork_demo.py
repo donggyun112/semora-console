@@ -264,7 +264,6 @@ async def run_from_event(
     on_event=None,
     aborted=None,
     rejournal=False,
-    session_id=None,
 ):
     checkpoint = await read_event_checkpoint(transcript, conversation_id, event_id)
     coordinate = checkpoint.before if edge == "before" else checkpoint.after
@@ -280,9 +279,11 @@ async def run_from_event(
             if not history[-1].parts:
                 history.pop()
         prompt = coordinate.prompt
+    # Both ends of the fork are branches of the same conversation.
+    branch = ExecutionContext(branch_id=run_id, conversation_id=conversation_id)
     observed = ObservedControls(
         runtime,
-        run_id,
+        branch,
         controls,
         on_event,
         aborted=aborted,
@@ -291,11 +292,10 @@ async def run_from_event(
     # semora copies the source's finished effects into the branch's ledger so they replay,
     # and carries an unreported one over as doubt. Without rejournal the branch's gate is asked
     # about each copied effect first; with it, only the journal sees them.
-    # Both ends of the fork belong to the same session: the branch inherits the source's.
     result = await runtime.engine.fork(
-        ExecutionContext(run_id=coordinate.from_run_id, session_id=session_id),
+        ExecutionContext(branch_id=coordinate.from_run_id, conversation_id=conversation_id),
         None,
-        ExecutionContext(run_id=run_id, session_id=session_id),
+        branch,
         agent,
         prompt,
         history=history,

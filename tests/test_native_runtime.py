@@ -71,12 +71,33 @@ def test_native_run_emits_result_and_keeps_frames(monkeypatch):
         assert stored["frames"] == rows
 
 
-def test_new_request_in_same_session_charges_again(monkeypatch):
+def test_a_tool_record_lives_in_the_conversation_ledger(monkeypatch):
+    # semora files a branch's steps under its conversation. The console reads them back through
+    # the same view, so CALL REPLAY answers "did this conversation already do this", not merely
+    # "does this branch id have a record somewhere".
+    from semora_store import ExecutionContext
+
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        rows = start(client)
+        meta = get(rows, "meta")
+        assert results(rows)[0]["result"]["execution"]["replayed"] is False
+    branch, conversation = meta["run_id"], meta["conversation_id"]
+    inside = server._store.for_execution(
+        ExecutionContext(branch_id=branch, conversation_id=conversation)
+    )
+    assert asyncio.run(inside.read(branch, "tool:charge-1")).status == "done"
+    assert asyncio.run(server._store.read(branch, "tool:charge-1")).status == "absent", (
+        "outside the conversation the branch has no record"
+    )
+
+
+def test_new_request_charges_again(monkeypatch):
     # Provider call ids can repeat across requests; request identity still separates effects.
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:
-        first = start(client, operator="alice")
-        second = start(client, operator="alice")
+        first = start(client)
+        second = start(client)
         assert results(first)[0]["result"]["idempotency"]["replayed"] is False
         assert results(second)[0]["result"]["idempotency"]["replayed"] is False
 
@@ -245,9 +266,9 @@ def test_tool_fork_rejournals_raw_result_without_reexecution(monkeypatch):
         assert results(forked)[0]["result"]["execution_count"] == 1
 
 
-def test_every_entry_hands_semora_the_session(monkeypatch):
-    # semora scopes its ledger through ExecutionContext. A bare run id left session_id
-    # empty, so a replayed call could not be tied to the session whose effects it shared.
+def test_every_entry_hands_semora_the_conversation(monkeypatch):
+    # semora scopes its ledger by the conversation on ExecutionContext. A bare branch id would
+    # leave it empty, and a branch that parked inside a conversation could not be found again.
     from semora import AgentRuntime as Engine
     from semora_store import ExecutionContext
 
@@ -263,9 +284,10 @@ def test_every_entry_hands_semora_the_session(monkeypatch):
 
     install(monkeypatch, CHARGE)
     with TestClient(server.app) as client:
-        rows = start(client, units=["approval"], operator="Alice")
+        rows = start(client, units=["approval"])
         meta = get(rows, "meta")
-        assert meta["session_id"] == "session:alice:charge"
+        assert meta["conversation_id"].startswith("conv-")
+        conversations = {meta["conversation_id"]}
         resumed = frames(
             client.post(
                 "/api/resume",
@@ -280,7 +302,7 @@ def test_every_entry_hands_semora_the_session(monkeypatch):
 
     install(monkeypatch, READ)
     with TestClient(server.app) as client:
-        rows = start(client, "fork_masking", ["pii_mask"], operator="Alice")
+        rows = start(client, "fork_masking", ["pii_mask"])
         gate = next(row for row in rows if row.get("type") == "pre_tool_use")
         forked = frames(
             client.post(
@@ -288,12 +310,16 @@ def test_every_entry_hands_semora_the_session(monkeypatch):
                 json={"run_id": get(rows, "meta")["run_id"], "event_id": gate["event_id"], "edge": "before", "units": []},
             )
         )
-        assert get(forked, "meta")["session_id"] == "session:alice:fork_masking"
+        source_conversation = get(rows, "meta")["conversation_id"]
+        conversations.add(source_conversation)
+        assert get(forked, "meta")["conversation_id"] == source_conversation, (
+            "a fork stays in its source's conversation"
+        )
 
     assert [name for name, _ in seen] == ["run", "resume", "run", "fork"]
     for name, first in seen:
         assert isinstance(first, ExecutionContext), (name, first)
-        assert first.session_id in {"session:alice:charge", "session:alice:fork_masking"}, name
+        assert first.conversation_id in conversations, name
 
 
 def test_fork_changed_gate_revalidates_recorded_effect(monkeypatch):

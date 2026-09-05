@@ -668,7 +668,6 @@ export function createConsole({
     chatToolNodes: new Map(),
   };
 
-  const OPERATOR_KEY = "semora-console:operator";
   const RUN_KEY = "semora-console:run";
 
   function rememberRun(runId) {
@@ -687,23 +686,6 @@ export function createConsole({
     try {
       return globalThis.localStorage?.getItem(RUN_KEY) ?? "";
     } catch {
-      return "";
-    }
-  }
-
-  function operatorId() {
-    // One id per browser, minted on first visit: two people on the same link get their
-    // own payment records without anyone signing in or typing a name.
-    try {
-      const storage = globalThis.localStorage;
-      let id = storage?.getItem(OPERATOR_KEY);
-      if (!id) {
-        id = globalThis.crypto.randomUUID().slice(0, 24);
-        storage?.setItem(OPERATOR_KEY, id);
-      }
-      return id;
-    } catch {
-      // A browser that refuses storage still runs; the ledger is just shared again.
       return "";
     }
   }
@@ -1222,7 +1204,6 @@ export function createConsole({
     await stream("/api/run", {
       scenario_id: state.run.active.scenarioId,
       units: [...state.run.active.unitNames],
-      operator: operatorId(),
     });
   }
 

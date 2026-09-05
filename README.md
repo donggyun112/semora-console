@@ -34,8 +34,8 @@ docker compose up --build
 ```
 
 The image installs semora 0.3 from PyPI like every other dependency. Its new
-`console-ledger-v03` volume keeps 0.3 data separate
-from the previous `console-ledger` volume. The old volume is retained. Use
+`console-ledger-v04` volume keeps 0.4 data separate
+from the earlier volumes, which are retained. Use
 `docker compose --profile two-workers up --build` for a second worker on port 8851.
 `CONSOLE_LEASE_TTL` controls lease duration (default 60 seconds).
 
@@ -72,12 +72,14 @@ record lands: recovery reports **indeterminate** and never retries that effect.
 
 ## Effect identity and branching
 
-The operator/scenario session owns business effects. Each call uses
-`tool:{call_id}` within its Semora execution run; each payment also uses the session
-business key `charge:{request}:{customer}`.
+The conversation owns business effects, and it is the conversation Pydantic AI knows: one
+thread of resumes, recoveries and forks. A console run is a Semora *branch* of that
+conversation. Each call uses `tool:{call_id}` within its branch, filed under the
+conversation; each payment also uses the conversation's business key
+`charge:{request}:{customer}`.
 The request is the origin prompt ID: recoveries, resumes, and forks inherit it;
 a new request gets a new ID. A changed amount conflicts with the recorded payment.
-These session steps acquire and renew a lease, fence writes, and retain interrupted
+These conversation steps acquire and renew a lease, fence writes, and retain interrupted
 intent. The tools keep no independent deduplication dictionary.
 
 Fork checkpoints contain native Pydantic AI message snapshots in transcript metadata.

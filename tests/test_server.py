@@ -10,7 +10,6 @@ from console.server import (
     _is_aborted,
     _project_event,
     _register_frame,
-    _session_id,
     app,
 )
 
@@ -450,6 +449,7 @@ def test_a_steer_waits_in_the_ledger_when_no_attempt_is_running_here():
     """
     server._sessions["run-steer"] = {
         "units": [], "aborted": False, "scenario_id": "note", "terminal": False,
+        "conversation_id": "conv-steer",
     }
     try:
         with TestClient(app) as c:
@@ -599,7 +599,9 @@ def test_abort_unknown_run_is_404():
 
 def test_abort_flags_existing_session():
     """POST /api/abort trips the loop's aborted() flag for that run."""
-    server._sessions["run-test"] = {"units": [], "aborted": False, "scenario_id": "note"}
+    server._sessions["run-test"] = {
+        "units": [], "aborted": False, "scenario_id": "note", "conversation_id": "conv-test",
+    }
     try:
         with TestClient(app) as c:
             r = c.post("/api/abort", json={"run_id": "run-test"})
@@ -607,19 +609,6 @@ def test_abort_flags_existing_session():
         assert _is_aborted("run-test") is True
     finally:
         server._sessions.pop("run-test", None)
-
-def test_two_visitors_do_not_replay_each_others_charges():
-    """Effects are steps of a session, and the session is whoever is driving.
-
-    On a link two people can open at once, one session would mean the first visitor
-    charges and the rest watch a replay of it.
-    """
-    assert _session_id("donggyun", "charge") == "session:donggyun:charge"
-    assert _session_id("Dong Gyun!", "charge") == "session:donggyun:charge", "sanitised"
-    assert _session_id("", "charge") == "session:charge", "unnamed share one session"
-    assert _session_id("   ", "charge") == "session:charge"
-    assert _session_id("a" * 80, "charge") == f"session:{'a' * 24}:charge", "bounded"
-    assert _session_id("alice", "charge") != _session_id("bob", "charge")
 
 def test_a_run_nobody_kept_is_not_offered_back():
     """A wiped ledger has to say so, or the console restores a run that does not exist."""
