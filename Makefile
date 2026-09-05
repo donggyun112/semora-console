@@ -1,7 +1,7 @@
 # Every target here is a command this project actually needs; nothing is wrapped for the
 # sake of having a wrapper. `make` on its own lists them.
 .DEFAULT_GOAL := help
-.PHONY: help install test test-py test-js up down logs rebuild acceptance \
+.PHONY: help install test test-py test-js up down logs rebuild acceptance browser \
         two-workers ledger reset-ledger clean
 
 BASE ?= http://localhost:8850
@@ -36,6 +36,11 @@ rebuild: up  ## Alias for up; the image rebuilds either way
 
 acceptance: up  ## Twelve live checks against a real model and a real ledger
 	uv run python scripts/acceptance.py $(BASE)
+
+browser: up  ## Drive the page like a person: approve, deny, reload, fork, recover, abort
+	uv sync --group browser
+	uv run --group browser playwright install chromium
+	CONSOLE_URL=$(BASE) uv run --group browser pytest -q tests/test_browser.py
 
 two-workers:  ## A second worker on :8851, sharing the ledger
 	docker compose --profile two-workers up -d --build
