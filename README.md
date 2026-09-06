@@ -1,6 +1,6 @@
 # Semora Control Plane Console
 
-An operator console for Semora 0.3, the execution extension for Pydantic AI. Choose
+An operator console for Semora 0.5, the execution extension for Pydantic AI. Choose
 policies, run a fixed scenario, approve a suspended tool call, recover a simulated
 worker crash, or branch a completed run from a recorded input or tool boundary.
 
@@ -26,14 +26,15 @@ This keeps model calls on Semora's durable model-request path.
 
 Without `DATABASE_URL`, steps and transcripts are process-local memory stores.
 Set `DATABASE_URL` to a **fresh PostgreSQL database** for durable operation.
-Semora 0.2/LangChain continuations and transcripts cannot be resumed by 0.3; this
-transition does not migrate in-flight runs or reinterpret their stored messages.
+Semora 0.3 branches and transcripts cannot be resumed by 0.4 — the durable unit is now
+a `branch_id`, the ledger is scoped by conversation, and entries are `pai-v2`; this
+transition does not migrate in-flight branches or reinterpret their stored messages.
 
 ```sh
 docker compose up --build
 ```
 
-The image installs semora 0.3 from PyPI like every other dependency. Its new
+The image installs semora 0.5 from PyPI like every other dependency. Its new
 `console-ledger-v04` volume keeps 0.4 data separate
 from the earlier volumes, which are retained. Use
 `docker compose --profile two-workers up --build` for a second worker on port 8851.
