@@ -316,7 +316,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "indeterminate") {
-      append("indeterminate", "indeterminate", frame.message ?? "이 효과는 알 수 없습니다", {
+      append("indeterminate", "indeterminate", frame.message ?? "복구할 수 없습니다", {
         tone: "halt",
         details: { step: frame.step ?? null, raw: frame },
       });

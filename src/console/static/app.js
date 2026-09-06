@@ -20,6 +20,7 @@ import {
   markRecoverable,
   replayStream,
   returnToDraft,
+  settleRun,
   startRun,
   suspendRun,
   updateDraft,
@@ -87,8 +88,14 @@ export function getLaunchCopy(scenario) {
   };
 }
 
+const SETTLED_TOOL = new Set(["completed", "blocked", "unknown"]);
+
 function lastPendingTool(tools) {
-  return [...tools].reverse().find((tool) => tool.status === "running");
+  // Any call the run has not settled, not merely one still executing. A call that parked
+  // for approval is "approval", so a crash after the park left nothing "running" to fall
+  // back to and the frame updated no card at all — the charge kept reading "승인 대기"
+  // long after the worker died under it.
+  return [...tools].reverse().find((tool) => !SETTLED_TOOL.has(tool.status));
 }
 
 // The demo offers eighty combinations and no order to read them in. These are the
@@ -111,11 +118,11 @@ export const GUIDE = Object.freeze([
   }),
   Object.freeze({
     scenarioId: "crash", unitNames: Object.freeze(["approval"]),
-    label: "대기 중 장애", teaches: "복구해도 청구는 한 번",
+    label: "복구되는 장애", teaches: "복구해도 청구는 한 번",
   }),
   Object.freeze({
     scenarioId: "unknown_effect", unitNames: Object.freeze([]),
-    label: "청구 도중 장애", teaches: "나갔는지 아무도 모른다",
+    label: "복구할 수 없는 장애", teaches: "나갔는지 아무도 모른다",
   }),
   Object.freeze({
     scenarioId: "fork_masking", unitNames: Object.freeze(["pii_mask"]),
@@ -318,6 +325,19 @@ export function deriveChatView(prompt, frames) {
       if (tool) {
         tool.status = "recoverable";
         tool.summary = "복구 대기";
+      }
+      continue;
+    }
+
+    if (frame?.kind === "indeterminate") {
+      // The ledger will not claim this effect either way, and no recovery will change
+      // that. The call is settled in the only sense that matters here — nothing is
+      // waiting on anyone — so it must stop wearing the amber of a pending decision.
+      // `step` is the ledger's key, never the call id, so the card is the parked one.
+      const tool = lastPendingTool(tools);
+      if (tool) {
+        tool.status = "unknown";
+        tool.summary = "알 수 없음";
       }
     }
   }
@@ -641,6 +661,7 @@ export function createConsole({
     "details-body", "steer-form", "steer-text", "policy-drawer", "policy-close",
     "units", "compose-summary", "approval", "approval-args", "approve", "deny",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
+    "settlement", "settle-charged", "settle-unsent",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
   dom.terminalActions = documentRef.querySelector(".terminal-actions");
@@ -666,6 +687,10 @@ export function createConsole({
     forkEventIds: new Set(),
     selectedVersionBranchId: null,
     chatToolNodes: new Map(),
+    // The run stopped on an effect the ledger could not settle, so a person can still
+    // bring the answer back. Only this state offers reconciliation; every other error is
+    // a failure to retry, not a fact to supply.
+    undecided: false,
   };
 
   const RUN_KEY = "semora-console:run";
@@ -923,7 +948,9 @@ export function createConsole({
           ? "✓"
           : tool.status === "blocked"
             ? "×"
-            : "·";
+            : tool.status === "unknown"
+              ? "?"
+              : "·";
         const copy = documentRef.createElement("span");
         const name = documentRef.createElement("strong");
         name.textContent = tool.name;
@@ -1014,6 +1041,9 @@ export function createConsole({
     const canRecover = selectedIsCurrent && selectedPhase === "recoverable";
     setHidden(dom.recovery, !canRecover);
     if (canRecover) attachInlineAction(dom.recovery, null, "recoverable");
+    const canSettle = selectedIsCurrent && state.undecided && state.run.phase === "error";
+    setHidden(dom.settlement, !canSettle);
+    if (canSettle) attachInlineAction(dom.settlement, null, "unknown");
     renderOutcome(frames, selectedPhase, selectedIsCurrent);
     renderRows(selectedPhase, selectedIsCurrent);
   }
@@ -1136,7 +1166,8 @@ export function createConsole({
     } else if (frame.kind === "indeterminate") {
       // Not a failure. The run stopped because the ledger will not claim an effect it
       // cannot vouch for, and the next move is a person's.
-      state.run = failRun(state.run, frame.message ?? "이 효과는 알 수 없습니다");
+      state.undecided = true;
+      state.run = failRun(state.run, frame.message ?? "복구할 수 없습니다");
     } else if (frame.kind === "error") {
       state.run = failRun(state.run, frame.message ?? "실행에 실패했습니다.");
     } else if (frame.kind === "policy_summary") {
@@ -1195,6 +1226,7 @@ export function createConsole({
     if (!canStartRun(state.run)) return;
     state.run = startRun(state.run);
     state.frames = [];
+    state.undecided = false;
     state.rows = [];
     state.selectedRowId = null;
     state.forkEventIds.clear();
@@ -1247,6 +1279,23 @@ export function createConsole({
   async function recover() {
     if (state.run.phase !== "recoverable") return;
     await continueRun("/api/recover", { branch_id: state.run.branchId });
+  }
+
+  async function settle(charged) {
+    // The ledger stopped because it could not vouch for the effect. A person went and
+    // looked; this hands that fact back and lets the run finish the way it always would
+    // have — replaying a charge that left, or performing one that never did.
+    if (!state.undecided || !state.run.branchId) return;
+    try {
+      await post("/api/settle", { branch_id: state.run.branchId, charged });
+      state.undecided = false;
+      state.run = settleRun(state.run);
+      render();
+    } catch (error) {
+      failCurrent(error);
+      return;
+    }
+    await recover();
   }
 
   function forkPlan() {
@@ -1320,6 +1369,7 @@ export function createConsole({
     rememberRun(null);
     state.run = returnToDraft(state.run, { source: "active" });
     state.frames = [];
+    state.undecided = false;
     state.selectedRowId = null;
     state.forkEventIds.clear();
     state.selectedVersionBranchId = null;
@@ -1360,6 +1410,8 @@ export function createConsole({
     dom.approve.addEventListener("click", () => void decide(true));
     dom.deny.addEventListener("click", () => void decide(false));
     dom.recover.addEventListener("click", () => void recover());
+    dom["settle-charged"].addEventListener("click", () => void settle(true));
+    dom["settle-unsent"].addEventListener("click", () => void settle(false));
     dom["steer-form"].addEventListener("submit", sendSteer);
     dom["details-close"].addEventListener("click", () => {
       state.selectedRowId = null;
@@ -1427,6 +1479,7 @@ export function createConsole({
       console.error("restore failed", error);
       state.run = createRunState();
       state.frames = [];
+      state.undecided = false;
       state.rows = [];
       state.selectedVersionBranchId = null;
     } finally {

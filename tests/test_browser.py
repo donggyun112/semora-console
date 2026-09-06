@@ -160,12 +160,12 @@ def test_deny_reload_while_parked_abort(page):
 
 
 def test_indeterminate_rejournal_and_menu_scenario(page):
-    scene(page, 5)  # 청구 도중 장애: the payment leaves, its record does not
+    scene(page, 5)  # 복구할 수 없는 장애: the payment leaves, its record does not
     page.click("#run")
     page.wait_for_selector("#recovery:not(.hidden)", timeout=LONG)
     page.click("#recover")
     page.wait_for_selector("#run-error:not(.hidden)", timeout=LONG)
-    assert "나갔을 수도" in page.inner_text("#run-error")
+    assert "복구할 수 없습니다" in page.inner_text("#run-error")
     assert '"status": "charged"' not in chat(page), "no result was invented"
     page.click("#return-draft")
     page.wait_for_selector("#launch:not(.hidden)", timeout=10_000)

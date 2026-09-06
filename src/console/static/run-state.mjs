@@ -156,6 +156,14 @@ export function finishRun(state, stopReason) {
   };
 }
 
+export function settleRun(state) {
+  // A person went to the provider and brought back the fact the ledger was missing, so a
+  // run that could not be decided is recoverable again. Only from `error`, and only the
+  // undecided run reaches here: this is reconciliation, not a general retry.
+  if (state.phase !== "error" || !state.active) throw new Error("nothing to settle");
+  return { ...state, phase: "recoverable", continuationBusy: false, error: null };
+}
+
 export function failRun(state, message) {
   if (!state.active) throw new Error("no active run");
   return {

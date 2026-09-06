@@ -41,6 +41,7 @@ import {
   markRecoverable,
   replayStream,
   returnToDraft,
+  settleRun,
   startRun,
   suspendRun,
   updateDraft,
@@ -1758,7 +1759,7 @@ assert.equal(nextGuideStep({ scenarioId: "leak", unitNames: [] }, "completed"), 
 const unknown = reduceFrames([
   { kind: "recoverable", step: "call-a", message: "워커 장애" },
   { kind: "indeterminate", step: "call-a",
-    message: "이 효과는 나갔을 수도, 안 나갔을 수도 있습니다" },
+    message: "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다" },
 ]);
 assert.deepEqual(unknown.map((row) => [row.kind, row.label]), [
   ["recovery", "recover"],
@@ -1880,5 +1881,42 @@ assert.equal(editedArgs(JSON.stringify(proposed, null, 2), proposed), null, "unt
 assert.deepEqual(editedArgs('{"customer_id": "c-001", "amount": "5"}', proposed), { customer_id: "c-001", amount: "5" });
 assert.throws(() => editedArgs("not json", proposed), SyntaxError);
 assert.throws(() => editedArgs("[1]", proposed), SyntaxError, "an array is not a call's arguments");
+
+// unknown_effect + approval: the call parks for a person, the worker dies mid-effect, and
+// recovery cannot decide. The card must not still read "승인 대기" — nobody is waiting on
+// the operator, and an amber "waiting" card next to a charge nobody can vouch for is the
+// one thing this screen must never say.
+const unresolvableFrames = [
+  { kind: "agent", event: { type: "tool_call", id: "charge-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
+  { kind: "unit", unit: "approval", verdict: "suspend", message: "charge_card은 되돌릴 수 없습니다. 승인이 필요합니다." },
+  { kind: "suspended", pending_id: "charge-1" },
+  // The resume re-emits the call, then the worker dies at the effect seam. `step` is an
+  // effect key here, so the card is found by falling back to the call still in flight.
+  { kind: "agent", event: { type: "tool_call", id: "charge-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
+  { kind: "recoverable", step: "charge:branch-1:prompt:abc:c-001", message: "워커 장애" },
+  { kind: "agent", event: { type: "tool_call", id: "charge-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
+  { kind: "indeterminate", step: "tool:charge-1", message: "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다" },
+];
+const unresolvableCard = deriveChatView("청구해줘.", unresolvableFrames).assistant.tools[0];
+assert.equal(unresolvableCard.status, "unknown", "an undecidable effect is not a call waiting on a person");
+assert.equal(unresolvableCard.summary, "알 수 없음");
+
+// The same fallback, one step earlier: a crash after an approval park has no "running"
+// card to fall back to, so the recoverable frame must still reach the parked call.
+const crashedAfterPark = deriveChatView("청구해줘.", unresolvableFrames.slice(0, 5))
+  .assistant.tools[0];
+assert.equal(crashedAfterPark.status, "recoverable", "the parked call is the one the crash left behind");
+assert.equal(crashedAfterPark.summary, "복구 대기");
+
+// Reconciliation puts an undecided run back on the recovery path — the person supplied
+// the fact the ledger was missing, so the run can be continued rather than restarted.
+const undecided = failRun(markRecoverable(streaming), "복구할 수 없습니다");
+assert.equal(undecided.phase, "error");
+const reconciled = settleRun(undecided);
+assert.equal(reconciled.phase, "recoverable");
+assert.equal(reconciled.error, null);
+assert.ok(beginContinuation(reconciled), "a settled run can continue");
+assert.throws(() => settleRun(streaming), /nothing to settle/, "only an undecided run settles");
+assert.throws(() => settleRun(createRunState()), /nothing to settle/, "and only a real one");
 
 console.log("run inspector state ok");

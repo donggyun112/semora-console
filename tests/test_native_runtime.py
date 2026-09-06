@@ -188,7 +188,9 @@ def test_human_denial_does_not_execute(monkeypatch):
                 },
             )
         )
-        assert get(resumed, "outcome")["outcome"]["stop_reason"] == "completed"
+        # A refusal is not a verdict the model routes around: the round ends where the
+        # person stopped it, so no further model turn can reach for another tool.
+        assert get(resumed, "outcome")["outcome"]["stop_reason"] == "aborted"
         assert not any(result.get("executed") for result in results(resumed))
         assert len(results(resumed)) == 1
 
@@ -217,6 +219,84 @@ def test_unknown_effect_is_never_retried(monkeypatch):
         )
         get(recovered, "indeterminate")
         assert not results(recovered)
+
+
+def test_approving_arms_no_seam_the_scenario_did_not_ask_for(monkeypatch):
+    """Every armed seam is consumed by the crash it was placed for.
+
+    Resuming used to arm a `commit` seam on the branch, which no crash scenario reaches:
+    `crash` with approval crashes at the gate, and `unknown_effect` crashes at the effect
+    seam before `finish_effect` delegates. It never fired and never drained, so the
+    registry grew a live landmine per run.
+    """
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        rows = start(client, "unknown_effect", ["approval"])
+        branch_id = get(rows, "meta")["branch_id"]
+        client.post("/api/resume", json={
+            "branch_id": branch_id,
+            "pending_id": get(rows, "suspended")["pending_id"],
+            "approved": True,
+        })
+        client.post("/api/recover", json={"branch_id": branch_id})
+        assert server._store._armed == {}
+
+
+def _undecided(client, monkeypatch):
+    """Drive unknown_effect to the state no ledger can settle, and return its branch."""
+    install(monkeypatch, CHARGE)
+    rows = start(client, "unknown_effect")
+    get(rows, "recoverable")
+    branch_id = get(rows, "meta")["branch_id"]
+    recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
+    get(recovered, "indeterminate")
+    return branch_id
+
+
+def test_settling_a_confirmed_charge_replays_it_instead_of_charging_again(monkeypatch):
+    """The person checked the provider: the money left. Recovery must not send it twice."""
+    with TestClient(server.app) as client:
+        branch_id = _undecided(client, monkeypatch)
+        settled = client.post("/api/settle", json={"branch_id": branch_id, "charged": True})
+        assert settled.status_code == 200, settled.text
+
+        recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
+        assert get(recovered, "outcome")["outcome"]["stop_reason"] == "completed"
+        result = results(recovered)[0]["result"]
+        assert '"status": "charged"' in result["text"]
+        # Nothing performed the charge in this process: the record came from the provider.
+        assert result["execution_count"] == 0
+        assert result["idempotency"]["replayed"] is True
+
+
+def test_settling_an_unsent_charge_performs_it_for_the_first_time(monkeypatch):
+    """The provider never saw it. Recovery is the charge's first and only execution."""
+    with TestClient(server.app) as client:
+        branch_id = _undecided(client, monkeypatch)
+        settled = client.post("/api/settle", json={"branch_id": branch_id, "charged": False})
+        assert settled.status_code == 200, settled.text
+
+        recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
+        assert get(recovered, "outcome")["outcome"]["stop_reason"] == "completed"
+        result = results(recovered)[0]["result"]
+        assert '"status": "charged"' in result["text"]
+        assert result["idempotency"]["replayed"] is False, "it performed, it did not replay"
+        # Two, and the console says two on purpose. The crashed attempt already ran the
+        # body once before losing its record; the operator's answer is the claim that the
+        # first one never reached the provider. The counter reports what this process did,
+        # not what the provider saw — so an operator who answers wrong sees the exposure.
+        assert result["execution_count"] == 2
+
+
+def test_settling_needs_an_undecided_effect(monkeypatch):
+    """A run that never lost track of an effect has nothing to reconcile."""
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        rows = start(client)
+        refused = client.post(
+            "/api/settle", json={"branch_id": get(rows, "meta")["branch_id"], "charged": True}
+        )
+        assert refused.status_code == 409
 
 
 def test_parallel_batch_approval_waits_for_every_answer(monkeypatch):

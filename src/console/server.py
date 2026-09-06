@@ -145,6 +145,15 @@ class AbortRequest(BaseModel):
     branch_id: str
 
 
+class SettleRequest(BaseModel):
+    """What a person confirmed with the payment provider about an undecided effect."""
+
+    branch_id: str
+    charged: bool
+    """True if the provider says the charge left. The ledger records it and never repeats
+    it; False forgets the attempt so recovery performs it for the first time."""
+
+
 class SteerRequest(BaseModel):
     """One operator nudge for the in-flight run's single steering queue."""
 
@@ -202,6 +211,9 @@ _DURABLE_SESSION = (
     # a worker that never saw the run had an empty map and refused every branch — the
     # transcript still held the events it was refusing to reach.
     "forkable_events", "frame_sequence",
+    # The two keys an indeterminate run could not settle: semora's tool step and the
+    # business effect key the write was carrying. `/api/settle` needs both.
+    "undecided_step", "undecided_effect",
 )
 
 
@@ -679,14 +691,23 @@ async def _stream(
                 }
             )
         except Indeterminate as unknown:
+            # The ledger cannot settle this one, but it knows exactly which two keys it
+            # could not settle. Remember them: reconciliation is the host's contract, and a
+            # host that forgot the coordinates of its own uncertainty cannot honour it.
+            if session is not None:
+                session["undecided_step"] = unknown.step
             await put(
                 {
                     "kind": "indeterminate",
                     "step": unknown.step,
-                    "message": "이 효과는 나갔을 수도, 안 나갔을 수도 있습니다",
+                    "message": "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다",
                 }
             )
         except SimulatedWorkerCrash as crashed:
+            # `step` at the effect seam is the business key the write was carrying — the
+            # idempotency key a person would take to the payment provider.
+            if session is not None and str(crashed.step).startswith("charge:"):
+                session["undecided_effect"] = crashed.step
             await put(
                 {
                     "kind": "recoverable",
@@ -901,8 +922,6 @@ async def resume(request: ResumeRequest) -> StreamingResponse:
     if request.units is not None:
         session["units"] = [name for name in request.units if name in UNITS_BY_NAME]
         await _remember_session(request.branch_id, session)
-    if session.get("crash") and session.get("crash_at") != "gate":
-        _store.arm(request.branch_id, at="commit")
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
         return await runtime.dispatch(
@@ -984,6 +1003,83 @@ async def kept_frames(branch_id: str) -> dict[str, Any]:
         "units": session.get("units") or [],
         "frames": _kept_frames(entries),
     }
+
+
+def _call_input(entries: list[dict[str, Any]], call_id: str) -> dict[str, Any]:
+    """The arguments of one tool call, as the conversation recorded them."""
+    for frame in _kept_frames(entries):
+        event = frame.get("event") if frame.get("kind") == "agent" else None
+        if event and event.get("type") == "tool_call" and event.get("id") == call_id:
+            return dict(event.get("input") or {})
+    return {}
+
+
+@app.post("/api/settle")
+async def settle(request: SettleRequest) -> dict[str, Any]:
+    """Record what a person confirmed with the payment provider, and free the run.
+
+    Semora will not decide an unreported effect, and it is right not to: the truth is at
+    the provider, not in the ledger. This is the other half of that contract — the host
+    carrying the answer back. Both ledgers are settled, because the run's step and the
+    business effect went `running` separately and either one left behind blocks a rerun.
+
+    ``charged`` records the effect as done; recovery then replays it and the charge never
+    leaves twice. ``not charged`` forgets it; recovery performs it for the first time.
+    """
+    session = await _session(request.branch_id)
+    tool_step = session.get("undecided_step")
+    effect_step = session.get("undecided_effect")
+    if not tool_step or not effect_step:
+        raise HTTPException(409, "이 실행에는 확정할 미결 효과가 없습니다")
+
+    conversation_id = str(session["conversation_id"])
+    call_id = str(tool_step).removeprefix("tool:")
+    args = _call_input(await _transcript.read(conversation_id), call_id)
+    amount = str(args.get("amount", "0"))
+
+    owner = f"console-settle:{uuid.uuid4().hex}"
+    token = await _store.acquire(conversation_id, owner, LEASE_TTL)
+    if not token:
+        raise HTTPException(409, "다른 워커가 이 대화를 잡고 있습니다")
+    try:
+        if request.charged:
+            # The shape `charge_card` would have recorded, with the one honest difference:
+            # this process performed nothing, so its effect count stays zero.
+            await _store.finish_effect(
+                conversation_id,
+                str(effect_step),
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"status": "charged", "amount": amount}, ensure_ascii=False
+                    ),
+                    "execution_count": 0,
+                    "amount": amount,
+                    "reconciled": True,
+                },
+                token,
+            )
+        else:
+            await _store.forget(conversation_id, str(effect_step), token)
+    finally:
+        await _store.release(conversation_id, owner)
+
+    # The run's own step always goes back to absent: the tool runs again either way, and
+    # lands on the business effect above — replaying a confirmed charge, or performing one
+    # that never left. That is the same seam a fork uses, not a new kind of replay.
+    scoped = _store.for_execution(_execution(request.branch_id, conversation_id))
+    branch_token = await scoped.acquire(request.branch_id, owner, LEASE_TTL)
+    if not branch_token:
+        raise HTTPException(409, "다른 워커가 이 실행을 잡고 있습니다")
+    try:
+        await scoped.forget(request.branch_id, str(tool_step), branch_token)
+    finally:
+        await scoped.release(request.branch_id, owner)
+
+    session.pop("undecided_step", None)
+    session.pop("undecided_effect", None)
+    await _remember_session(request.branch_id, session)
+    return {"ok": True, "charged": request.charged, "effect": effect_step}
 
 
 @app.post("/api/abort")
