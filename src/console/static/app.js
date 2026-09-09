@@ -1,4 +1,5 @@
 import { createNdjsonReader } from "./ndjson.mjs";
+import { applyStatic, currentLang, setLang, t, tf } from "./i18n.mjs";
 import {
   reduceFrames,
   resultBadges,
@@ -61,7 +62,7 @@ function policyChip(documentRef, name) {
 function makeResultBadge(documentRef, badge) {
   const chip = documentRef.createElement("span");
   chip.className = `result-badge kind-${badge.kind}`;
-  chip.textContent = `${badge.label} · ${badge.detail}`;
+  chip.textContent = `${badge.label} · ${t(badge.detail)}`;
   return chip;
 }
 
@@ -81,10 +82,17 @@ function checkedNames(container) {
   );
 }
 
+// A scenario carries both languages from the server, because its prompt is what the
+// model was actually sent. Everything the page draws about a scenario comes from here.
+export function localizedScenario(scenario, lang = currentLang()) {
+  return { ...scenario, ...(lang === "ko" ? {} : scenario?.[lang] ?? {}) };
+}
+
 export function getLaunchCopy(scenario) {
+  const copy = localizedScenario(scenario);
   return {
-    title: scenario.title,
-    prompt: scenario.prompt,
+    title: copy.title,
+    prompt: copy.prompt,
   };
 }
 
@@ -211,7 +219,7 @@ export function pendingCallArgs(frames, pendingId) {
 export function editedArgs(text, original) {
   const args = JSON.parse(text);
   if (!args || typeof args !== "object" || Array.isArray(args)) {
-    throw new SyntaxError("인자는 JSON 객체여야 합니다.");
+    throw new SyntaxError(t("인자는 JSON 객체여야 합니다."));
   }
   return JSON.stringify(args) === JSON.stringify(original) ? null : args;
 }
@@ -232,7 +240,7 @@ export function deriveChatView(prompt, frames) {
           id,
           name: event.name ?? "tool",
           status: "running",
-          summary: "실행 중",
+          summary: t("실행 중"),
           reason: null,
           badges: [],
         };
@@ -241,7 +249,7 @@ export function deriveChatView(prompt, frames) {
       }
       if (event.blocked) {
         tool.status = "blocked";
-        tool.summary = "정책으로 차단";
+        tool.summary = t("정책으로 차단");
         tool.reason = lastDenial?.message ?? null;
       }
       continue;
@@ -255,7 +263,7 @@ export function deriveChatView(prompt, frames) {
           id,
           name: event.name ?? "tool",
           status: "running",
-          summary: "실행 중",
+          summary: t("실행 중"),
           reason: null,
           badges: [],
         };
@@ -264,7 +272,7 @@ export function deriveChatView(prompt, frames) {
       }
       const blocked = event.executed === false;
       tool.status = blocked ? "blocked" : "completed";
-      tool.summary = blocked ? "실행 안 됨" : "실행 완료";
+      tool.summary = t(blocked ? "실행 안 됨" : "실행 완료");
       tool.reason = blocked
         ? (event.result?.message ?? lastDenial?.message ?? null)
         : null;
@@ -286,7 +294,7 @@ export function deriveChatView(prompt, frames) {
           id,
           name: payload.name ?? "tool",
           status: "completed",
-          summary: "실행 완료",
+          summary: t("실행 완료"),
           reason: null,
           badges: [],
         };
@@ -295,7 +303,7 @@ export function deriveChatView(prompt, frames) {
       }
       if (tool) {
         tool.status = "completed";
-        tool.summary = "실행 완료";
+        tool.summary = t("실행 완료");
         tool.reason = null;
         applyToolOutput(tool, payload.result);
       }
@@ -313,7 +321,7 @@ export function deriveChatView(prompt, frames) {
       const tool = toolById.get(frame.pending_id) ?? lastPendingTool(tools);
       if (tool) {
         tool.status = "approval";
-        tool.summary = "승인 대기";
+        tool.summary = t("승인 대기");
       }
       continue;
     }
@@ -324,7 +332,7 @@ export function deriveChatView(prompt, frames) {
       const tool = toolById.get(frame.step) ?? lastPendingTool(tools);
       if (tool) {
         tool.status = "recoverable";
-        tool.summary = "복구 대기";
+        tool.summary = t("복구 대기");
       }
       continue;
     }
@@ -337,7 +345,7 @@ export function deriveChatView(prompt, frames) {
       const tool = lastPendingTool(tools);
       if (tool) {
         tool.status = "unknown";
-        tool.summary = "알 수 없음";
+        tool.summary = t("알 수 없음");
       }
     }
   }
@@ -371,7 +379,7 @@ export function deriveBranchView(frames) {
 
 function versionPolicySuffix(units) {
   if (!Array.isArray(units)) return "";
-  return units.length ? ` · ${units.join(", ")}` : " · 정책 없음";
+  return units.length ? ` · ${units.join(", ")}` : ` · ${t("정책 없음")}`;
 }
 
 export function deriveRunVersions(frames) {
@@ -387,7 +395,7 @@ export function deriveRunVersions(frames) {
   return branchIds.map((branchId, index) => ({
     branchId,
     number: index + 1,
-    label: `v${index + 1} · ${index === 0 ? "원본" : "분기"}${versionPolicySuffix(unitsByRun.get(branchId))}`,
+    label: `v${index + 1} · ${t(index === 0 ? "원본" : "분기")}${versionPolicySuffix(unitsByRun.get(branchId))}`,
   }));
 }
 
@@ -538,18 +546,21 @@ export function getForkActionLabel(row, policies, mode = null) {
   // has to say, because "결과에서 분기" would be describing a boundary it is leaving.
   // When only the journal changed, the call is not re-gated either: the recorded result
   // is journaled again and nothing is asked of anyone.
-  const name = mode === "rejournal"
+  const name = t(mode === "rejournal"
     ? "기록된 결과에 새 정책만 적용"
     : mode === "retarget"
       ? "저장된 결과를 버리고 툴부터 다시"
-      : BOUNDARY_LABELS[row?.boundary] ?? "이 지점에서 분기";
+      : BOUNDARY_LABELS[row?.boundary] ?? "이 지점에서 분기");
   // The policies by name, split by whether this branch reaches them. A count said how
   // many were selected; what a person deciding where to branch needs is which of them
   // will run from here.
   const applies = policies?.applies ?? [];
   const skipped = policies?.skipped ?? [];
-  const parts = [name, `적용 ${applies.length ? applies.join(", ") : "없음"}`];
-  if (skipped.length) parts.push(`건너뜀 ${skipped.join(", ")}`);
+  const parts = [
+    name,
+    `${t("적용")} ${applies.length ? applies.join(", ") : t("없음")}`,
+  ];
+  if (skipped.length) parts.push(`${t("건너뜀")} ${skipped.join(", ")}`);
   return parts.join(" · ");
 }
 
@@ -662,11 +673,22 @@ export function createConsole({
     "units", "compose-summary", "approval", "approval-args", "approve", "deny",
     "recovery", "recover", "run-error", "boot-error", "boot-retry",
     "settlement", "settle-charged", "settle-unsent",
+    "lang",
   ];
   const dom = Object.fromEntries(ids.map((id) => [id, must(documentRef, id)]));
   dom.terminalActions = documentRef.querySelector(".terminal-actions");
   dom.errorActions = documentRef.querySelector(".error-actions");
   dom.inspector = documentRef.querySelector(".inspector");
+
+  // The markup ships in Korean; this is the one place that turns it, and it runs before
+  // anything renders so the page is never briefly in the language nobody chose.
+  dom.lang.value = currentLang();
+  dom.lang.addEventListener("change", () => {
+    setLang(dom.lang.value);
+    applyStatic(documentRef);
+    render();
+  });
+  applyStatic(documentRef);
 
   const state = {
     run: createRunState(),
@@ -724,7 +746,7 @@ export function createConsole({
     if (!names.length) {
       const empty = documentRef.createElement("span");
       empty.className = "policy-chip muted";
-      empty.textContent = "정책 없음";
+      empty.textContent = t("정책 없음");
       container.append(empty);
       return;
     }
@@ -754,10 +776,11 @@ export function createConsole({
         "aria-current",
         scenario.id === state.run.draft.scenarioId ? "true" : "false",
       );
+      const copy = localizedScenario(scenario);
       const title = documentRef.createElement("strong");
-      title.textContent = scenario.title;
+      title.textContent = copy.title;
       const risk = documentRef.createElement("span");
-      risk.textContent = scenario.risk;
+      risk.textContent = copy.risk;
       button.append(title, risk);
       button.addEventListener("click", () => chooseScenario(scenario.id));
       dom["scenario-menu"].append(button);
@@ -776,8 +799,8 @@ export function createConsole({
       // Label only. What each scene teaches belongs to the one being read, not to six
       // cards at once — six of those was a second row, and a second row pushed the
       // thing you press off the screen.
-      button.textContent = `${index + 1}. ${scene.label}`;
-      button.title = scene.teaches;
+      button.textContent = `${index + 1}. ${t(scene.label)}`;
+      button.title = t(scene.teaches);
       button.addEventListener("click", () => {
         if (!canEditDraft(state.run)) return;
         state.run = updateDraft(state.run, {
@@ -792,7 +815,9 @@ export function createConsole({
     const scene = GUIDE[at];
     setText(
       dom["guide-note"],
-      scene ? [scene.teaches, scene.then].filter(Boolean).join(" · ") : "",
+      scene
+        ? [scene.teaches, scene.then].filter(Boolean).map((line) => t(line)).join(" · ")
+        : "",
     );
     setHidden(dom["guide-note"], !scene);
   }
@@ -801,7 +826,7 @@ export function createConsole({
     const scenario = scenarioById(state.run.draft.scenarioId);
     if (!scenario) return;
     const copy = getLaunchCopy(scenario);
-    setText(dom["scenario-trigger"], scenario.title);
+    setText(dom["scenario-trigger"], copy.title);
     setText(dom["launch-title"], copy.title);
     setText(dom["launch-prompt"], copy.prompt);
     renderChips(dom["launch-policies"], state.run.draft.unitNames);
@@ -860,7 +885,7 @@ export function createConsole({
     if (state.forkEventIds.has(row.eventId)) {
       const marker = documentRef.createElement("span");
       marker.className = "trace-fork-origin";
-      marker.textContent = "분기 기준";
+      marker.textContent = t("분기 기준");
       button.append(marker);
     }
     button.addEventListener("click", () => selectRow(row.id));
@@ -881,7 +906,7 @@ export function createConsole({
       if (row.forkStart) {
         const cut = documentRef.createElement("div");
         cut.className = "trace-version-cut";
-        cut.textContent = "분기 시작";
+        cut.textContent = t("분기 시작");
         dom.trace.append(cut);
       }
       const entry = documentRef.createElement("article");
@@ -898,8 +923,8 @@ export function createConsole({
         const button = documentRef.createElement("button");
         button.type = "button";
         button.textContent = getForkActionLabel(row, policies, mode);
-        button.title = `${fork.resumesAt ?? "?"}부터 다시 실행`;
-        button.setAttribute("aria-label", `${index + 1}번 이벤트에서 다시 실행`);
+        button.title = tf("{0}부터 다시 실행", fork.resumesAt ?? "?");
+        button.setAttribute("aria-label", tf("{0}번 이벤트에서 다시 실행", index + 1));
         button.addEventListener("click", () => void forkSource(row));
         action.append(button);
         entry.append(action);
@@ -925,7 +950,7 @@ export function createConsole({
   function renderChat(scenario, frames) {
     dom["chat-thread"].replaceChildren();
     state.chatToolNodes.clear();
-    const view = deriveChatView(scenario?.prompt ?? "", frames);
+    const view = deriveChatView(localizedScenario(scenario ?? {}).prompt ?? "", frames);
 
     const user = makeChatMessage("user", "YOU");
     const userText = documentRef.createElement("p");
@@ -957,7 +982,7 @@ export function createConsole({
         copy.append(name);
         if (tool.reason) {
           const status = documentRef.createElement("small");
-          status.textContent = `${tool.summary} · ${tool.reason}`;
+          status.textContent = `${tool.summary} · ${t(tool.reason)}`;
           copy.append(status);
         } else if (!tool.badges?.length) {
           const status = documentRef.createElement("small");
@@ -979,7 +1004,7 @@ export function createConsole({
     }
     const assistantText = documentRef.createElement("p");
     assistantText.className = view.assistant.text ? "" : "chat-pending";
-    assistantText.textContent = view.assistant.text || "응답을 기다리는 중";
+    assistantText.textContent = view.assistant.text || t("응답을 기다리는 중");
     assistant.content.append(assistantText);
 
     dom["chat-thread"].append(user.message, assistant.message);
@@ -1002,20 +1027,26 @@ export function createConsole({
     const config = state.run.active;
     if (!config) return;
     const scenario = scenarioById(config.scenarioId);
-    setText(dom["run-title"], scenario?.title ?? config.scenarioId);
+    setText(
+      dom["run-title"],
+      scenario ? localizedScenario(scenario).title : config.scenarioId,
+    );
     const frames = selectRunFrames(state.frames, state.selectedVersionBranchId);
     const selectedPhase = deriveVersionPhase(frames, state.run.phase);
     const selectedIsCurrent = (
       !state.selectedVersionBranchId || state.selectedVersionBranchId === state.run.branchId
     );
-    setText(dom["run-status"], PHASE_LABELS[selectedPhase]);
+    setText(dom["run-status"], t(PHASE_LABELS[selectedPhase]));
     const versionMeta = frames.find((frame) => frame.kind === "meta");
     renderChips(dom["run-policies"], versionMeta?.units ?? config.unitNames);
     setHidden(dom.abort, !(selectedIsCurrent && ACTIVE_PHASES.has(state.run.phase)));
     setHidden(dom["steer-form"], !(selectedIsCurrent && canSteer(state.run)));
     setHidden(dom["run-error"], selectedPhase !== "error");
     const versionError = [...frames].reverse().find((frame) => frame.kind === "error");
-    setText(dom["run-error"], versionError?.message ?? (selectedIsCurrent ? state.run.error : null));
+    setText(
+      dom["run-error"],
+      t(versionError?.message ?? (selectedIsCurrent ? state.run.error : null)),
+    );
     setHidden(dom.errorActions, !(selectedIsCurrent && selectedPhase === "error"));
     renderVersions();
     const chatFrames = selectRunFrames(
@@ -1102,14 +1133,14 @@ export function createConsole({
         });
         const copy = documentRef.createElement("span");
         const title = documentRef.createElement("strong");
-        title.textContent = unit.title ?? unit.name;
+        title.textContent = t(unit.title ?? unit.name);
         const desc = documentRef.createElement("small");
         const activity = state.policyActivity.get(unit.name);
         desc.textContent = activity
           ? activity.fired
-            ? `${unit.desc} · ${activity.count}회 동작`
-            : `${unit.desc} · ${activity.reason}`
-          : unit.desc;
+            ? tf("{0} · {1}회 동작", t(unit.desc), activity.count)
+            : `${t(unit.desc)} · ${t(activity.reason)}`
+          : t(unit.desc);
         copy.append(title, desc);
         label.append(input, copy);
         group.append(label);
@@ -1119,7 +1150,9 @@ export function createConsole({
     const selectedCount = config?.unitNames.length ?? 0;
     setText(
       dom["compose-summary"],
-      readOnly ? `실행 중인 설정 · 정책 ${selectedCount}개` : `정책 ${selectedCount}개 선택`,
+      readOnly
+        ? tf("실행 중인 설정 · 정책 {0}개", selectedCount)
+        : tf("정책 {0}개 선택", selectedCount),
     );
   }
 
@@ -1159,17 +1192,17 @@ export function createConsole({
     } else if (frame.kind === "fenced") {
       // The run moved on while this worker was away. Its writes are refused, which is
       // the whole point: a worker back from the dead does not get to finish.
-      state.run = failRun(state.run, frame.message ?? "이 워커의 차례는 지났습니다");
+      state.run = failRun(state.run, frame.message ?? t("이 워커의 차례는 지났습니다"));
     } else if (frame.kind === "contended") {
       // Not this worker's run to finish. The lease is the answer, not a retry loop.
-      state.run = failRun(state.run, frame.message ?? "다른 워커가 잡고 있습니다");
+      state.run = failRun(state.run, frame.message ?? t("다른 워커가 잡고 있습니다"));
     } else if (frame.kind === "indeterminate") {
       // Not a failure. The run stopped because the ledger will not claim an effect it
       // cannot vouch for, and the next move is a person's.
       state.undecided = true;
-      state.run = failRun(state.run, frame.message ?? "복구할 수 없습니다");
+      state.run = failRun(state.run, frame.message ?? t("복구할 수 없습니다"));
     } else if (frame.kind === "error") {
-      state.run = failRun(state.run, frame.message ?? "실행에 실패했습니다.");
+      state.run = failRun(state.run, frame.message ?? t("실행에 실패했습니다."));
     } else if (frame.kind === "policy_summary") {
       for (const unit of frame.units ?? []) state.policyActivity.set(unit.name, unit);
     }
@@ -1193,7 +1226,7 @@ export function createConsole({
   }
 
   async function consume(response) {
-    if (!response.body) throw new Error("실행 스트림을 열지 못했습니다.");
+    if (!response.body) throw new Error(t("실행 스트림을 열지 못했습니다."));
     const parser = createNdjsonReader(handleFrame);
     const reader = response.body.getReader();
     while (true) {
@@ -1203,7 +1236,7 @@ export function createConsole({
     }
     parser.end();
     if (!acceptsStreamEnd(state.run)) {
-      throw new Error("실행 스트림이 완료 상태 없이 종료되었습니다.");
+      throw new Error(t("실행 스트림이 완료 상태 없이 종료되었습니다."));
     }
   }
 
@@ -1236,6 +1269,8 @@ export function createConsole({
     await stream("/api/run", {
       scenario_id: state.run.active.scenarioId,
       units: [...state.run.active.unitNames],
+      // The agent answers in the language the console is being read in.
+      lang: currentLang(),
     });
   }
 

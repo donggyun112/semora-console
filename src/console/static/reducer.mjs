@@ -1,3 +1,5 @@
+import { t, tf } from "./i18n.mjs";
+
 function makeRow(sequence, kind, label, summary, options = {}) {
   const raw = options.details?.raw;
   const coordinateFrame = Array.isArray(raw) ? raw.at(-1) : raw;
@@ -47,7 +49,7 @@ function lifecycleSummary(frame) {
     return `${payload.branch ?? "unknown"} branch`;
   }
   if (isResumeGate(frame)) {
-    return `승인 후 재검증 · ${payload.name ?? "tool"}`;
+    return tf("승인 후 재검증 · {0}", payload.name ?? "tool");
   }
   return (
     payload.name ??
@@ -67,20 +69,21 @@ const WHEN_ADMITTED = {
 };
 
 export function steerSummary(frame, admitted) {
-  if (admitted) return "지시 반영";
-  return WHEN_ADMITTED[frame?.admits] ?? "지시 대기";
+  if (admitted) return t("지시 반영");
+  return t(WHEN_ADMITTED[frame?.admits] ?? "지시 대기");
 }
 
 function steerLabel(source) {
-  if (source === "operator" || source === "user_steer") return "운영자";
-  if (source === "policy" || source === "control") return "정책";
+  if (source === "operator" || source === "user_steer") return t("운영자");
+  // "정책" here names where a steer came from, not the policy drawer.
+  if (source === "policy" || source === "control") return t("정책", "steer");
   return source ?? "steer";
 }
 
 // A call row and its result row both carried the bare tool name, so the trace read
 // as the same event twice. The role rides on the label; the tool name stays intact.
-export const toolCallLabel = (name) => `${name ?? "tool"} 호출`;
-export const toolResultLabel = (name) => `${name ?? "tool"} 결과`;
+export const toolCallLabel = (name) => tf("{0} 호출", name ?? "tool");
+export const toolResultLabel = (name) => tf("{0} 결과", name ?? "tool");
 
 export function toolResultOutput(event) {
   return event.output ?? event.result ?? event.content ?? null;
@@ -128,14 +131,14 @@ function toolCallSummary(event) {
   ) {
     return `${input.customer_id} · $${input.amount}`;
   }
-  return "도구 호출 요청";
+  return t("도구 호출 요청");
 }
 
 export function unitSummary(frame) {
-  const message = frame.message ?? "정책 평가";
+  const message = t(frame.message ?? "정책 평가");
   if (!frame.call_id) return message;
   const target = toolCallSummary({ name: frame.name, input: frame.input });
-  const label = target === "도구 호출 요청" ? frame.name : `${frame.name} · ${target}`;
+  const label = target === t("도구 호출 요청") ? frame.name : `${frame.name} · ${target}`;
   return label ? `${label} — ${message}` : message;
 }
 
@@ -179,7 +182,7 @@ export function reduceFrames(frames) {
     if (frame.kind === "agent" && frame.event?.type === "text") {
       const text = frame.event.text ?? "";
       if (!openText) {
-        openText = append("agent", "agent", "응답 생성", {
+        openText = append("agent", "agent", t("응답 생성"), {
           details: { output: text, raw: [frame] },
         });
       } else {
@@ -209,7 +212,7 @@ export function reduceFrames(frames) {
       const prior = toolIndexes.get(stableId);
       if (prior !== undefined) {
         prior.label = event.name ? toolCallLabel(event.name) : prior.label;
-        prior.summary = event.blocked ? "실행 안 됨" : prior.summary;
+        prior.summary = event.blocked ? t("실행 안 됨") : prior.summary;
         prior.verdict = event.blocked ? null : prior.verdict;
         prior.tone = event.blocked ? "deny" : prior.tone;
         prior.details = {
@@ -227,7 +230,7 @@ export function reduceFrames(frames) {
         const row = append(
           "tool",
           toolCallLabel(event.name),
-          event.blocked ? "실행 안 됨" : toolCallSummary(event),
+          event.blocked ? t("실행 안 됨") : toolCallSummary(event),
           {
             id: stableId,
             callId,
@@ -252,7 +255,7 @@ export function reduceFrames(frames) {
       append(
         "result",
         toolResultLabel(event.name),
-        refused ? "실행 안 됨" : "실행 완료",
+        t(refused ? "실행 안 됨" : "실행 완료"),
         {
           tone: refused ? "deny" : "neutral",
           callId: execution?.call_id ?? event.id ?? null,
@@ -295,7 +298,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "fenced") {
-      append("fenced", "fenced", frame.message ?? "이 워커의 차례는 지났습니다", {
+      append("fenced", "fenced", t(frame.message ?? "이 워커의 차례는 지났습니다"), {
         tone: "deny",
         details: {
           worker: frame.worker ?? null,
@@ -308,7 +311,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "contended") {
-      append("contended", "contended", frame.message ?? "다른 워커가 잡고 있습니다", {
+      append("contended", "contended", t(frame.message ?? "다른 워커가 잡고 있습니다"), {
         tone: "halt",
         details: { worker: frame.worker ?? null, raw: frame },
       });
@@ -316,7 +319,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "indeterminate") {
-      append("indeterminate", "indeterminate", frame.message ?? "복구할 수 없습니다", {
+      append("indeterminate", "indeterminate", t(frame.message ?? "복구할 수 없습니다"), {
         tone: "halt",
         details: { step: frame.step ?? null, raw: frame },
       });
@@ -334,7 +337,7 @@ export function reduceFrames(frames) {
         && row.callId === frame.step
       ));
       if (voided >= 0) rows.splice(voided, 1);
-      append("recovery", "recover", frame.message ?? "worker failure", {
+      append("recovery", "recover", t(frame.message ?? "worker failure"), {
         tone: "halt",
         details: { raw: frame },
       });
@@ -351,7 +354,7 @@ export function reduceFrames(frames) {
     }
 
     if (frame.kind === "error") {
-      append("error", "error", frame.message ?? "run failed", {
+      append("error", "error", t(frame.message ?? "run failed"), {
         tone: "deny",
         details: { raw: frame },
       });
@@ -398,7 +401,7 @@ export function summarizeOutcome(frames) {
     return {
       verdict: String(blockingPolicy?.verdict ?? "deny").toUpperCase(),
       tool: blockedTool.name ?? "tool",
-      result: "실행 안 됨",
+      result: t("실행 안 됨"),
     };
   }
 
@@ -406,6 +409,6 @@ export function summarizeOutcome(frames) {
   return {
     verdict: completed ? "ALLOW" : String(stopReason ?? "UNKNOWN").toUpperCase(),
     tool: null,
-    result: completed ? "완료" : "중단됨",
+    result: t(completed ? "완료" : "중단됨"),
   };
 }

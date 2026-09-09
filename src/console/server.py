@@ -49,7 +49,7 @@ from .fork_demo import (
 )
 from .provider import model_name, openrouter_model
 from .runtime import ConsoleRuntime as AgentRuntime
-from .scenarios import SCENARIOS, SYSTEM_PROMPT
+from .scenarios import SCENARIOS, SYSTEM_PROMPTS
 from .session import session_step
 from .store import SimulatedWorkerCrash, crash_before_approval, make_store
 from .tools import DemoTools
@@ -93,18 +93,24 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Semora Control Plane Console", lifespan=lifespan)
 
 
-def _new_agent(conversation_id: str, intent: str | None = None) -> Agent:
+def _new_agent(
+    conversation_id: str, intent: str | None = None, lang: str = "ko"
+) -> Agent:
     """Create the run agent.
 
     Its business effects are steps of the conversation keyed by ``intent`` — the request's
     origin prompt id — so a recovery, a resume or a fork of one request replays its charge
     and a new request makes its own.
+
+    ``lang`` is the language the console is being read in. The page translates the chrome
+    it draws, but the agent's own sentences are written once, here, so an English console
+    is not left with a Korean assistant.
     """
     return Agent(
         name="control-plane-console",
         model=openrouter_model(),
         tools=DemoTools(session=_session_step(conversation_id), intent=intent).native_tools(),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPTS.get(lang, SYSTEM_PROMPTS["ko"]),
         model_settings={"timeout": 60},
     )
 
@@ -123,6 +129,8 @@ class RunRequest(BaseModel):
 
     scenario_id: str
     units: list[str] = []
+    # Which language the console is being read in, so the agent answers in it.
+    lang: Literal["ko", "en"] = "ko"
 
 
 class ResumeRequest(BaseModel):
@@ -214,6 +222,8 @@ _DURABLE_SESSION = (
     # The two keys an indeterminate run could not settle: semora's tool step and the
     # business effect key the write was carrying. `/api/settle` needs both.
     "undecided_step", "undecided_effect",
+    # The language this run speaks. A worker that never saw it rebuilds the same agent.
+    "lang",
 )
 
 
@@ -249,11 +259,22 @@ async def _session(branch_id: str) -> dict[str, Any]:
         "agent": _new_agent(
             str(stored["conversation_id"]),
             intent=str(stored["origin_id"]) if stored.get("origin_id") else None,
+            lang=str(stored.get("lang") or "ko"),
         ),
         "aborted": False,
     }
     _sessions[branch_id] = session
     return session
+
+
+def _scenario_prompt(scenario: dict[str, Any], lang: str) -> str:
+    """The prompt in the language the console is being read in.
+
+    The page shows the user message it believes was sent, so the two have to be the same
+    string. Translating on screen would put English in the thread and Korean in the model.
+    """
+    localized = scenario.get(lang) if lang != "ko" else None
+    return str((localized or scenario)["prompt"])
 
 
 def _crash_point(scenario_id: str, selected: list[str]) -> str | None:
@@ -779,10 +800,11 @@ async def run(request: RunRequest) -> StreamingResponse:
     # The conversation is the session, as it is for Pydantic AI: one thread of resumes,
     # recoveries and forks. Business effects and semora's ledger are both filed under it.
     conversation_id = f"conv-{uuid.uuid4().hex[:12]}"
-    agent = _new_agent(conversation_id, intent=prompt_id)
+    agent = _new_agent(conversation_id, intent=prompt_id, lang=request.lang)
     origin_runs = {prompt_id: branch_id}
     _sessions[branch_id] = {
         "units": selected, "agent": agent, "scenario_id": request.scenario_id,
+        "lang": request.lang,
         "aborted": False, "crash": crash_at is not None, "crash_at": crash_at,
         "conversation_id": conversation_id, "origin_id": prompt_id,
         "source_branch_id": branch_id,
@@ -803,7 +825,7 @@ async def run(request: RunRequest) -> StreamingResponse:
         outcome = await runtime.dispatch(
             execution,
             agent,
-            Prompt(scenario["prompt"], prompt_id=prompt_id),
+            Prompt(_scenario_prompt(scenario, request.lang), prompt_id=prompt_id),
             conversation_id=conversation_id,
             controls=_controls(selected, branch_id, crash_at),
             on_event=on_event,
@@ -859,6 +881,7 @@ async def fork(request: ForkRequest) -> StreamingResponse:
         "units": fork_units,
         "agent": source["agent"],
         "scenario_id": source["scenario_id"],
+        "lang": source.get("lang", "ko"),
         "aborted": False,
         "crash": False,
         "crash_at": None,

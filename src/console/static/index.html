@@ -9,7 +9,11 @@
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/" aria-label="Semora 홈">SEMORA</a>
+      <a class="brand" href="/" data-i18n-label aria-label="Semora 홈">SEMORA</a>
+      <select id="lang" class="lang-select" aria-label="Language">
+        <option value="ko">한국어</option>
+        <option value="en">English</option>
+      </select>
     </header>
 
     <main id="app">
@@ -19,21 +23,21 @@
 
         <div class="launch-setup">
         <div class="scenario-picker">
-          <button id="scenario-trigger" type="button" aria-expanded="false">
+          <button id="scenario-trigger" type="button" aria-expanded="false" data-i18n>
             시나리오 선택
           </button>
           <div id="scenario-menu" class="scenario-menu hidden"></div>
         </div>
         </div>
 
-        <div id="launch-policies" class="policy-chips" aria-label="선택된 정책"></div>
+        <div id="launch-policies" class="policy-chips" data-i18n-label aria-label="선택된 정책"></div>
 
         <div class="launch-actions">
-          <button id="run" class="primary" type="button">실행</button>
-          <button id="launch-policy-open" data-policy-open type="button">정책 편집</button>
+          <button id="run" class="primary" type="button" data-i18n>실행</button>
+          <button id="launch-policy-open" data-policy-open type="button" data-i18n>정책 편집</button>
         </div>
 
-        <ol id="guide" class="guide" aria-label="가이드 장면"></ol>
+        <ol id="guide" class="guide" data-i18n-label aria-label="가이드 장면"></ol>
         <p id="guide-note" class="guide-note"></p>
       </section>
 
@@ -45,9 +49,9 @@
             <div id="run-policies" class="policy-chips"></div>
           </div>
           <div class="run-controls">
-            <span id="run-status" aria-live="polite">대기</span>
-            <button id="policy-open" data-policy-open type="button">정책</button>
-            <button id="abort" class="hidden" type="button">중단</button>
+            <span id="run-status" aria-live="polite" data-i18n>대기</span>
+            <button id="policy-open" data-policy-open type="button" data-i18n>정책</button>
+            <button id="abort" class="hidden" type="button" data-i18n>중단</button>
           </div>
         </header>
 
@@ -55,35 +59,35 @@
           <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title">
             <header class="surface-heading">
               <p class="eyebrow">CHAT</p>
-              <h2 id="chat-title">대화</h2>
+              <h2 id="chat-title" data-i18n>대화</h2>
             </header>
             <div id="chat-thread" class="chat-thread" role="log" aria-live="polite"></div>
             <form id="steer-form" class="steer-form hidden">
-              <label for="steer-text">실행 중 지시</label>
+              <label for="steer-text" data-i18n>실행 중 지시</label>
               <div>
                 <input id="steer-text" maxlength="240" autocomplete="off" />
-                <button type="submit">보내기</button>
+                <button type="submit" data-i18n>보내기</button>
               </div>
             </form>
           </section>
 
           <section id="event-panel" class="event-panel" aria-labelledby="event-title">
-            <nav id="version-switcher" class="version-switcher hidden" aria-label="실행 버전"></nav>
+            <nav id="version-switcher" class="version-switcher hidden" data-i18n-label aria-label="실행 버전"></nav>
             <header class="event-heading">
               <div>
                 <p class="eyebrow">EVENT TRACE</p>
-                <h2 id="event-title">이벤트 기록</h2>
+                <h2 id="event-title" data-i18n>이벤트 기록</h2>
               </div>
               <span id="event-count">0 EVENTS</span>
             </header>
 
             <div id="outcome-strip" class="outcome-strip hidden"></div>
             <div class="terminal-actions hidden">
-              <button id="rerun" type="button">현재 정책으로 실행</button>
+              <button id="rerun" type="button" data-i18n>현재 정책으로 실행</button>
             </div>
             <div class="error-actions hidden">
-              <button id="retry-run" type="button">다시 실행</button>
-              <button id="return-draft" type="button">설정으로 돌아가기</button>
+              <button id="retry-run" type="button" data-i18n>다시 실행</button>
+              <button id="return-draft" type="button" data-i18n>설정으로 돌아가기</button>
             </div>
             <p id="run-error" class="run-error hidden" aria-live="assertive"></p>
 
@@ -91,8 +95,8 @@
               <div id="trace" class="trace" role="log" aria-live="polite"></div>
               <aside id="details-drawer" class="details-drawer hidden" aria-labelledby="details-title">
                 <div class="drawer-bar">
-                  <button id="details-close" type="button" aria-label="상세 닫기">×</button>
-                  <button id="details-copy" type="button" disabled>복사</button>
+                  <button id="details-close" type="button" data-i18n-label aria-label="상세 닫기">×</button>
+                  <button id="details-copy" type="button" disabled data-i18n>복사</button>
                 </div>
                 <h2 id="details-title"></h2>
                 <pre id="details-body"></pre>
@@ -102,32 +106,32 @@
             <section id="approval" class="inline-action hidden" aria-labelledby="approval-title">
               <div>
                 <p class="eyebrow">APPROVAL REQUIRED</p>
-                <h2 id="approval-title">이 도구 호출을 실행할까요?</h2>
-                <label for="approval-args">인자 (수정하면 바뀐 값으로 실행)</label>
+                <h2 id="approval-title" data-i18n>이 도구 호출을 실행할까요?</h2>
+                <label for="approval-args" data-i18n>인자 (수정하면 바뀐 값으로 실행)</label>
                 <textarea id="approval-args" rows="5" spellcheck="false"></textarea>
               </div>
               <div>
-                <button id="deny" type="button">거부</button>
-                <button id="approve" class="primary" type="button">승인</button>
+                <button id="deny" type="button" data-i18n>거부</button>
+                <button id="approve" class="primary" type="button" data-i18n>승인</button>
               </div>
             </section>
 
             <section id="recovery" class="inline-action hidden" aria-labelledby="recovery-title">
               <div>
                 <p class="eyebrow">RECOVERABLE</p>
-                <h2 id="recovery-title">중단된 실행을 이어갈 수 있습니다.</h2>
+                <h2 id="recovery-title" data-i18n>중단된 실행을 이어갈 수 있습니다.</h2>
               </div>
-              <button id="recover" class="primary" type="button">복구</button>
+              <button id="recover" class="primary" type="button" data-i18n>복구</button>
             </section>
 
             <section id="settlement" class="inline-action hidden" aria-labelledby="settlement-title">
               <div>
                 <p class="eyebrow">RECONCILE</p>
-                <h2 id="settlement-title">결제사에서 확인한 사실을 원장에 넣으면 실행이 이어집니다.</h2>
+                <h2 id="settlement-title" data-i18n>결제사에서 확인한 사실을 원장에 넣으면 실행이 이어집니다.</h2>
               </div>
               <div>
-                <button id="settle-unsent" type="button">청구 안 됨</button>
-                <button id="settle-charged" class="primary" type="button">청구됨</button>
+                <button id="settle-unsent" type="button" data-i18n>청구 안 됨</button>
+                <button id="settle-charged" class="primary" type="button" data-i18n>청구됨</button>
               </div>
             </section>
           </section>
@@ -135,8 +139,8 @@
       </section>
 
       <section id="boot-error" class="boot-error hidden" aria-live="assertive">
-        <p>데모 설정을 불러오지 못했습니다.</p>
-        <button id="boot-retry" type="button">다시 시도</button>
+        <p data-i18n>데모 설정을 불러오지 못했습니다.</p>
+        <button id="boot-retry" type="button" data-i18n>다시 시도</button>
       </section>
     </main>
 
@@ -144,12 +148,12 @@
       <header>
         <div>
           <p class="eyebrow">POLICY COMPOSER</p>
-          <h2 id="policy-title">실행 정책</h2>
+          <h2 id="policy-title" data-i18n>실행 정책</h2>
         </div>
-        <button id="policy-close" type="button" aria-label="정책 닫기">×</button>
+        <button id="policy-close" type="button" data-i18n-label aria-label="정책 닫기">×</button>
       </header>
       <section class="policy-layout">
-        <h3>라이프사이클 정책</h3>
+        <h3 data-i18n>라이프사이클 정책</h3>
         <div id="units"></div>
       </section>
       <footer id="compose-summary"></footer>

@@ -54,6 +54,16 @@ from the earlier volumes, which are retained. Use
 | `result_drop` | `post_tool_use` | Discards the observation after its effect has happened. |
 | `log_gate` | `before_finish` | Continues the agent with a native prompt part until it requests a note. |
 
+### Korean and English
+
+The console reads in either language. The header select switches it and the choice is
+remembered in the browser. `src/console/static/i18n.mjs` holds the catalog, keyed by the
+Korean string the source already contains, so the server keeps emitting Korean and the
+page translates what it draws. Scenario copy is the exception: its English lives in
+`scenarios.py`, because the prompt is sent to the model and the thread has to show what
+was actually sent. `/api/run` carries the language, so the agent answers in it too.
+`tests/test_i18n.py` fails on any Korean the catalog cannot turn.
+
 The seven seams also include `before_model`, `on_resume`, and `on_suspend`.
 `compose_controls` composes selected policies into one `ControlPlane`. Current
 permissions run again on approval; a new denial outranks an earlier approval.

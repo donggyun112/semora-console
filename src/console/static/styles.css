@@ -89,6 +89,17 @@ input:disabled {
   text-decoration: none;
 }
 
+.lang-select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+
 .run-controls,
 .launch-actions,
 .drawer-bar {
