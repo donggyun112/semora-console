@@ -1,13 +1,34 @@
+import asyncio
+
+from pydantic_ai.messages import UserPromptPart
+from semora import PendingInput
+
 from console.dormancy import dormant_reason
 from console.scenarios import SCENARIOS
+from console.units import input_mask
+
+
+def test_input_mask_has_a_prompt_it_actually_rewrites():
+    """The ingress seam only shows up in a prompt that carries the number itself.
+
+    Every other scenario keeps its SSN in a tool result, out of on_inputs' reach, so
+    without this one the unit sits in the picker rewriting nothing — the console says a
+    policy ran while the number sails past.
+    """
+    home = next(s for s in SCENARIOS if "input_mask" in s.get("default_units", []))
+    for prompt in (home["prompt"], home["en"]["prompt"]):
+        item = PendingInput("user_prompt", UserPromptPart(prompt), "origin")
+        masked = str(asyncio.run(input_mask(None, [item]))[0].part.content)
+        assert masked != prompt, prompt
+        assert "123-45-6789" not in masked
 
 
 def test_scenarios_well_formed():
     ids = [s["id"] for s in SCENARIOS]
     # crash leads: recovery is the differentiator, so it is what a visitor meets first.
     assert ids == [
-        "crash", "note", "customer", "leak", "inject", "charge", "unknown_effect", "batch", "parallel",
-        "parallel_crash", "fork_masking",
+        "crash", "note", "operator_pii", "customer", "leak", "inject", "charge", "unknown_effect",
+        "batch", "parallel", "parallel_crash", "fork_masking",
     ]
     for s in SCENARIOS:
         assert s["prompt"] and s["title"] and s["risk"]

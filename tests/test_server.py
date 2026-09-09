@@ -146,8 +146,8 @@ def test_scenarios_endpoint():
         r = c.get("/api/scenarios")
         assert r.status_code == 200
         assert [s["id"] for s in r.json()] == [
-            "crash", "note", "customer", "leak", "inject", "charge", "unknown_effect", "batch", "parallel",
-            "parallel_crash", "fork_masking",
+            "crash", "note", "operator_pii", "customer", "leak", "inject", "charge", "unknown_effect",
+            "batch", "parallel", "parallel_crash", "fork_masking",
         ]
 
 def test_units_endpoint_shape():
