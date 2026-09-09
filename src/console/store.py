@@ -127,7 +127,10 @@ async def make_store() -> tuple[Any, Any, Any]:
         PostgresTranscript,
     )
 
-    pool = AsyncConnectionPool(url, open=False)
+    # Serverless Postgres suspends its compute when nobody is asking, and drops the
+    # connections with it. Without a check the pool hands out one of those corpses to
+    # the first request after a quiet spell, and the ledger looks broken when it isn't.
+    pool = AsyncConnectionPool(url, open=False, check=AsyncConnectionPool.check_connection)
     await pool.open()
     async with pool.connection() as conn:
         await conn.execute(SCHEMA)
