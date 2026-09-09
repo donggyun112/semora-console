@@ -8,14 +8,16 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Dependencies first, so editing console source does not reinstall the world.
+# No cache mount: Cloud Build runs docker without BuildKit and refuses --mount, and a
+# fresh build VM has no cache to reuse anyway. --no-cache keeps uv's downloads out of
+# the layer instead of baking them into the image.
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --no-cache
 
 COPY src ./src
 COPY scripts ./scripts
 COPY README.md ./README.md
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-cache
 
 EXPOSE 8850
 
