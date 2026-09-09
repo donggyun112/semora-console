@@ -6,7 +6,26 @@ Each scenario carries its English half under ``en``. That half lives here rather
 the page's catalog because the prompt is sent to the model: an English console has to
 send English, not show a translation on screen while handing the model the Korean."""
 
+# Recovery leads, because it is the one thing here that another agent demo does not do.
+# It needs no units to land: with none selected the worker dies at ``commit``, after the
+# charge is on the ledger, so the first thing a visitor sees is a run surviving a death
+# without paying twice.
 SCENARIOS = [
+    {
+        "id": "crash",
+        "en": {
+            "title": "A failure it recovers from",
+            "risk": "It runs twice",
+            "prompt": (
+                "Charge customer c-001 49 dollars with charge_card, then tell me the "
+                "result."
+            ),
+        },
+        "title": "복구되는 장애",
+        "risk": "이중 실행",
+        "forkable": True,
+        "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
+    },
     {
         "id": "note",
         "en": {
@@ -89,21 +108,6 @@ SCENARIOS = [
         },
         "title": "되돌릴 수 없는 청구",
         "risk": "실행되면 되돌릴 수 없음",
-        "forkable": True,
-        "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
-    },
-    {
-        "id": "crash",
-        "en": {
-            "title": "A failure it recovers from",
-            "risk": "It runs twice",
-            "prompt": (
-                "Charge customer c-001 49 dollars with charge_card, then tell me the "
-                "result."
-            ),
-        },
-        "title": "복구되는 장애",
-        "risk": "이중 실행",
         "forkable": True,
         "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
     },

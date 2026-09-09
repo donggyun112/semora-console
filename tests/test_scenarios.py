@@ -4,8 +4,9 @@ from console.scenarios import SCENARIOS
 
 def test_scenarios_well_formed():
     ids = [s["id"] for s in SCENARIOS]
+    # crash leads: recovery is the differentiator, so it is what a visitor meets first.
     assert ids == [
-        "note", "customer", "leak", "inject", "charge", "crash", "unknown_effect", "batch", "parallel",
+        "crash", "note", "customer", "leak", "inject", "charge", "unknown_effect", "batch", "parallel",
         "parallel_crash", "fork_masking",
     ]
     for s in SCENARIOS:
