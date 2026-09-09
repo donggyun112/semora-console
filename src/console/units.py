@@ -6,6 +6,11 @@ A unit here declares which hook it attaches to and brings one function with that
 signature. ``compose_controls`` groups the selected units by hook and wraps each group
 with its composer, then assembles a single ``ControlPlane``.
 
+A gate reads what a tool is from the tool: ``ctx.tool`` is the native ``ToolDefinition``
+semora carries into the tool seams, and ``ctx.tool.metadata`` is the host's own
+declaration on it (``console.tools.EFFECT_METADATA``). No unit keeps a list of tool names
+of its own, so adding a tool cannot leave a policy reading a stale one.
+
 Seam discipline:
 policy lands at a specific seam and reaches a specific destination. We never claim a
 unit reaches a destination its seam cannot touch. In particular ``pii_mask`` runs at
@@ -45,13 +50,8 @@ from semora.controls import (
     ToolDecision,
 )
 
-# Any tool that produces an effect (writes or leaves the system). read_customer is a pure
-# read and is never counted as an effect.
-EFFECTS = {"remember_note", "charge_card", "send_email"}
-# The subset that cannot be undone once it runs.
-IRREVERSIBLE = {"charge_card", "send_email"}
-# Effects that carry data out of the org.
-OUTBOUND = {"send_email"}
+from .tools import EFFECT_METADATA
+
 # Effects allowed per run before rate_cap starts denying.
 BUDGET = 2
 
@@ -70,6 +70,25 @@ def _requested(ctx: Ctx, name: str) -> bool:
     return any(c.get("name") == name for c in ctx.calls_made)
 
 
+def _declares(ctx: Ctx) -> dict[str, Any]:
+    """What the tool behind this call says about itself.
+
+    ``ctx.tool`` is the native ``ToolDefinition`` semora carries into ``pre_tool_use``,
+    ``on_resume`` and ``post_tool_use``. A call names a tool and its arguments but never
+    the tool's own declaration, so this is where a gate reads the effect class from.
+    """
+    return dict(ctx.tool.metadata or {}) if ctx.tool is not None else {}
+
+
+def _irreversible(name: str) -> bool:
+    """Whether a *sibling* request is irreversible, by the same declaration.
+
+    ``ctx.tool`` is this call's definition; a sibling in ``calls_made`` carries only a
+    name. Both readings resolve to the one declaration on the tool.
+    """
+    return EFFECT_METADATA.get(name, {}).get("effect") == "irreversible"
+
+
 def _irreversible_rank(ctx: Ctx, call: ToolCall) -> int:
     """1-based position of this irreversible call among world-leaving requests.
 
@@ -80,7 +99,7 @@ def _irreversible_rank(ctx: Ctx, call: ToolCall) -> int:
     args = call.args_as_dict()
     rank = 0
     for entry in ctx.calls_made:
-        if entry.get("name") not in IRREVERSIBLE:
+        if not _irreversible(str(entry.get("name", ""))):
             continue
         rank += 1
         if entry.get("name") == call.tool_name and entry.get("input") == args:
@@ -107,8 +126,9 @@ async def approval(ctx: Ctx, call: ToolCall) -> ToolDecision:
     Suspend halts the WHOLE loop and persists a continuation, resumable later. This is the
     verdict a middleware chain cannot express.
     """
-    if call.tool_name in EFFECTS:
-        irreversible = call.tool_name in IRREVERSIBLE
+    effect = _declares(ctx).get("effect")
+    if effect:
+        irreversible = effect == "irreversible"
         return Suspend(
             {
                 "type": "suspend",
@@ -132,7 +152,7 @@ async def dlp_block(ctx: Ctx, call: ToolCall) -> ToolDecision:
     merely whether a read happened. A clean summary passes; a body carrying an email or
     SSN is refused. The recipient address is not scanned.
     """
-    if call.tool_name in OUTBOUND:
+    if _declares(ctx).get("outbound"):
         args = call.args_as_dict()
         payload = " ".join(str(args.get(k, "")) for k in ("body", "subject"))
         if _SSN.search(payload) or _EMAIL.search(payload):
@@ -151,7 +171,7 @@ async def rate_cap(ctx: Ctx, call: ToolCall) -> ToolDecision:
 
     Otherwise log_gate cannot record after the cap is hit — the log write would be denied too.
     """
-    if call.tool_name not in IRREVERSIBLE:
+    if _declares(ctx).get("effect") != "irreversible":
         return Continue()
     if _irreversible_rank(ctx, call) > BUDGET:
         return Deny(

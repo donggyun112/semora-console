@@ -1,7 +1,9 @@
+import dataclasses
 import json
 
 import pytest
 from pydantic_ai.messages import ToolCallPart, UserPromptPart
+from pydantic_ai.tools import ToolDefinition
 from semora import Continue, Deny, Halt, PendingInput, Proceed, Suspend
 from semora.controls import Ctx
 
@@ -10,6 +12,7 @@ from console.store import (
     SimulatedWorkerCrash,
     crash_before_approval,
 )
+from console.tools import EFFECT_METADATA, DemoTools
 from console.units import compose_controls
 
 
@@ -19,6 +22,20 @@ def _call(name, **args):
 
 def _ctx(*names):
     return Ctx(turn=0, calls_made=[{"name": n, "input": {}} for n in names])
+
+
+def _definition(name):
+    """The tool definition semora carries into a tool seam, as the console declares it."""
+    return ToolDefinition(
+        name=name, parameters_json_schema={}, metadata=EFFECT_METADATA.get(name, {})
+    )
+
+
+async def _gate(plane, ctx, call):
+    """Ask ``pre_tool_use`` the way the runtime does: with the tool behind the call."""
+    return await plane.pre_tool_use(
+        dataclasses.replace(ctx, tool=_definition(call.tool_name)), call
+    )
 
 
 @pytest.mark.asyncio
@@ -36,8 +53,8 @@ async def test_input_mask_rewrites_content_but_preserves_origin():
 @pytest.mark.asyncio
 async def test_dlp_block_scans_outbound_payload():
     plane = compose_controls(["dlp_block"])
-    dirty = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="ssn 123-45-6789"))
-    clean = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="all good"))
+    dirty = await _gate(plane, _ctx(), _call("send_email", to="billing@acme.io", body="ssn 123-45-6789"))
+    clean = await _gate(plane, _ctx(), _call("send_email", to="billing@acme.io", body="all good"))
     assert isinstance(dirty, Deny) and isinstance(clean, Continue)
     assert "주민번호" in str(dirty) or "기밀" in str(dirty)
 
@@ -46,7 +63,7 @@ async def test_dlp_block_scans_outbound_payload():
 async def test_permissions_deny_wins_over_suspend():
     # a confidential outbound send: approval says Suspend, dlp_block says Deny → Deny wins
     plane = compose_controls(["approval", "dlp_block"])
-    d = await plane.pre_tool_use(_ctx(), _call("send_email", to="billing@acme.io", body="email jane@doe.io"))
+    d = await _gate(plane, _ctx(), _call("send_email", to="billing@acme.io", body="email jane@doe.io"))
     assert isinstance(d, Deny)
 
 
@@ -92,13 +109,13 @@ async def test_gate_crash_runs_before_approval_can_park():
     store.arm("r1", at="gate")
     plane = compose_controls(["approval"], extra_pre=[crash_before_approval("r1", store)])
     try:
-        await plane.pre_tool_use(_ctx("charge_card"), _call("charge_card"))
+        await _gate(plane, _ctx("charge_card"), _call("charge_card"))
         raise AssertionError("expected SimulatedWorkerCrash")
     except SimulatedWorkerCrash:
         pass
     # one-shot: the next evaluation is the live gate
     assert isinstance(
-        await plane.pre_tool_use(_ctx("charge_card"), _call("charge_card")),
+        await _gate(plane, _ctx("charge_card"), _call("charge_card")),
         Suspend,
     )
 
@@ -106,9 +123,9 @@ async def test_gate_crash_runs_before_approval_can_park():
 @pytest.mark.asyncio
 async def test_approval_suspends_every_effect_but_passes_reads():
     plane = compose_controls(["approval"])
-    assert isinstance(await plane.pre_tool_use(_ctx("charge_card"), _call("charge_card")), Suspend)
-    assert isinstance(await plane.pre_tool_use(_ctx("remember_note"), _call("remember_note")), Suspend)
-    assert isinstance(await plane.pre_tool_use(_ctx("read_customer"), _call("read_customer")), Continue)
+    assert isinstance(await _gate(plane, _ctx("charge_card"), _call("charge_card")), Suspend)
+    assert isinstance(await _gate(plane, _ctx("remember_note"), _call("remember_note")), Suspend)
+    assert isinstance(await _gate(plane, _ctx("read_customer"), _call("read_customer")), Continue)
 
 
 @pytest.mark.asyncio
@@ -148,19 +165,44 @@ def _batch_ctx(*customer_ids: str) -> Ctx:
 async def test_rate_cap_denies_past_budget():
     plane = compose_controls(["rate_cap"])
     ctx = _batch_ctx("c-001", "c-002", "c-003")
-    assert isinstance(await plane.pre_tool_use(ctx, _call("charge_card", customer_id="c-001", amount="10")), Continue)
-    assert isinstance(await plane.pre_tool_use(ctx, _call("charge_card", customer_id="c-002", amount="10")), Continue)
-    assert isinstance(await plane.pre_tool_use(ctx, _call("charge_card", customer_id="c-003", amount="10")), Deny)
+    assert isinstance(await _gate(plane, ctx, _call("charge_card", customer_id="c-001", amount="10")), Continue)
+    assert isinstance(await _gate(plane, ctx, _call("charge_card", customer_id="c-002", amount="10")), Continue)
+    assert isinstance(await _gate(plane, ctx, _call("charge_card", customer_id="c-003", amount="10")), Deny)
 
 
 @pytest.mark.asyncio
 async def test_rate_cap_does_not_block_logging_after_budget():
     plane = compose_controls(["rate_cap"])
-    decision = await plane.pre_tool_use(
+    decision = await _gate(
+        plane,
         _ctx("charge_card", "charge_card", "remember_note"),
         _call("remember_note"),
     )
     assert isinstance(decision, Continue)
+
+
+@pytest.mark.asyncio
+async def test_a_gate_reads_the_effect_class_off_the_tool_not_a_name_list():
+    """The declaration on the tool is what the gate sees, and it is the only source.
+
+    Rename a tool and the gate follows it; a tool that declares no effect passes, however
+    dangerous its name sounds.
+    """
+    declared = {t.name: t.metadata for t in DemoTools().native_tools()}
+    assert declared == EFFECT_METADATA
+
+    plane = compose_controls(["approval"])
+    renamed = ToolCallPart("wire_transfer", {}, "c1")
+    ctx = dataclasses.replace(
+        _ctx("wire_transfer"),
+        tool=ToolDefinition(
+            name="wire_transfer",
+            parameters_json_schema={},
+            metadata={"effect": "irreversible"},
+        ),
+    )
+    assert isinstance(await plane.pre_tool_use(ctx, renamed), Suspend)
+    assert isinstance(await _gate(plane, _ctx("charge_card"), renamed), Continue)
 
 
 @pytest.mark.asyncio
