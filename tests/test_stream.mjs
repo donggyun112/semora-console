@@ -323,6 +323,22 @@ assert.equal(rawChat.output, rawCustomer.text);
 assert.equal(rawChat.redactedBy, undefined);
 assert.deepEqual(rawChat.badges, []);
 
+// An ingress rewrite only exists in what the run admitted, never in the scenario text the
+// operator picked. Echoing the latter showed the raw number beside a policy claiming to
+// have masked it.
+const ingressPrompt = "본문에 '주민번호는 123-45-6789 입니다'라고 적어 보내줘.";
+const admittedPrompt = "본문에 '주민번호는 *** 입니다'라고 적어 보내줘.";
+assert.equal(
+  deriveChatView(ingressPrompt, [{ kind: "prompt", text: admittedPrompt }]).user.text,
+  admittedPrompt,
+  "the chat shows what the model was handed, not what the operator asked for",
+);
+assert.equal(
+  deriveChatView(ingressPrompt, []).user.text,
+  ingressPrompt,
+  "with no admitted prompt in the run, the scenario's own text still stands",
+);
+
 const maskingForkFrames = [
   { kind: "meta", branch_id: "mask-v1", units: ["pii_mask"] },
   {

@@ -544,6 +544,11 @@ async def _stream(
                 await put(
                     {"kind": "steer", "source": kind, "text": text, "phase": "admitted"}
                 )
+            if kind == "user_prompt":
+                # What the model was actually handed, after on_inputs had its say. The page
+                # otherwise echoes the operator's own text, which hides the one thing
+                # input_mask exists to show: the number never left this machine.
+                await put({"kind": "prompt", "text": _injected_text(payload)})
         async def announce(call_id: str) -> None:
             # A replayed call is executed from the record, so the loop emits its hooks and
             # no agent events at all — the trace showed a gate and a boundary with nothing

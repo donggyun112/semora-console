@@ -229,8 +229,14 @@ export function deriveChatView(prompt, frames) {
   const toolById = new Map();
   let assistantText = "";
   let lastDenial = null;
+  // The scenario's own text is only what the operator asked for. Once the run says what
+  // the model was handed, show that instead — an ingress rewrite is invisible otherwise.
+  let admittedPrompt = null;
 
   for (const frame of frames) {
+    if (frame?.kind === "prompt" && typeof frame.text === "string") {
+      admittedPrompt = frame.text;
+    }
     const event = frame?.kind === "agent" ? frame.event : null;
     if (event?.type === "tool_call") {
       const id = event.id ?? `tool-${tools.length}`;
@@ -351,7 +357,7 @@ export function deriveChatView(prompt, frames) {
   }
 
   return {
-    user: { role: "user", text: prompt },
+    user: { role: "user", text: admittedPrompt ?? prompt },
     assistant: { role: "assistant", text: assistantText, tools },
   };
 }
