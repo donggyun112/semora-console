@@ -126,11 +126,11 @@ export const GUIDE = Object.freeze([
   }),
   Object.freeze({
     scenarioId: "crash", unitNames: Object.freeze(["approval"]),
-    label: "복구되는 장애", teaches: "복구해도 청구는 한 번",
+    label: "복구 가능한 장애", teaches: "복구해도 청구는 한 번",
   }),
   Object.freeze({
     scenarioId: "unknown_effect", unitNames: Object.freeze([]),
-    label: "복구할 수 없는 장애", teaches: "나갔는지 아무도 모른다",
+    label: "복구 불가능한 장애", teaches: "나갔는지 아무도 모른다",
   }),
   Object.freeze({
     scenarioId: "fork_masking", unitNames: Object.freeze(["pii_mask"]),

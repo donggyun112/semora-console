@@ -21,7 +21,7 @@ SCENARIOS = [
                 "result."
             ),
         },
-        "title": "복구되는 장애",
+        "title": "복구 가능한 장애",
         "risk": "이중 실행",
         "forkable": True,
         "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
@@ -47,15 +47,15 @@ SCENARIOS = [
         # the one who pastes the number, which is the only way it reaches on_inputs.
         "id": "operator_pii",
         "en": {
-            "title": "An operator pastes an SSN",
-            "risk": "The number reaches the model provider in the prompt itself",
+            "title": "An input carrying an SSN",
+            "risk": "The number reaches the model provider as written",
             "prompt": (
                 "Send billing@acme.io an email with the subject 'record' and a body "
                 "saying the SSN on file is 123-45-6789."
             ),
         },
-        "title": "운영자가 주민번호를 붙여넣음",
-        "risk": "숫자가 프롬프트째로 모델 제공자에게 감",
+        "title": "주민번호가 포함된 입력",
+        "risk": "주민번호가 그대로 모델 제공자에게 감",
         "forkable": True,
         "prompt": (
             "send_email 도구로 billing@acme.io 에게 제목은 '기록'으로, "
@@ -143,7 +143,7 @@ SCENARIOS = [
                 "result."
             ),
         },
-        "title": "복구할 수 없는 장애",
+        "title": "복구 불가능한 장애",
         "risk": "나갔는지 알 수 없음",
         "forkable": True,
         "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",
@@ -216,7 +216,7 @@ SCENARIOS = [
                 "address and SSN exactly as they appear in the result."
             ),
         },
-        "title": "마스킹 이후 다시 실행",
+        "title": "마스킹 후 재실행",
         "risk": "원문이 새 실행 기록에 남음",
         "prompt": (
             "read_customer 도구로 c-001 고객을 조회하고, 조회 결과에 나온 "

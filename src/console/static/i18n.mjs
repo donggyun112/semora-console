@@ -69,9 +69,9 @@ const EN = {
     "Turn dlp_block on while it waits, then approve, and the call is denied",
   "정책에서 dlp_block 을 켠 다음 승인을 누르세요.":
     "Turn dlp_block on in the policy drawer, then press Approve.",
-  "복구되는 장애": "A failure it recovers from",
+  "복구 가능한 장애": "A failure it recovers from",
   "복구해도 청구는 한 번": "Recovery still charges once",
-  "복구할 수 없는 장애": "A failure it cannot recover from",
+  "복구 불가능한 장애": "A failure it cannot recover from",
   "나갔는지 아무도 모른다": "Nobody knows whether it went out",
   "마스킹 후 분기": "Branch after masking",
   "정책을 끄고 되감으면 원본이 돌아온다":

@@ -160,7 +160,7 @@ def test_deny_reload_while_parked_abort(page):
 
 
 def test_indeterminate_rejournal_and_menu_scenario(page):
-    scene(page, 5)  # 복구할 수 없는 장애: the payment leaves, its record does not
+    scene(page, 5)  # 복구 불가능한 장애: the payment leaves, its record does not
     page.click("#run")
     page.wait_for_selector("#recovery:not(.hidden)", timeout=LONG)
     page.click("#recover")
