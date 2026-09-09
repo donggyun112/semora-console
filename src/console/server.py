@@ -19,7 +19,9 @@ import asyncio
 import json
 import os
 import socket
+import time
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -28,7 +30,7 @@ from typing import Any, Literal
 
 from dotenv import dotenv_values, load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
@@ -113,6 +115,61 @@ def _new_agent(
         system_prompt=SYSTEM_PROMPTS.get(lang, SYSTEM_PROMPTS["ko"]),
         model_settings={"timeout": 60},
     )
+
+
+# Model-reaching calls per caller per window. Everything else — static files, the unit
+# and scenario catalogs, reading a branch back — is free.
+RATE_LIMIT = int(os.getenv("CONSOLE_RATE_LIMIT") or 20)
+RATE_WINDOW = float(os.getenv("CONSOLE_RATE_WINDOW") or 600.0)
+_METERED = ("/api/run", "/api/fork", "/api/resume", "/api/recover")
+_hits: dict[str, deque[float]] = {}
+
+
+def _caller(request: Any) -> str:
+    """Best-effort address of whoever is asking.
+
+    The front end appends the real client to whatever ``X-Forwarded-For`` the caller
+    sent, so the last hop is the one they could not write themselves. Behind a load
+    balancer the trustworthy entry moves and this needs revisiting. Anyone determined
+    still has more addresses than we have counters — this exists to keep one visitor
+    from hammering the demo, not to stop an attacker. Prepaid credit is the real cap.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.rsplit(",", 1)[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def rate_limit(request, call_next):
+    """Cap the calls that reach the model. One worker by deployment, so this dict is the
+    whole truth — there is no second process to keep it in sync with."""
+    if not request.url.path.startswith(_METERED):
+        return await call_next(request)
+    now = time.monotonic()
+    seen = _hits.setdefault(_caller(request), deque())
+    while seen and now - seen[0] > RATE_WINDOW:
+        seen.popleft()
+    if len(seen) >= RATE_LIMIT:
+        retry = int(RATE_WINDOW - (now - seen[0])) + 1
+        # The seconds ride the header and a field of their own rather than the sentence,
+        # so the catalog translates one fixed string instead of matching a number out of it.
+        return JSONResponse(
+            {
+                "type": "error",
+                "message": "요청이 많습니다. 잠시 후 다시 시도해 주세요.",
+                "retry_after": retry,
+            },
+            status_code=429,
+            headers={"Retry-After": str(retry)},
+        )
+    seen.append(now)
+    # Callers who went quiet keep an entry each; without this sweep the dict grows for the
+    # life of the process, one key per address that ever visited.
+    if len(_hits) > 4096:
+        for who in [k for k, v in _hits.items() if not v or now - v[-1] > RATE_WINDOW]:
+            del _hits[who]
+    return await call_next(request)
 
 
 @app.middleware("http")

@@ -96,6 +96,8 @@ const EN = {
   "{0}부터 다시 실행": "Re-runs from {0}",
   "{0}번 이벤트에서 다시 실행": "Re-run from event {0}",
 
+  "요청이 많습니다. 잠시 후 다시 시도해 주세요.": "Too many requests. Try again in a moment.",
+
   // ── trace rows (reducer.mjs) ─────────────────────────────────────────────────
   "응답 생성": "Generating a response",
   "{0} 호출": "{0} call",

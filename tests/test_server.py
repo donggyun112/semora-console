@@ -150,6 +150,37 @@ def test_scenarios_endpoint():
             "batch", "parallel", "parallel_crash", "fork_masking",
         ]
 
+def test_rate_limit_meters_model_paths_only(monkeypatch):
+    """A metered path stops answering past the cap; the catalogs never do.
+
+    /api/resume with an empty body never reaches the model — the middleware runs before
+    validation, so the first calls are 422 and the one past the cap is 429. That keeps
+    this test off the network while still exercising the real window.
+    """
+    monkeypatch.setattr(server, "RATE_LIMIT", 3)
+    server._hits.clear()
+    with TestClient(app) as c:
+        metered = [c.post("/api/resume", json={}).status_code for _ in range(5)]
+        free = [c.get("/api/scenarios").status_code for _ in range(5)]
+    assert 429 not in metered[:3]
+    assert metered[3] == 429 and metered[4] == 429
+    assert free == [200] * 5
+    server._hits.clear()
+
+
+def test_rate_limit_counts_the_hop_the_caller_cannot_forge(monkeypatch):
+    """A caller who sends their own X-Forwarded-For does not get a fresh bucket."""
+    monkeypatch.setattr(server, "RATE_LIMIT", 2)
+    server._hits.clear()
+    with TestClient(app) as c:
+        for spoof in ("1.1.1.1", "2.2.2.2", "3.3.3.3"):
+            last = c.post(
+                "/api/resume", json={}, headers={"X-Forwarded-For": f"{spoof}, 9.9.9.9"}
+            ).status_code
+    assert last == 429
+    server._hits.clear()
+
+
 def test_units_endpoint_shape():
     with TestClient(app) as c:
         r = c.get("/api/units")
