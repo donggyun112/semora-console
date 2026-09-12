@@ -185,7 +185,8 @@ class RunRequest(BaseModel):
     """A scenario id plus the control-plane units to compose."""
 
     scenario_id: str
-    units: list[str] = []
+    units: list[str] | None = None
+    """Omitted uses the scenario defaults; an explicit empty list runs without policy."""
     # Which language the console is being read in, so the agent answers in it.
     lang: Literal["ko", "en"] = "ko"
 
@@ -856,7 +857,8 @@ async def run(request: RunRequest) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="unknown scenario_id")
     # Time-ordered, so a ledger row sorts by when the run started rather than by chance.
     branch_id = new_branch_id()
-    selected = [u for u in request.units if u in UNITS_BY_NAME]
+    requested_units = scenario["default_units"] if request.units is None else request.units
+    selected = [u for u in requested_units if u in UNITS_BY_NAME]
     crash_at = _crash_point(request.scenario_id, selected)
     prompt_id = f"{branch_id}:prompt:{uuid.uuid4().hex[:8]}"
     # The conversation is the session, as it is for Pydantic AI: one thread of resumes,

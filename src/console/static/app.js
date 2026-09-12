@@ -21,6 +21,7 @@ import {
   markRecoverable,
   replayStream,
   returnToDraft,
+  selectScenario,
   settleRun,
   startRun,
   suspendRun,
@@ -762,10 +763,8 @@ export function createConsole({
   function chooseScenario(id) {
     if (!canEditDraft(state.run)) return;
     const scenario = scenarioById(id);
-    state.run = updateDraft(state.run, {
-      scenarioId: id,
-      unitNames: scenario?.default_units ?? state.run.draft.unitNames,
-    });
+    if (!scenario) return;
+    state.run = selectScenario(state.run, scenario);
     setHidden(dom["scenario-menu"], true);
     dom["scenario-trigger"].setAttribute("aria-expanded", "false");
     render();

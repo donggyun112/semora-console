@@ -41,6 +41,7 @@ import {
   markRecoverable,
   replayStream,
   returnToDraft,
+  selectScenario,
   settleRun,
   startRun,
   suspendRun,
@@ -523,6 +524,20 @@ assert.notStrictEqual(
 const edited = updateDraft(idle, { scenarioId: "baseline", unitNames: [] });
 assert.equal(idle.draft.scenarioId, "leak");
 assert.deepEqual(edited.draft, { scenarioId: "baseline", unitNames: [] });
+assert.deepEqual(
+  selectScenario(idle, { id: "batch", default_units: ["rate_cap"] }).draft,
+  { scenarioId: "batch", unitNames: ["rate_cap"] },
+  "scenario selection replaces the previous policy with its curated default",
+);
+assert.deepEqual(
+  selectScenario(idle, { id: "crash", default_units: [] }).draft,
+  { scenarioId: "crash", unitNames: [] },
+  "an explicitly policy-free scenario does not inherit the previous policy",
+);
+assert.throws(
+  () => selectScenario(idle, { id: "missing-default" }),
+  /scenario defaults missing/,
+);
 
 const streaming = attachBranchId(startRun(idle), "run-1");
 assert.deepEqual(streaming.active, {

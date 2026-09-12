@@ -57,6 +57,16 @@ export function updateDraft(state, patch) {
   };
 }
 
+export function selectScenario(state, scenario) {
+  if (!scenario?.id || !Array.isArray(scenario.default_units)) {
+    throw new Error("scenario defaults missing");
+  }
+  return updateDraft(state, {
+    scenarioId: scenario.id,
+    unitNames: scenario.default_units,
+  });
+}
+
 export function startRun(state) {
   if (!canStartRun(state)) throw new Error("run already active");
   return {

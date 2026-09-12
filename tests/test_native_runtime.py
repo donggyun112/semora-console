@@ -71,6 +71,17 @@ def test_native_run_emits_result_and_keeps_frames(monkeypatch):
         assert stored["frames"] == rows
 
 
+def test_run_uses_scenario_defaults_only_when_units_are_omitted(monkeypatch):
+    install(monkeypatch, CHARGE)
+    with TestClient(server.app) as client:
+        defaulted = frames(client.post("/api/run", json={"scenario_id": "charge"}))
+        policy_free = frames(
+            client.post("/api/run", json={"scenario_id": "charge", "units": []})
+        )
+    assert get(defaulted, "meta")["units"] == ["approval"]
+    assert get(policy_free, "meta")["units"] == []
+
+
 def test_a_tool_record_lives_in_the_conversation_ledger(monkeypatch):
     # semora files a branch's steps under its conversation. The console reads them back through
     # the same view, so CALL REPLAY answers "did this conversation already do this", not merely

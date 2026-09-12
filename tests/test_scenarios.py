@@ -5,7 +5,7 @@ from semora import PendingInput
 
 from console.dormancy import dormant_reason
 from console.scenarios import SCENARIOS
-from console.units import input_mask
+from console.units import UNITS_BY_NAME, input_mask
 
 
 def test_input_mask_has_a_prompt_it_actually_rewrites():
@@ -33,6 +33,26 @@ def test_scenarios_well_formed():
     for s in SCENARIOS:
         assert s["prompt"] and s["title"] and s["risk"]
         assert s["forkable"] is True
+        assert isinstance(s["default_units"], list)
+        assert set(s["default_units"]) <= set(UNITS_BY_NAME)
+
+
+def test_each_scenario_has_a_curated_default_policy():
+    defaults = {s["id"]: s["default_units"] for s in SCENARIOS}
+    assert defaults == {
+        "crash": [],
+        "note": [],
+        "operator_pii": ["input_mask"],
+        "customer": ["pii_mask"],
+        "leak": ["approval", "dlp_block"],
+        "inject": ["injection_guard"],
+        "charge": ["approval"],
+        "unknown_effect": [],
+        "batch": ["rate_cap"],
+        "parallel": ["approval"],
+        "parallel_crash": [],
+        "fork_masking": ["pii_mask"],
+    }
 
 
 def test_fork_masking_scenario_starts_with_pii_mask():
