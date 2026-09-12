@@ -311,6 +311,46 @@ def test_settling_an_unsent_charge_performs_it_for_the_first_time(monkeypatch):
         assert result["execution_count"] == 2
 
 
+def test_reconciliation_recovers_the_original_call_without_asking_for_a_new_one(monkeypatch):
+    """Two recover requests must keep the original provider-issued tool-call identity."""
+    issued: list[str] = []
+
+    def model(messages, info):
+        results = [
+            part
+            for message in messages
+            for part in message.parts
+            if isinstance(part, ToolReturnPart)
+        ]
+        if results:
+            return ModelResponse([TextPart("done")])
+        call_id = f"dynamic-charge-{len(issued) + 1}"
+        issued.append(call_id)
+        return ModelResponse(
+            [ToolCallPart("charge_card", {"customer_id": "c-001", "amount": "49"}, call_id)]
+        )
+
+    monkeypatch.setattr(server, "openrouter_model", lambda: FunctionModel(model))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    server._sessions.clear()
+    with TestClient(server.app) as client:
+        rows = start(client, "unknown_effect")
+        branch_id = get(rows, "meta")["branch_id"]
+        assert get(rows, "agent")["event"]["id"] == "dynamic-charge-1"
+
+        uncertain = frames(client.post("/api/recover", json={"branch_id": branch_id}))
+        assert get(uncertain, "indeterminate")["step"] == "tool:dynamic-charge-1"
+        assert client.post(
+            "/api/settle", json={"branch_id": branch_id, "charged": True}
+        ).status_code == 200
+
+        recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
+        result = results(recovered)[0]
+        assert result["id"] == "dynamic-charge-1"
+        assert result["result"]["reconciled"] is True
+        assert issued == ["dynamic-charge-1"]
+
+
 def test_settling_needs_an_undecided_effect(monkeypatch):
     """A run that never lost track of an effect has nothing to reconcile."""
     install(monkeypatch, CHARGE)

@@ -33,11 +33,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelMessagesTypeAdapter
 from pydantic_ai.messages import UserPromptPart
 from semora import AgentSuspended, ConfirmedEffect, RetryEffect, new_branch_id
 from semora.contracts import PendingInput
-from semora.dispatch import Answer, Prompt, Recover
+from semora.dispatch import Answer, Prompt
 from semora.transcript import SCHEMA_VERSION, entry_id
 from semora_store import Contended, ExecutionContext, Fenced, Indeterminate
 
@@ -1034,14 +1034,15 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
     session["aborted"] = False
 
     async def attempt(runtime: AgentRuntime, on_event: Any) -> dict[str, Any]:
-        # Journal replay, not recover(history, ...). A crashed round's assistant turn is
-        # deliberately absent from the transcript — recording it before execution would
-        # make a failed round a transcript fact — so the history a host could hand over
-        # is empty and the durable model step is what reconstructs the round.
-        return await runtime.dispatch(
-            _execution(request.branch_id, session["conversation_id"]),
+        execution = _execution(request.branch_id, session["conversation_id"])
+        history = await _interrupted_history(
+            request.branch_id,
+            str(session["conversation_id"]),
+        )
+        return await runtime.recover(
+            execution,
             session["agent"],
-            Recover(),
+            history,
             conversation_id=session["conversation_id"],
             controls=compose_controls(session["units"]),
             on_event=on_event,
@@ -1052,6 +1053,25 @@ async def recover(request: RecoverRequest) -> StreamingResponse:
         _stream(request.branch_id, attempt, selected=session["units"], scenario_id=session["scenario_id"]),
         media_type="application/x-ndjson",
     )
+
+
+async def _interrupted_history(branch_id: str, conversation_id: str) -> list[Any]:
+    """Return the exact native round captured before its first tool crossed the boundary.
+
+    A prompt-less ``Recover`` can replay the model journal once, but a later recovery after
+    reconciliation may build a different model request and receive a new tool-call id. The
+    console already persists the exact pre-tool checkpoint for forks; recovery uses that same
+    coordinate so every attempt addresses the original call.
+    """
+    for entry in reversed(await _transcript.read(conversation_id)):
+        coordinate = entry.get("coordinate") or {}
+        if (
+            entry.get("type") == "console_checkpoint"
+            and coordinate.get("from_branch_id") == branch_id
+            and coordinate.get("boundary") == "tool"
+        ):
+            return list(ModelMessagesTypeAdapter.validate_python(coordinate["history"]))
+    raise HTTPException(409, "중단된 도구 호출의 복구 지점을 찾을 수 없습니다")
 
 
 async def _drop_queued_inputs(branch_id: str) -> int:

@@ -356,5 +356,37 @@ class ConsoleRuntime:
     async def resolve_effect(self, branch_id, call_id, resolution, **options):
         return await self.engine.resolve_effect(branch_id, call_id, resolution, **options)
 
+    async def recover(
+        self,
+        branch_id,
+        agent,
+        history,
+        *,
+        controls=None,
+        on_event=None,
+        aborted=None,
+        **options,
+    ):
+        observed = ObservedControls(
+            self,
+            branch_id,
+            controls,
+            on_event,
+            aborted=aborted,
+        )
+        outcome = await self.engine.recover(
+            branch_id,
+            agent,
+            history,
+            controls=observed,
+            **options,
+        )
+        await observed.project_missing(outcome)
+        return {
+            "stop_reason": outcome.stop_reason,
+            "text": outcome.output,
+            "output": outcome.output,
+        }
+
     async def submit(self, branch_id, item, **options):
         return await self.engine.submit(branch_id, item)

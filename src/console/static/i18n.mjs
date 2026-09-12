@@ -179,6 +179,8 @@ const EN = {
   "이 실행에는 확정할 미결 효과가 없습니다": "This run has no unsettled effect to confirm",
   "이 도구 호출은 더 이상 미결 상태가 아닙니다":
     "This tool call is no longer indeterminate",
+  "중단된 도구 호출의 복구 지점을 찾을 수 없습니다":
+    "The recovery point for the interrupted tool call is unavailable",
   "워커 장애": "Worker failure",
   "실행에 실패했습니다.": "The run failed.",
   "인자는 JSON 객체여야 합니다.": "Arguments must be a JSON object.",
