@@ -8,8 +8,6 @@
 
 **Tech Stack:** Python 3.12, nexora (path dep), FastAPI, uvicorn, langchain-openai @ OpenRouter (`deepseek/deepseek-v4-flash-0731`), vanilla JS (no build), pytest, node (for headless JS test).
 
-**Spec:** `/Users/dongkseo/.claude/plans/partitioned-foraging-pumpkin.md`
-
 ## Global Constraints
 
 - Project root: `/Users/dongkseo/project/nexora-console`. Package: `console` under `src/console/`.
