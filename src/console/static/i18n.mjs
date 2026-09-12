@@ -71,8 +71,8 @@ const EN = {
     "Turn dlp_block on in the policy drawer, then press Approve.",
   "복구 가능한 장애": "A failure it recovers from",
   "복구해도 청구는 한 번": "Recovery still charges once",
-  "복구 불가능한 장애": "A failure it cannot recover from",
-  "나갔는지 아무도 모른다": "Nobody knows whether it went out",
+  "외부 확인이 필요한 장애": "External reconciliation required",
+  "원장만으로는 나갔는지 알 수 없다": "The ledger alone cannot tell whether it went out",
   "마스킹 후 분기": "Branch after masking",
   "정책을 끄고 되감으면 원본이 돌아온다":
     "Turn the policy off, rewind, and the original comes back",
@@ -174,9 +174,11 @@ const EN = {
   "다른 워커가 이 실행을 잡고 있습니다": "Another worker holds this run",
   "다른 워커가 이 대화를 잡고 있습니다": "Another worker holds this conversation",
   "복구할 수 없습니다": "It cannot be recovered",
-  "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다":
-    "It cannot be recovered: the ledger cannot vouch for whether the charge went out",
+  "자동 복구할 수 없습니다 — 외부 청구 상태를 확인해야 합니다":
+    "Automatic recovery is not safe: check the charge with the provider",
   "이 실행에는 확정할 미결 효과가 없습니다": "This run has no unsettled effect to confirm",
+  "이 도구 호출은 더 이상 미결 상태가 아닙니다":
+    "This tool call is no longer indeterminate",
   "워커 장애": "Worker failure",
   "실행에 실패했습니다.": "The run failed.",
   "인자는 JSON 객체여야 합니다.": "Arguments must be a JSON object.",

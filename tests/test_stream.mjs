@@ -15,7 +15,6 @@ import {
   isRetargetedFork,
   policiesAt,
   isForkRepresentative,
-  nextGuideStep,
   pendingCallArgs,
   pickInlineActionHost,
   getLaunchCopy,
@@ -1772,25 +1771,11 @@ assert.equal(
   -1,
   "wandering off the path leaves the guide behind rather than mislabelling a scene",
 );
-assert.equal(nextGuideStep({ scenarioId: "charge", unitNames: [] }, "completed"), 1);
-assert.equal(
-  nextGuideStep({ scenarioId: "charge", unitNames: [] }, "aborted"),
-  0,
-  "an abandoned run does not march the operator past a scene they never saw",
-);
-assert.equal(nextGuideStep({ scenarioId: "crash", unitNames: ["approval"] }, "completed"), 4);
-assert.equal(
-  nextGuideStep({ scenarioId: "fork_masking", unitNames: ["pii_mask"] }, "completed"),
-  GUIDE.length - 1,
-  "the last scene stays put rather than running off the end",
-);
-assert.equal(nextGuideStep({ scenarioId: "leak", unitNames: [] }, "completed"), -1);
-
 // A step that started and never reported is its own outcome, not a failure row.
 const unknown = reduceFrames([
   { kind: "recoverable", step: "call-a", message: "워커 장애" },
   { kind: "indeterminate", step: "call-a",
-    message: "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다" },
+    message: "자동 복구할 수 없습니다 — 외부 청구 상태를 확인해야 합니다" },
 ]);
 assert.deepEqual(unknown.map((row) => [row.kind, row.label]), [
   ["recovery", "recover"],
@@ -1926,7 +1911,7 @@ const unresolvableFrames = [
   { kind: "agent", event: { type: "tool_call", id: "charge-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
   { kind: "recoverable", step: "charge:branch-1:prompt:abc:c-001", message: "워커 장애" },
   { kind: "agent", event: { type: "tool_call", id: "charge-1", name: "charge_card", input: { customer_id: "c-001", amount: "49" } } },
-  { kind: "indeterminate", step: "tool:charge-1", message: "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다" },
+  { kind: "indeterminate", step: "tool:charge-1", message: "자동 복구할 수 없습니다 — 외부 청구 상태를 확인해야 합니다" },
 ];
 const unresolvableCard = deriveChatView("청구해줘.", unresolvableFrames).assistant.tools[0];
 assert.equal(unresolvableCard.status, "unknown", "an undecidable effect is not a call waiting on a person");

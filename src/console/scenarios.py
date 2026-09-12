@@ -142,14 +142,14 @@ SCENARIOS = [
     {
         "id": "unknown_effect",
         "en": {
-            "title": "A failure it cannot recover from",
+            "title": "An effect needing external reconciliation",
             "risk": "No way to tell whether it went out",
             "prompt": (
                 "Charge customer c-001 49 dollars with charge_card, then tell me the "
                 "result."
             ),
         },
-        "title": "복구 불가능한 장애",
+        "title": "외부 확인이 필요한 장애",
         "risk": "나갔는지 알 수 없음",
         "forkable": True,
         "prompt": "charge_card 도구로 c-001 고객에게 49 달러를 청구하고 결과를 알려줘.",

@@ -1,11 +1,12 @@
 # Semora Control Plane Console
 
-An operator console for Semora 0.6, the execution extension for Pydantic AI. Choose
+An operator console for Semora 0.7, the execution extension for Pydantic AI. Choose
 policies, run a fixed scenario, approve a suspended tool call, recover a simulated
 worker crash, or branch a completed run from a recorded input or tool boundary.
 
 Pydantic AI owns the agent, model client, tools, messages, and model loop. Semora owns
-effect execution, leases, suspension, approval revalidation, and durable dispatch.
+effect execution, leases, suspension, approval revalidation, durable dispatch, and
+provider-backed resolution of indeterminate effects.
 The console adds business effect keys, scenario policies, and the browser frame projection.
 
 ## Run locally
@@ -34,7 +35,7 @@ transition does not migrate in-flight branches or reinterpret their stored messa
 docker compose up --build
 ```
 
-The image installs semora 0.6 from PyPI like every other dependency. Its new
+The image installs semora 0.7 from PyPI like every other dependency. Its
 `console-ledger-v04` volume keeps 0.4 data separate
 from the earlier volumes, which are retained. Use
 `docker compose --profile two-workers up --build` for a second worker on port 8851.

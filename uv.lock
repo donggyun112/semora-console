@@ -957,15 +957,15 @@ wheels = [
 
 [[package]]
 name = "semora"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic-ai-slim" },
     { name = "semora-store" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/47/b9d23aaf1ed0cc23620c541cf73dfd327ea0c9534e482ac3290ed570767a/semora-0.6.0.tar.gz", hash = "sha256:d72f477ecdd5dfc6a06f00f5bd05ed3847a2ccd9aee6875e8e9fc9ac79143d19", size = 27401, upload-time = "2026-09-06T16:43:06.598Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/83/c83843ee2f6dd9c10e61fdc64ec1610196a86df180a29909eb2392e1617f/semora-0.7.0.tar.gz", hash = "sha256:2c7406301bf56879c7e36abe062b4974f53b9b481f5c536f3c6b0e78cbcee93c", size = 28256, upload-time = "2026-09-12T17:37:02.432Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/8e/8c6337588a9f8997c1b11cbaaac6d9456216e65960dd652a763be2fcb5d7/semora-0.6.0-py3-none-any.whl", hash = "sha256:a66e2fd1aefad8e091a9f5122572a5f3802c4e2899e82e5eef6cd5aefc9f2256", size = 32881, upload-time = "2026-09-06T16:43:03.882Z" },
+    { url = "https://files.pythonhosted.org/packages/58/5d/ac449c417da37609eaf558692388a368282d0b0794232b1d4ed4d7310fc9/semora-0.7.0-py3-none-any.whl", hash = "sha256:43364df1140d49fc9ad514be88e18ebcbbf85b77e39028f65aa9f0d08e16784a", size = 33823, upload-time = "2026-09-12T17:36:59.598Z" },
 ]
 
 [[package]]
@@ -995,8 +995,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "pydantic-ai-slim", extras = ["openai"], specifier = ">=2.38,<3" },
     { name = "python-dotenv", specifier = ">=1" },
-    { name = "semora", specifier = ">=0.6,<0.7" },
-    { name = "semora-store-pg", specifier = ">=0.6,<0.7" },
+    { name = "semora", specifier = ">=0.7,<0.8" },
+    { name = "semora-store-pg", specifier = ">=0.7,<0.8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
@@ -1009,24 +1009,24 @@ dev = [
 
 [[package]]
 name = "semora-store"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a2/ae/3042d0d7b266b0188d5cbf339f0f7aaea76f8c2d6b3ee280b7f8bcfde950/semora_store-0.6.0.tar.gz", hash = "sha256:8fd68c6728f977376de7cb2950579ca48db28646c333899baa904c4d600732d1", size = 8019, upload-time = "2026-09-06T16:43:07.268Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/2c/8f55374cb25da5f6bd6237a64f530864e29721af8300d8d78f7a2ef130d1/semora_store-0.7.0.tar.gz", hash = "sha256:d9156811915ddec318021903b5ef94d69acca7676df893170be5dcd566851003", size = 8914, upload-time = "2026-09-12T17:37:03.018Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/c6/b5a55904bb1d231551f74e47faa367cda2259f10563ec53f8a7eaaf2d163/semora_store-0.6.0-py3-none-any.whl", hash = "sha256:c699cd67983ec89109c764aefe21c879edbbc00e4510f63f3b8ead5f5681059c", size = 9562, upload-time = "2026-09-06T16:43:04.967Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/4d/3c7130a8c72d313aeb2b304a5ea98a80f73dac85ff5ac14dc5c053b4067f/semora_store-0.7.0-py3-none-any.whl", hash = "sha256:2af2840b5cefa24cff2b361c4e890acc82170a9c82d22d075c380d4ecd386d67", size = 10418, upload-time = "2026-09-12T17:37:00.627Z" },
 ]
 
 [[package]]
 name = "semora-store-pg"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "semora-store" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/72/5819278164a7ae1e1f069aa4303241834898494888d1151f43c7371f54cc/semora_store_pg-0.6.0.tar.gz", hash = "sha256:0cd7a8c88d168051e57c10dcdc48785dfe3a9085858906d852cb0c1175bbc047", size = 6129, upload-time = "2026-09-06T16:43:07.95Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/ff/1f65856d6444b05e2460c1b289290dd9337bc95dbfced64c6323f8c7c37a/semora_store_pg-0.7.0.tar.gz", hash = "sha256:bc600e63a5b236413a6354421aab491b1a4c6129a8ac2b72577953199f0a3bd3", size = 6770, upload-time = "2026-09-12T17:37:03.711Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/37/a4b849aff8bb6c897e68e277225f28339110855f9e16d1a8fe890edce10b/semora_store_pg-0.6.0-py3-none-any.whl", hash = "sha256:5cf046654b003f62bdd63f0abe59b4ac5283625ccef9af83b70ca8ba3cf09b98", size = 7415, upload-time = "2026-09-06T16:43:05.798Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/df/17ecf9274c34c0583cc44aeccf697b65c3cec5f4ca8c7d82da4ad7fe29bd/semora_store_pg-0.7.0-py3-none-any.whl", hash = "sha256:0c2b87984c014c3ad74d6221133314e0c20de50ecdb43cc12beb1be67f7ba26e", size = 8094, upload-time = "2026-09-12T17:37:01.552Z" },
 ]
 
 [[package]]

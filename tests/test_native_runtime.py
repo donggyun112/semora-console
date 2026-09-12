@@ -270,6 +270,13 @@ def test_settling_a_confirmed_charge_replays_it_instead_of_charging_again(monkey
         branch_id = _undecided(client, monkeypatch)
         settled = client.post("/api/settle", json={"branch_id": branch_id, "charged": True})
         assert settled.status_code == 200, settled.text
+        session = server._sessions[branch_id]
+        scoped = server._store.for_execution(
+            server._execution(branch_id, session["conversation_id"])
+        )
+        recorded = asyncio.run(scoped.read(branch_id, "tool:charge-1"))
+        assert recorded.status == "done"
+        assert recorded.value["value"]["reconciled"] is True
 
         recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
         assert get(recovered, "outcome")["outcome"]["stop_reason"] == "completed"
@@ -286,6 +293,11 @@ def test_settling_an_unsent_charge_performs_it_for_the_first_time(monkeypatch):
         branch_id = _undecided(client, monkeypatch)
         settled = client.post("/api/settle", json={"branch_id": branch_id, "charged": False})
         assert settled.status_code == 200, settled.text
+        session = server._sessions[branch_id]
+        scoped = server._store.for_execution(
+            server._execution(branch_id, session["conversation_id"])
+        )
+        assert asyncio.run(scoped.read(branch_id, "tool:charge-1")).status == "ready"
 
         recovered = frames(client.post("/api/recover", json={"branch_id": branch_id}))
         assert get(recovered, "outcome")["outcome"]["stop_reason"] == "completed"

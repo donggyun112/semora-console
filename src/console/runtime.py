@@ -350,5 +350,11 @@ class ConsoleRuntime:
     async def committed_history(self, branch_id, conversation_id):
         return await self.engine.committed_history(branch_id, conversation_id)
 
+    async def unresolved_effects(self, branch_id, **options):
+        return await self.engine.unresolved_effects(branch_id, **options)
+
+    async def resolve_effect(self, branch_id, call_id, resolution, **options):
+        return await self.engine.resolve_effect(branch_id, call_id, resolution, **options)
+
     async def submit(self, branch_id, item, **options):
         return await self.engine.submit(branch_id, item)

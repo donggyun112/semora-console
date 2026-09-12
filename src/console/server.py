@@ -35,7 +35,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_ai.messages import UserPromptPart
-from semora import AgentSuspended, new_branch_id
+from semora import AgentSuspended, ConfirmedEffect, RetryEffect, new_branch_id
 from semora.contracts import PendingInput
 from semora.dispatch import Answer, Prompt, Recover
 from semora.transcript import SCHEMA_VERSION, entry_id
@@ -216,8 +216,8 @@ class SettleRequest(BaseModel):
 
     branch_id: str
     charged: bool
-    """True if the provider says the charge left. The ledger records it and never repeats
-    it; False forgets the attempt so recovery performs it for the first time."""
+    """True if the provider says the charge left. Semora records the confirmed result;
+    False grants the original call one version-bound retry."""
 
 
 class SteerRequest(BaseModel):
@@ -784,7 +784,7 @@ async def _stream(
                 {
                     "kind": "indeterminate",
                     "step": unknown.step,
-                    "message": "복구할 수 없습니다 — 청구가 나갔는지 원장이 보증하지 못합니다",
+                    "message": "자동 복구할 수 없습니다 — 외부 청구 상태를 확인해야 합니다",
                 }
             )
         except SimulatedWorkerCrash as crashed:
@@ -1092,26 +1092,18 @@ async def kept_frames(branch_id: str) -> dict[str, Any]:
     }
 
 
-def _call_input(entries: list[dict[str, Any]], call_id: str) -> dict[str, Any]:
-    """The arguments of one tool call, as the conversation recorded them."""
-    for frame in _kept_frames(entries):
-        event = frame.get("event") if frame.get("kind") == "agent" else None
-        if event and event.get("type") == "tool_call" and event.get("id") == call_id:
-            return dict(event.get("input") or {})
-    return {}
-
-
 @app.post("/api/settle")
 async def settle(request: SettleRequest) -> dict[str, Any]:
     """Record what a person confirmed with the payment provider, and free the run.
 
     Semora will not decide an unreported effect, and it is right not to: the truth is at
     the provider, not in the ledger. This is the other half of that contract — the host
-    carrying the answer back. Both ledgers are settled, because the run's step and the
-    business effect went `running` separately and either one left behind blocks a rerun.
+    carrying the answer back. The provider-facing business record and Semora's run-scoped
+    tool record are separate identities, so the host reconciles both with the same evidence.
 
-    ``charged`` records the effect as done; recovery then replays it and the charge never
-    leaves twice. ``not charged`` forgets it; recovery performs it for the first time.
+    ``charged`` completes the original tool call with ``ConfirmedEffect``; recovery supplies
+    that result without entering the tool body. ``not charged`` uses ``RetryEffect`` so only
+    the original call receives permission to execute once.
     """
     session = await _session(request.branch_id)
     tool_step = session.get("undecided_step")
@@ -1121,8 +1113,24 @@ async def settle(request: SettleRequest) -> dict[str, Any]:
 
     conversation_id = str(session["conversation_id"])
     call_id = str(tool_step).removeprefix("tool:")
-    args = _call_input(await _transcript.read(conversation_id), call_id)
-    amount = str(args.get("amount", "0"))
+    execution = _execution(request.branch_id, conversation_id)
+    runtime = AgentRuntime(
+        store=_store,
+        transcript=_transcript,
+        owner=WORKER,
+        lease_ttl=LEASE_TTL,
+    )
+    unresolved = await runtime.unresolved_effects(execution)
+    effect = next((item for item in unresolved if item.call_id == call_id), None)
+    if effect is None:
+        raise HTTPException(409, "이 도구 호출은 더 이상 미결 상태가 아닙니다")
+    amount = str(effect.args.get("amount", "0"))
+    provider_result = {
+        "type": "text",
+        "text": json.dumps({"status": "charged", "amount": amount}, ensure_ascii=False),
+        "execution_count": 0,
+        "amount": amount,
+    }
 
     owner = f"console-settle:{uuid.uuid4().hex}"
     token = await _store.acquire(conversation_id, owner, LEASE_TTL)
@@ -1130,20 +1138,10 @@ async def settle(request: SettleRequest) -> dict[str, Any]:
         raise HTTPException(409, "다른 워커가 이 대화를 잡고 있습니다")
     try:
         if request.charged:
-            # The shape `charge_card` would have recorded, with the one honest difference:
-            # this process performed nothing, so its effect count stays zero.
             await _store.finish_effect(
                 conversation_id,
                 str(effect_step),
-                {
-                    "type": "text",
-                    "text": json.dumps(
-                        {"status": "charged", "amount": amount}, ensure_ascii=False
-                    ),
-                    "execution_count": 0,
-                    "amount": amount,
-                    "reconciled": True,
-                },
+                provider_result,
                 token,
             )
         else:
@@ -1151,17 +1149,34 @@ async def settle(request: SettleRequest) -> dict[str, Any]:
     finally:
         await _store.release(conversation_id, owner)
 
-    # The run's own step always goes back to absent: the tool runs again either way, and
-    # lands on the business effect above — replaying a confirmed charge, or performing one
-    # that never left. That is the same seam a fork uses, not a new kind of replay.
-    scoped = _store.for_execution(_execution(request.branch_id, conversation_id))
-    branch_token = await scoped.acquire(request.branch_id, owner, LEASE_TTL)
-    if not branch_token:
-        raise HTTPException(409, "다른 워커가 이 실행을 잡고 있습니다")
-    try:
-        await scoped.forget(request.branch_id, str(tool_step), branch_token)
-    finally:
-        await scoped.release(request.branch_id, owner)
+    decision_id = f"console:{request.branch_id}:{call_id}:{'confirmed' if request.charged else 'retry'}"
+    if request.charged:
+        tool_result = {
+            **{key: value for key, value in provider_result.items() if key != "amount"},
+            "idempotency": {"key": str(effect_step), "replayed": True},
+            "execution": {"call_id": call_id, "replayed": True},
+            "reconciled": True,
+        }
+        resolution = ConfirmedEffect(
+            decision_id=decision_id,
+            expected_version=effect.version,
+            reason="payment provider confirmed the charge",
+            result=tool_result,
+            provider_key=str(effect_step),
+        )
+    else:
+        resolution = RetryEffect(
+            decision_id=decision_id,
+            expected_version=effect.version,
+            reason="payment provider confirmed no request was accepted",
+            provider_key=str(effect_step),
+        )
+    await runtime.resolve_effect(
+        execution,
+        call_id,
+        resolution,
+        workers_stopped=True,
+    )
 
     session.pop("undecided_step", None)
     session.pop("undecided_effect", None)

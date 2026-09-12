@@ -131,7 +131,7 @@ export const GUIDE = Object.freeze([
   }),
   Object.freeze({
     scenarioId: "unknown_effect", unitNames: Object.freeze([]),
-    label: "복구 불가능한 장애", teaches: "나갔는지 아무도 모른다",
+    label: "외부 확인이 필요한 장애", teaches: "원장만으로는 나갔는지 알 수 없다",
   }),
   Object.freeze({
     scenarioId: "fork_masking", unitNames: Object.freeze(["pii_mask"]),
@@ -149,14 +149,6 @@ export function guideMatch(config) {
     scene.scenarioId === config?.scenarioId
     && [...scene.unitNames].sort().join(",") === wanted
   ));
-}
-
-export function nextGuideStep(config, stopReason) {
-  // A scene counts as taught once its run ends well. A failed or aborted attempt leaves
-  // the operator where they were rather than marching them past something they did not see.
-  const at = guideMatch(config);
-  if (at < 0 || stopReason === "aborted" || stopReason === null) return at;
-  return Math.min(at + 1, GUIDE.length - 1);
 }
 
 export function policiesAt(resumesAt, unitNames, plan) {
@@ -1185,15 +1177,8 @@ export function createConsole({
         state.run,
         frame.outcome?.stop_reason ?? frame.stop_reason ?? "completed",
       );
-      // A finished scene loads the next one, so returning to the launch screen offers
-      // the thing that follows rather than the thing just watched.
-      const next = nextGuideStep(state.run.active, state.run.stopReason);
-      if (next >= 0) {
-        state.run = updateDraft(state.run, {
-          scenarioId: GUIDE[next].scenarioId,
-          unitNames: [...GUIDE[next].unitNames],
-        });
-      }
+      // Completion never rewrites the operator's draft. "Run with current policy" must
+      // rerun this scenario; moving through the guide remains an explicit click.
     } else if (frame.kind === "fenced") {
       // The run moved on while this worker was away. Its writes are refused, which is
       // the whole point: a worker back from the dead does not get to finish.
